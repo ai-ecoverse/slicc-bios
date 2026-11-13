@@ -93,6 +93,72 @@ const chromeShots = new Map();
 let readChrome = async () => [];
 const snapshots = new Map();
 let current = '';
+const iframeWatch = { on: false, events: [], refused: [], asked: new Map() };
+const IFRAME_EVENTS = new Set([
+  'Target.attachedToTarget',
+  'Target.targetCreated',
+  'Target.targetInfoChanged',
+  'Target.detachedFromTarget',
+  'Target.targetDestroyed',
+  'Page.frameAttached',
+  'Page.frameNavigated',
+  'Page.frameDetached',
+]);
+const iframeNote = (message, outgoing) => {
+  const at = Date.now();
+  if (outgoing) {
+    if (message.id !== undefined)
+      iframeWatch.asked.set(`${message.sessionId ?? ''}:${message.id}`, message.method);
+    if (['Page.enable', 'Target.setAutoAttach', 'Target.attachToTarget'].includes(message.method))
+      iframeWatch.events.push({
+        at,
+        sent: message.method,
+        session: message.sessionId ?? null,
+        params: message.method === 'Page.enable' ? undefined : JSON.stringify(message.params ?? {}),
+      });
+    return;
+  }
+  if (message.error) {
+    const method = iframeWatch.asked.get(`${message.sessionId ?? ''}:${message.id}`);
+    iframeWatch.refused.push({
+      at,
+      method,
+      session: message.sessionId ?? null,
+      error: message.error.message,
+    });
+    return;
+  }
+  if (!IFRAME_EVENTS.has(message.method)) return;
+  const params = message.params ?? {};
+  const info = params.targetInfo;
+  if (message.method.startsWith('Target.') && info && info.type !== 'iframe') return;
+  iframeWatch.events.push({
+    at,
+    event: message.method,
+    session: message.sessionId ?? null,
+    ...(info
+      ? {
+          targetId: info.targetId,
+          type: info.type,
+          url: info.url,
+          parentId: info.parentId,
+          openerId: info.openerId,
+          attachedSession: params.sessionId,
+          waiting: params.waitingForDebugger,
+        }
+      : {}),
+    ...(params.frameId
+      ? { frameId: params.frameId, parentFrameId: params.parentFrameId, reason: params.reason }
+      : {}),
+    ...(params.frame
+      ? { frameId: params.frame.id, parentFrameId: params.frame.parentId, url: params.frame.url }
+      : {}),
+    ...(params.targetId && !info ? { targetId: params.targetId } : {}),
+    ...(message.method === 'Target.detachedFromTarget'
+      ? { detachedSession: params.sessionId }
+      : {}),
+  });
+};
 const watched = (id, text, outgoing) => {
   let message;
   try {
@@ -100,6 +166,7 @@ const watched = (id, text, outgoing) => {
   } catch {
     return;
   }
+  if (iframeWatch.on) iframeNote(message, outgoing);
   const short = (value) => (typeof value === 'string' ? value.slice(0, 6) : '');
   const info = message.params?.targetInfo;
   traffic.push(
@@ -172,7 +239,7 @@ async function unguarded(ws) {
     waiting.delete(message.id);
     done(message);
   });
-  const send = (method, params = {}) =>
+  const send = (method, params = {}, sessionId) =>
     new Promise((resolve, reject) => {
       next += 1;
       const id = next;
@@ -185,7 +252,7 @@ async function unguarded(ws) {
         if (message.error) reject(new Error(message.error.message));
         else resolve(message.result);
       });
-      socket.send(JSON.stringify({ id, method, params }));
+      socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   return { send, close: () => socket.close() };
 }
@@ -448,7 +515,90 @@ async function bridge(t, route) {
   };
 }
 
-async function playwright(route, endpoint) {
+async function iframeReport(route, endpoint, driven) {
+  const started = iframeWatch.events[0]?.at ?? Date.now();
+  const rel = (entry) => ({ ...entry, at: entry.at - started });
+  const report = { route };
+  try {
+    const plain = await unguarded(driven);
+    try {
+      const { targetInfos } = await plain.send('Target.getTargets', {});
+      const pageTarget = targetInfos.find(
+        (info) => info.type === 'page' && info.url.startsWith(`${ORDINARY}/framed`)
+      );
+      report.chrome = {
+        page: pageTarget?.targetId ?? null,
+        iframes: targetInfos
+          .filter((info) => info.type === 'iframe')
+          .map(({ targetId, type, url, parentId, openerId }) => ({
+            targetId,
+            type,
+            url,
+            parentId,
+            openerId,
+          })),
+      };
+      if (pageTarget) {
+        const { sessionId } = await plain.send('Target.attachToTarget', {
+          targetId: pageTarget.targetId,
+          flatten: true,
+        });
+        const { frameTree } = await plain.send('Page.getFrameTree', {}, sessionId);
+        const frames = [];
+        const walk = (node) => {
+          frames.push({ id: node.frame.id, parentId: node.frame.parentId, url: node.frame.url });
+          for (const child of node.childFrames ?? []) walk(child);
+        };
+        walk(frameTree);
+        report.chrome.frameTree = frames;
+        await plain.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+      }
+    } finally {
+      plain.close();
+    }
+  } catch (error) {
+    report.chrome = `error: ${error.message}`;
+  }
+  try {
+    const socket = new WebSocket(endpoint, { maxPayload: 256 * 1024 * 1024 });
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+    const answer = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({ error: { message: 'no answer in 10 s' } }), 10000);
+      socket.on('message', (data) => {
+        const message = JSON.parse(data.toString());
+        if (message.id !== 1) return;
+        clearTimeout(timer);
+        resolve(message);
+      });
+      socket.send(JSON.stringify({ id: 1, method: 'Target.getTargets', params: {} }));
+    });
+    socket.close();
+    report.client = answer.error
+      ? `error: ${answer.error.message}`
+      : answer.result.targetInfos.map(({ targetId, type, url, parentId }) => ({
+          targetId,
+          type,
+          url,
+          parentId,
+        }));
+  } catch (error) {
+    report.client = `error: ${error.message}`;
+  }
+  const detached = iframeWatch.events.find((entry) => entry.event === 'Page.frameDetached');
+  const enables = iframeWatch.events.filter((entry) => entry.sent === 'Page.enable');
+  report.pageEnableBeforeDetach = detached
+    ? enables.some((entry) => entry.session === detached.session && entry.at <= detached.at)
+    : 'no frameDetached seen';
+  report.events = iframeWatch.events.filter((entry) => entry.sent !== 'Page.enable').map(rel);
+  report.pageEnables = enables.map(rel);
+  report.refused = iframeWatch.refused.map(rel);
+  console.log(`STOCK-IFRAME ${JSON.stringify(report)}`);
+}
+
+async function playwright(route, endpoint, driven) {
   const run = (name, work) => step(route, 'playwright', name, work);
   current = `${route} playwright`;
   const connected = await run('connect', () => chromium.connectOverCDP(endpoint));
@@ -478,14 +628,24 @@ async function playwright(route, endpoint) {
     );
     await run('popup load', () => popup.waitForLoadState());
     assert.equal(await popup.title(), 'popup');
-    await run('iframe', () => page.goto(`${ORDINARY}/framed`));
-    const frame = await run('iframe frame', async () => {
-      for (;;) {
-        const found = page.frames().find((item) => item.url().startsWith(FRAME));
-        if (found) return found;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-    });
+    iframeWatch.events = [];
+    iframeWatch.refused = [];
+    iframeWatch.asked.clear();
+    iframeWatch.on = true;
+    let frame;
+    try {
+      await run('iframe', () => page.goto(`${ORDINARY}/framed`));
+      frame = await run('iframe frame', async () => {
+        for (;;) {
+          const found = page.frames().find((item) => item.url().startsWith(FRAME));
+          if (found) return found;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      });
+    } finally {
+      iframeWatch.on = false;
+      if (route === 'link') await iframeReport(route, endpoint, driven);
+    }
     assert.equal(await run('iframe read', () => frame.textContent('#inner')), 'inner');
     const other = await run('newContext', () => connected.newContext());
     const second = await run('newContext newPage', () => other.newPage());
@@ -605,7 +765,7 @@ for (const route of ['devtools', 'extension', 'link'])
         `STOCK-ANSWERS ${route} ${JSON.stringify([...answers.splice(0), ...unanswered])}`
       );
     });
-    await t.test('Playwright', () => playwright(route, endpoint));
+    await t.test('Playwright', () => playwright(route, endpoint, opened.driven));
     await t.test('Puppeteer', () => puppeteerFlow(route, endpoint));
     const wired = await opened.wire();
     for (const [name, lines] of chromeShots)
