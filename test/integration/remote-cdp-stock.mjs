@@ -243,10 +243,11 @@ export function stockChain(route, { chain = 'tray' } = {}) {
 
   async function step(client, name, work) {
     const started = Date.now();
+    const stopped = new AbortController();
     let timer;
     try {
       return await Promise.race([
-        work(),
+        work(stopped.signal),
         new Promise((_, reject) => {
           timer = setTimeout(
             () => reject(new Error(`${client} ${name} over ${label} took over ${STEP_MS} ms`)),
@@ -256,6 +257,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       ]);
     } finally {
       clearTimeout(timer);
+      stopped.abort();
       const took = Date.now() - started;
       steps.push(`${client} ${name} ${took}`);
       if (took > HELD_MS) holds.push(`${label} ${client} ${name}: ${took} ms`);
@@ -351,8 +353,8 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       await run('popup load', () => popup.waitForLoadState());
       assert.equal(await popup.title(), 'popup');
       await run('iframe', () => page.goto(`${rig.ordinary}/framed`));
-      const frame = await run('iframe frame', async () => {
-        for (;;) {
+      const frame = await run('iframe frame', async (signal) => {
+        while (!signal.aborted) {
           const found = page.frames().find((item) => item.url().startsWith(rig.frame));
           if (found) return found;
           await new Promise((resolve) => setTimeout(resolve, 100));
@@ -436,8 +438,8 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       );
       assert.equal(await popup.title(), 'popup');
       await run('iframe', () => page.goto(`${rig.ordinary}/framed-same`));
-      const frame = await run('iframe frame', async () => {
-        for (;;) {
+      const frame = await run('iframe frame', async (signal) => {
+        while (!signal.aborted) {
           const found = page
             .frames()
             .find((item) => item.url().startsWith(`${rig.ordinary}/inner`));
