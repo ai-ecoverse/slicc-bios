@@ -29,16 +29,18 @@ test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the h
 
 test('vault drift compares vault-preview to the root pin on main and on a schedule, never on a pull request or merge group', async () => {
   const drift = await read('.github/workflows/vault-drift.yml');
-  assert.match(drift, /^name: vault drift\n/);
   assert.match(
     drift,
-    /\non:\n {2}push:\n {4}branches: \[main\]\n {2}schedule:\n {4}- cron: "0 \*\/6 \* \* \*"\n/
+    /^name: vault drift\n\non:\n {2}push:\n {4}branches: \[main\]\n {2}schedule:\n {4}- cron: "0 \*\/6 \* \* \*"\n\npermissions:\n {2}contents: read\n {2}issues: write\n/
   );
-  assert.doesNotMatch(drift, /pull_request|merge_group|workflow_dispatch/);
   assert.match(drift, /\njobs:\n {2}vault-drift:\n/);
   assert.match(drift, /vault-preview\.sliccy\.ai\/config\.json/);
   assert.match(drift, /devDependencies\['@ai-ecoverse\/slicc-vault'\]/);
   assert.match(drift, /vault drift: live/);
+  assert.match(
+    drift,
+    /\n {10}if ! \[\[ "\$LIVE" =~ \^\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then\n {12}echo "::error::vault-preview reported a non-semver version"\n {12}exit 1\n {10}fi\n/
+  );
   assert.match(
     drift,
     /\n {6}- uses: actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n {8}with:\n {10}persist-credentials: false\n/

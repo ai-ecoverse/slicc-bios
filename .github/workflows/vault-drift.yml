@@ -28,6 +28,10 @@ jobs:
           set -euo pipefail
           PIN=$(node -p "require('./package.json').devDependencies['@ai-ecoverse/slicc-vault']")
           LIVE=$(curl -fsS https://vault-preview.sliccy.ai/config.json | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).version))")
+          if ! [[ "$LIVE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::vault-preview reported a non-semver version"
+            exit 1
+          fi
           if [ "$LIVE" = "$PIN" ]; then
             echo "vault-preview $LIVE matches pin $PIN"
             exit 0

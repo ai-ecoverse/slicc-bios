@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { classForPath, headersForClass, realVault, vaultPackageRoot } from './real-vault.mjs';
@@ -22,6 +23,29 @@ const HEADER_NAMES = [
 
 function picked(response) {
   return Object.fromEntries(HEADER_NAMES.map((name) => [name, response.headers.get(name)]));
+}
+
+function rewriteFrameAncestors(headers, origin) {
+  return {
+    ...headers,
+    'content-security-policy': headers['content-security-policy'].replace(
+      /frame-ancestors[^;]*/,
+      `frame-ancestors ${origin}`
+    ),
+  };
+}
+
+function writeVaultPackage(dir, { packageVersion, configVersion }) {
+  mkdirSync(join(dir, 'dist/site'), { recursive: true });
+  writeFileSync(
+    join(dir, 'package.json'),
+    `${JSON.stringify({ name: '@ai-ecoverse/slicc-vault', version: packageVersion })}\n`
+  );
+  writeFileSync(
+    join(dir, 'dist/site/config.json'),
+    `${JSON.stringify({ version: configVersion, embedders: [] })}\n`
+  );
+  writeFileSync(join(dir, 'dist/headers.json'), `${JSON.stringify({ classes: {} })}\n`);
 }
 
 test('real vault resolves the pinned package without depending on its exports map', () => {
@@ -69,6 +93,7 @@ test('real vault serves the package site with headers.json classes and the embed
     ['/config.json', 'config.json'],
     ['/embedders.json', 'embedders.json'],
   ];
+  const packaged = JSON.parse(readFileSync(join(vaultPackageRoot(), 'dist/headers.json'), 'utf8'));
   for (const [path, name] of cases) {
     assert.equal(classForPath(path, vault.headers.classes)?.name, name, path);
     const response = await fetch(new URL(path, vault.origin));
@@ -85,6 +110,19 @@ test('real vault serves the package site with headers.json classes and the embed
     } else {
       assert.deepEqual(body, readFileSync(join(vault.site, path.slice(1))));
     }
+  }
+  for (const [path, name] of [
+    ['/index.html', 'documents'],
+    ['/frame.js', 'scripts'],
+    ['/probe-class.wasm', 'wasm'],
+  ]) {
+    const response = await fetch(new URL(path, vault.origin));
+    await response.arrayBuffer();
+    assert.deepEqual(
+      picked(response),
+      rewriteFrameAncestors(packaged.classes[name].headers, ORIGIN),
+      path
+    );
   }
 });
 
@@ -137,4 +175,49 @@ test('real vault answers 404 when a packaged asset is missing', async (t) => {
   assert.equal(row.status, 404);
   assert.equal(row.upstreamStatus, 404);
   assert.equal(row.error, 'Error');
+});
+
+test('real vault answers 404 when a site symlink points outside dist/site', async (t) => {
+  const vault = await realVault(ORIGIN, { version: pin });
+  t.after(() => vault.close());
+  const outside = join(vault.site, '..', 'probe-outside-sentinel.txt');
+  const link = join(vault.site, 'probe-outside-link.js');
+  t.after(() => {
+    rmSync(link, { force: true });
+    rmSync(outside, { force: true });
+  });
+  writeFileSync(outside, 'OUTSIDE-SECRET');
+  symlinkSync(outside, link);
+  const response = await fetch(new URL('/probe-outside-link.js', vault.origin));
+  assert.equal(response.status, 404);
+  assert.equal(await response.text(), 'the vault deployment is unavailable');
+  assert.equal(JSON.stringify(vault.evidence()).includes('OUTSIDE-SECRET'), false);
+});
+
+test('real vault refuses a nested install and a package.json that disagrees with config.json', (t) => {
+  const repo = mkdtempSync(join(tmpdir(), 'slicc-bios-vault-root-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  writeFileSync(
+    join(repo, 'package.json'),
+    `${JSON.stringify({ name: '@ai-ecoverse/slicc-bios', version: '0.0.0' })}\n`
+  );
+  const rootInstall = join(repo, 'node_modules/@ai-ecoverse/slicc-vault');
+  writeVaultPackage(rootInstall, { packageVersion: pin, configVersion: pin });
+  const nested = join(repo, 'test/node_modules/@ai-ecoverse/slicc-vault');
+  writeVaultPackage(nested, { packageVersion: '8.8.8', configVersion: '8.8.8' });
+  assert.equal(vaultPackageRoot(join(repo, 'test/integration')), rootInstall);
+
+  const mismatched = mkdtempSync(join(tmpdir(), 'slicc-bios-vault-mismatch-'));
+  t.after(() => rmSync(mismatched, { recursive: true, force: true }));
+  writeFileSync(
+    join(mismatched, 'package.json'),
+    `${JSON.stringify({ name: '@ai-ecoverse/slicc-bios', version: '0.0.0' })}\n`
+  );
+  writeVaultPackage(join(mismatched, 'node_modules/@ai-ecoverse/slicc-vault'), {
+    packageVersion: '0.0.1',
+    configVersion: pin,
+  });
+  assert.throws(() => vaultPackageRoot(join(mismatched, 'test/integration')), {
+    message: `the vault package version is 0.0.1, expected ${pin}`,
+  });
 });
