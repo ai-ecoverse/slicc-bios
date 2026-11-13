@@ -364,3 +364,49 @@ for (const shape of ['parentId', 'recorded parent frame'])
     });
     assert.match(attached.error?.message ?? '', REFUSED);
   });
+
+test('a new iframe attachment under an owner that turned protected without an event reaches the client as nothing', async (t) => {
+  const { p, root, session } = await placedPage(t, 'quiet-owner');
+  frame(p, 'quiet-frame', CROSS, 'quiet-owner');
+  root.info.url = `${protectedOrigin}/os/`;
+  const before = p.delivered.length;
+  const child = await attachUnder(p, 'quiet-frame', session);
+  assert.ok(!shown(p, child), 'the iframe attachment is never published');
+  assert.ok(cutInChrome(p, child), 'the iframe is detached');
+  assert.deepEqual(
+    p.delivered
+      .slice(before)
+      .filter(
+        (message) =>
+          JSON.stringify(message).includes(child) || JSON.stringify(message).includes(CROSS)
+      ),
+    [],
+    'nothing about the iframe reaches the client'
+  );
+});
+
+test('an iframe two levels below an owner that turns protected without an event refuses commands', async (t) => {
+  const { p, root } = await placedPage(t, 'deep-owner');
+  frame(p, 'deep-mid', CROSS, 'deep-owner');
+  frame(p, 'deep-kid', NESTED, 'deep-mid');
+  const attached = await p.send('Target.attachToTarget', { targetId: 'deep-kid', flatten: true });
+  const child = attached.result.sessionId;
+  assert.equal((await evaluate(p, child)).error, undefined);
+  root.info.url = `${protectedOrigin}/os/`;
+  assert.match((await evaluate(p, child)).error?.message ?? '', REFUSED);
+  assert.match(
+    (await p.send('Target.getTargetInfo', { targetId: 'deep-kid' })).error?.message ?? '',
+    REFUSED
+  );
+});
+
+test('an iframe whose middle ancestor turns held without an event refuses commands', async (t) => {
+  const { p } = await placedPage(t, 'held-top');
+  frame(p, 'held-mid', CROSS, 'held-top');
+  frame(p, 'held-low', NESTED, 'held-mid');
+  const attached = await p.send('Target.attachToTarget', { targetId: 'held-low', flatten: true });
+  const child = attached.result.sessionId;
+  assert.equal((await evaluate(p, child)).error, undefined);
+  hold('held-mid');
+  assert.match((await evaluate(p, child)).error?.message ?? '', REFUSED);
+});

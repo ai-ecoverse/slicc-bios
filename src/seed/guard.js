@@ -1410,15 +1410,10 @@ class Guard {
     return this.current(entry.targetId);
   }
 
-  async freshFrames(targetId, limit, seen = new Set([targetId])) {
+  async freshFrames(targetId, limit, chain = new Set([targetId])) {
     for (const id of this.frameParents(targetId)) {
-      if (id === TAINTED || seen.has(id) || seen.size > 64) return true;
-      seen.add(id);
-      const answer = await this.within(this.call('Target.getTargetInfo', { targetId: id }), limit);
-      const info = answer?.result?.targetInfo;
-      if (answer?.error || info?.targetId !== id) return true;
-      this.learn(info);
-      if (info.type === 'iframe' && (await this.freshFrames(id, limit, seen))) return true;
+      if (id === TAINTED || chain.has(id) || chain.size > 64) return true;
+      if (await this.current(id, limit, undefined, new Set(chain).add(id))) return true;
     }
     return false;
   }
@@ -2547,7 +2542,7 @@ class Guard {
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
       return true;
     this.learn(info);
-    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit))) return true;
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit, rest[1]))) return true;
     if (this.createdPending(info, targetId)) {
       ({ raw: info } = await this.createdTargetInfo(targetId));
       if (!info || info.targetId !== targetId || this.createdUnset(info)) return true;
@@ -3161,6 +3156,11 @@ class Guard {
     return { answer, raw };
   }
 
+  async placedTarget(targetId, info) {
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, ANSWER_MS))) return true;
+    return this.target(targetId);
+  }
+
   async inspect(sessionId, targetId, parent, recoverable = false) {
     if (this.privateSessions.has(sessionId) || this.retiredTargets.has(targetId)) return false;
     const { answer, raw } = await this.createdTargetInfo(targetId);
@@ -3178,7 +3178,7 @@ class Guard {
     )
       return this.uncertainProof(targetId);
     this.learn(info);
-    const guarded = await this.target(targetId);
+    const guarded = await this.placedTarget(targetId, info);
     const proof = await this.attachmentProof(sessionId, targetId, raw, guarded, recoverable);
     if (guarded && !proof) {
       if (await this.retainedBlank(sessionId, raw)) return true;
