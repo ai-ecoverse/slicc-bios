@@ -4,6 +4,7 @@ import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 export const CHANNEL = 'slicc-held';
 export const KEY = 'slicc-os.held-targets';
 export const MARK = 'slicc-sign-in-';
+export const LINKED = 'link:';
 export const KEEP = 32;
 export const WAIT = 5000;
 export const FLIGHT = 11 * 60 * 1000;
@@ -101,7 +102,15 @@ function ask(connection, method, params = {}, timers = globalThis) {
   });
 }
 
-async function find(open, url, { deadline, now, sleep, storage }) {
+const BLANK = /^(?:about:blank)?$/;
+
+function redactedPopup(info, infos, is) {
+  if (!BLANK.test(info.url ?? '') || typeof info.openerId !== 'string') return false;
+  const opener = infos.find((one) => one?.targetId === info.openerId);
+  return opener?.type === 'page' && is.url(opener.url ?? '');
+}
+
+async function find(open, url, { deadline, now, sleep, storage, redacted }) {
   let connection;
   try {
     connection = await open();
@@ -111,9 +120,15 @@ async function find(open, url, { deadline, now, sleep, storage }) {
   try {
     for (;;) {
       const result = await ask(connection, 'Target.getTargets');
-      const found = result?.targetInfos?.find((info) => info.type === 'page' && info.url === url);
-      if (found) {
-        hold(found.targetId, storage);
+      const infos = Array.isArray(result?.targetInfos) ? result.targetInfos : [];
+      const found = infos.filter(
+        (info) =>
+          info?.type === 'page' &&
+          typeof info.targetId === 'string' &&
+          (info.url === url || (redacted && redactedPopup(info, infos, redacted)))
+      );
+      if (found.length) {
+        for (const info of found) hold(info.targetId, storage);
         return 'held';
       }
       if (!result || now() >= deadline) return 'missing';
@@ -126,6 +141,8 @@ async function find(open, url, { deadline, now, sleep, storage }) {
 
 export function watchSignIns({
   hosts,
+  own = globalThis.location?.origin,
+  is = guardOf(own),
   storage = globalThis.localStorage,
   listen = (name) => new BroadcastChannel(name),
   now = Date.now,
@@ -139,9 +156,17 @@ export function watchSignIns({
     asked();
     const url = markerUrl(data.marker);
     const deadline = now() + wait;
-    const opens = Object.values(hosts() ?? {}).filter((open) => typeof open === 'function');
+    const opens = Object.entries(hosts() ?? {}).filter(([, open]) => typeof open === 'function');
     const found = await Promise.all(
-      opens.map((open) => find(open, url, { deadline, now, sleep, storage }))
+      opens.map(([name, open]) =>
+        find(open, url, {
+          deadline,
+          now,
+          sleep,
+          storage,
+          redacted: name.startsWith(LINKED) && is,
+        })
+      )
     );
     const type = !found.length
       ? 'none'
