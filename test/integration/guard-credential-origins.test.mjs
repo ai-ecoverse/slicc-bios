@@ -98,26 +98,22 @@ const withheldCookies = [
     partitionKey: 'https://adobelogin.com',
   },
   { name: 'nameless', value: SECRET, path: '/' },
-  { name: 'adobe', value: SECRET, domain: '.adobe.com', path: '/' },
-  { name: 'services', value: SECRET, domain: 'services.adobe.com', path: '/' },
-  { name: 'login', value: SECRET, domain: 'auth.services.adobe.com', path: '/' },
-  { name: 'adobe-id', value: SECRET, domain: '.adobeid-na1.services.adobe.com', path: '/' },
-  {
-    name: 'partitioned-adobe',
-    value: SECRET,
-    domain: 'ordinary.example',
-    path: '/',
-    partitionKey: { topLevelSite: 'https://adobe.com', hasCrossSiteAncestor: true },
-  },
 ];
 const keptCookies = [
   { name: 'ordinary', value: 'visible', domain: 'ordinary.example', path: '/' },
   { name: 'sub-host', value: 'visible', domain: 'x.ims-na1.adobelogin.com', path: '/' },
   { name: 'sibling', value: 'visible', domain: 'other.adobelogin.com', path: '/' },
-  { name: 'www', value: 'visible', domain: 'www.adobe.com', path: '/' },
-  { name: 'helpx', value: 'visible', domain: '.helpx.adobe.com', path: '/' },
-  { name: 'login-sub', value: 'visible', domain: 'x.auth.services.adobe.com', path: '/' },
-  { name: 'adobe-lookalike', value: 'visible', domain: 'adobe.com.evil.example', path: '/' },
+  { name: 'adobe', value: 'visible', domain: '.adobe.com', path: '/' },
+  { name: 'services', value: 'visible', domain: 'services.adobe.com', path: '/' },
+  { name: 'login', value: 'visible', domain: 'auth.services.adobe.com', path: '/' },
+  { name: 'adobe-id', value: 'visible', domain: '.adobeid-na1.services.adobe.com', path: '/' },
+  {
+    name: 'partitioned-adobe',
+    value: 'visible',
+    domain: 'ordinary.example',
+    path: '/',
+    partitionKey: { topLevelSite: 'https://adobe.com', hasCrossSiteAncestor: true },
+  },
   { name: 'lookalike', value: 'visible', domain: 'ims-na1.adobelogin.com.evil.example', path: '/' },
   {
     name: 'partitioned-ordinary',
@@ -135,8 +131,8 @@ test('the catalog names the credential origins and their refusal', () => {
   assert.ok(Array.isArray(origins), 'catalog.credentialOrigins.origins is a list');
   assert.ok(origins.includes(IDP));
   assert.ok(origins.includes(STAGE));
-  assert.ok(origins.includes(LOGIN));
-  assert.ok(origins.includes(ADOBE_ID));
+  assert.ok(!origins.includes(LOGIN));
+  assert.ok(!origins.includes(ADOBE_ID));
   assert.equal(typeof catalog.credentialOrigins.refusal, 'string');
   assert.equal(CREDENTIAL, catalog.credentialOrigins.refusal);
   assert.notEqual(CREDENTIAL, PROTECTED);
@@ -178,10 +174,6 @@ for (const [label, route] of routes) {
       ['Network.setCookie', { ...cookie, url: `${IDP}/` }],
       ['Network.setCookie', { ...cookie, url: 'http://IMS-NA1.adobelogin.com.:8443/path?q#f' }],
       ['Network.setCookie', { ...cookie, url: `${STAGE}/` }],
-      ['Network.setCookie', { ...cookie, url: `${LOGIN}/signin` }],
-      ['Network.setCookie', { ...cookie, url: `${ADOBE_ID}/` }],
-      ['Network.setCookie', { ...cookie, url: `${ORDINARY}/`, domain: '.adobe.com' }],
-      ['Network.setCookie', { ...cookie, domain: 'services.adobe.com' }],
       ['Network.setCookie', { ...cookie, url: `${ORDINARY}/`, domain: '.adobelogin.com' }],
       ['Network.setCookie', { ...cookie, domain: 'ims-na1.adobelogin.com' }],
       [
@@ -226,10 +218,9 @@ for (const [label, route] of routes) {
       { ...cookie, url: 'https://ims-na1.adobelogin.com.evil.example/' },
       { ...cookie, url: 'https://other.adobelogin.com/' },
       { ...cookie, domain: 'x.ims-na1.adobelogin.com' },
-      { ...cookie, url: 'https://www.adobe.com/' },
-      { ...cookie, url: 'https://helpx.adobe.com/' },
-      { ...cookie, url: 'https://x.auth.services.adobe.com/' },
-      { ...cookie, domain: 'www.adobe.com' },
+      { ...cookie, url: `${LOGIN}/signin` },
+      { ...cookie, url: `${ADOBE_ID}/` },
+      { ...cookie, url: `${ORDINARY}/`, domain: '.adobe.com' },
       { ...cookie, url: `${ORDINARY}/`, partitionKey: { topLevelSite: ORDINARY } },
     ])
       await passed(wire, 'Network.setCookie', params);
@@ -251,12 +242,6 @@ for (const [label, route] of routes) {
       ['Storage.getUsageAndQuota', { origin: 'https://IMS-NA1.adobelogin.com.:8443' }],
       ['Storage.getUsageAndQuota', { origin: 'http://ims-na1-stg1.adobelogin.com' }],
       ['Storage.getUsageAndQuota', { origin: 'not a url' }],
-      ['Storage.getUsageAndQuota', { origin: LOGIN }],
-      [
-        'DOMStorage.getDOMStorageItems',
-        { storageId: { securityOrigin: ADOBE_ID, isLocalStorage: true } },
-      ],
-      ['IndexedDB.requestDatabaseNames', { storageKey: `${ORDINARY}/^0https://adobe.com` }],
       ['Storage.clearDataForOrigin', { origin: IDP, storageTypes: 'all' }],
       ['Storage.clearDataForStorageKey', { storageKey: key, storageTypes: 'all' }],
       ['Storage.getSharedStorageEntries', { ownerOrigin: IDP }],
@@ -328,9 +313,8 @@ for (const [label, route] of routes) {
       'https://ims-na1.adobelogin.com.evil.example',
       'https://other.adobelogin.com',
       'ftp://ims-na1.adobelogin.com',
-      'https://www.adobe.com',
-      'https://helpx.adobe.com',
-      'https://x.auth.services.adobe.com',
+      LOGIN,
+      ADOBE_ID,
     ])
       await passed(wire, 'Storage.getUsageAndQuota', { origin });
     await passed(wire, 'IndexedDB.requestDatabaseNames', { storageKey: `${ORDINARY}/` });
@@ -344,6 +328,12 @@ for (const [label, route] of routes) {
     });
     await passed(wire, 'DOMStorage.getDOMStorageItems', {
       storageId: { securityOrigin: ORDINARY, isLocalStorage: true },
+    });
+    await passed(wire, 'DOMStorage.getDOMStorageItems', {
+      storageId: { securityOrigin: LOGIN, isLocalStorage: true },
+    });
+    await passed(wire, 'IndexedDB.requestDatabaseNames', {
+      storageKey: `${ORDINARY}/^0https://adobe.com`,
     });
   });
 
@@ -591,42 +581,6 @@ for (const [label, route] of routes) {
     assert.equal(seen.length, kept.length);
   });
 
-  test(`a request to an Adobe login host loses their cookie headers on the ${label} route`, async (t) => {
-    const wire = wired(t, route);
-    wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });
-    const session = await wire.attach('plain');
-    await wire.send('Network.enable', {}, session);
-    const mark = wire.delivered.length;
-    wire.emit({
-      method: 'Network.requestWillBeSent',
-      sessionId: session,
-      params: {
-        requestId: 'adobe-1',
-        loaderId: 'loader',
-        documentURL: `${ORDINARY}/`,
-        frameId: 'plain',
-        type: 'XHR',
-        request: { url: `${LOGIN}/signin/v2`, method: 'GET', headers: {} },
-      },
-    });
-    wire.emit({
-      method: 'Network.requestWillBeSentExtraInfo',
-      sessionId: session,
-      params: {
-        requestId: 'adobe-1',
-        associatedCookies: [
-          { cookie: { name: 'adobe', value: SECRET, domain: '.adobe.com' }, blockedReasons: [] },
-        ],
-        headers: { Cookie: `adobe=${SECRET}`, Accept: '*/*' },
-      },
-    });
-    for (let turn = 0; turn < 40; turn += 1) await flush();
-    const seen = wire.delivered.slice(mark);
-    assert.ok(!JSON.stringify(seen).includes(SECRET));
-    const extra = seen.find((message) => message.method === 'Network.requestWillBeSentExtraInfo');
-    assert.deepEqual(extra?.params.headers, { Accept: '*/*' });
-  });
-
   test(`a request the guard has forgotten keeps no cookie headers on the ${label} route`, async (t) => {
     const wire = wired(t, route);
     wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });
@@ -685,71 +639,74 @@ for (const [label, route] of routes) {
     assert.deepEqual(paused.params.responseHeaders, [{ name: 'Content-Type', value: 'text/html' }]);
   });
 
-  test(`ordinary requests keep their cookie headers on the ${label} route`, async (t) => {
-    const wire = wired(t, route);
-    wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });
-    const session = await wire.attach('plain');
-    await wire.send('Network.enable', {}, session);
-    const mark = wire.delivered.length;
-    const emit = (method, params) => wire.emit({ method, sessionId: session, params });
-    emit('Network.requestWillBeSent', {
-      requestId: 'plain-1',
-      loaderId: 'loader',
-      documentURL: `${ORDINARY}/`,
-      frameId: 'plain',
-      type: 'XHR',
-      request: { url: `${ORDINARY}/api`, method: 'GET', headers: {} },
-    });
-    emit('Network.requestWillBeSentExtraInfo', {
-      requestId: 'plain-1',
-      associatedCookies: [
-        {
-          cookie: { name: 'plain', value: 'visible', domain: 'ordinary.example' },
-          blockedReasons: [],
-        },
-        {
-          cookie: { name: 'parent', value: SECRET, domain: '.adobelogin.com' },
-          blockedReasons: [],
-        },
-      ],
-      headers: { Cookie: 'plain=visible' },
-    });
-    emit('Network.responseReceivedExtraInfo', {
-      requestId: 'plain-1',
-      statusCode: 200,
-      headers: { 'set-cookie': 'plain=visible' },
-      headersText: 'HTTP/1.1 200 OK\nSet-Cookie: plain=visible\n',
-    });
-    emit('Audits.issueAdded', {
-      issue: {
-        code: 'CookieIssue',
-        details: {
-          cookieIssueDetails: {
-            rawCookieLine: 'plain=visible',
-            cookieWarningReasons: [],
-            cookieExclusionReasons: [],
-            operation: 'SetCookie',
-            cookieUrl: `${ORDINARY}/api`,
-            request: { requestId: 'plain-1' },
+  for (const api of [`${ORDINARY}/api`, `${LOGIN}/signin/v2`])
+    test(`requests to ${new URL(api).host} keep their cookie headers on the ${label} route`, async (t) => {
+      const wire = wired(t, route);
+      wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });
+      const session = await wire.attach('plain');
+      await wire.send('Network.enable', {}, session);
+      const mark = wire.delivered.length;
+      const emit = (method, params) => wire.emit({ method, sessionId: session, params });
+      emit('Network.requestWillBeSent', {
+        requestId: 'plain-1',
+        loaderId: 'loader',
+        documentURL: `${ORDINARY}/`,
+        frameId: 'plain',
+        type: 'XHR',
+        request: { url: api, method: 'GET', headers: {} },
+      });
+      emit('Network.requestWillBeSentExtraInfo', {
+        requestId: 'plain-1',
+        associatedCookies: [
+          {
+            cookie: { name: 'plain', value: 'visible', domain: 'ordinary.example' },
+            blockedReasons: [],
+          },
+          {
+            cookie: { name: 'parent', value: SECRET, domain: '.adobelogin.com' },
+            blockedReasons: [],
+          },
+        ],
+        headers: { Cookie: 'plain=visible' },
+      });
+      emit('Network.responseReceivedExtraInfo', {
+        requestId: 'plain-1',
+        statusCode: 200,
+        headers: { 'set-cookie': 'plain=visible' },
+        headersText: 'HTTP/1.1 200 OK\nSet-Cookie: plain=visible\n',
+      });
+      emit('Audits.issueAdded', {
+        issue: {
+          code: 'CookieIssue',
+          details: {
+            cookieIssueDetails: {
+              rawCookieLine: 'plain=visible',
+              cookieWarningReasons: [],
+              cookieExclusionReasons: [],
+              operation: 'SetCookie',
+              cookieUrl: api,
+              request: { requestId: 'plain-1' },
+            },
           },
         },
-      },
+      });
+      for (let turn = 0; turn < 40; turn += 1) await flush();
+      const seen = wire.delivered.slice(mark);
+      assert.ok(!JSON.stringify(seen).includes(SECRET));
+      const extra = seen.find((message) => message.method === 'Network.requestWillBeSentExtraInfo');
+      assert.deepEqual(extra?.params.headers, { Cookie: 'plain=visible' });
+      assert.deepEqual(
+        extra?.params.associatedCookies.map((entry) => entry.cookie.name),
+        ['plain']
+      );
+      const response = seen.find(
+        (message) => message.method === 'Network.responseReceivedExtraInfo'
+      );
+      assert.deepEqual(response?.params.headers, { 'set-cookie': 'plain=visible' });
+      assert.equal(response?.params.headersText, 'HTTP/1.1 200 OK\nSet-Cookie: plain=visible\n');
+      const issue = seen.find((message) => message.method === 'Audits.issueAdded');
+      assert.equal(issue?.params.issue.details.cookieIssueDetails.rawCookieLine, 'plain=visible');
     });
-    for (let turn = 0; turn < 40; turn += 1) await flush();
-    const seen = wire.delivered.slice(mark);
-    assert.ok(!JSON.stringify(seen).includes(SECRET));
-    const extra = seen.find((message) => message.method === 'Network.requestWillBeSentExtraInfo');
-    assert.deepEqual(extra?.params.headers, { Cookie: 'plain=visible' });
-    assert.deepEqual(
-      extra?.params.associatedCookies.map((entry) => entry.cookie.name),
-      ['plain']
-    );
-    const response = seen.find((message) => message.method === 'Network.responseReceivedExtraInfo');
-    assert.deepEqual(response?.params.headers, { 'set-cookie': 'plain=visible' });
-    assert.equal(response?.params.headersText, 'HTTP/1.1 200 OK\nSet-Cookie: plain=visible\n');
-    const issue = seen.find((message) => message.method === 'Audits.issueAdded');
-    assert.equal(issue?.params.issue.details.cookieIssueDetails.rawCookieLine, 'plain=visible');
-  });
 
   test(`a credential-origin page stays drivable on the ${label} route`, async (t) => {
     const wire = wired(t, route);
