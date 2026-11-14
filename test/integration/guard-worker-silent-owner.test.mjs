@@ -312,6 +312,31 @@ for (const [name, route] of routes) {
     assert.ok(!JSON.stringify(h.got.slice(mark)).includes(SECRET));
   });
 
+  test(`over ${name}, a second shown worker of the same chain is unlisted once a creator read failed`, async () => {
+    const { h, infos, session, kid } = await shownWorker(route);
+    infos.other = { type: 'worker', url: `${WORKER}?other`, title: 'Other', parentId: 'kid' };
+    h.raw.owners.set('other~1', 'other');
+    h.raw.emit({
+      method: 'Target.attachedToTarget',
+      sessionId: kid,
+      params: {
+        sessionId: 'other~1',
+        targetInfo: { targetId: 'other', attached: true, ...infos.other },
+        waitingForDebugger: false,
+      },
+    });
+    for (let n = 0; n < 200 && !h.shown('other~1'); n++) await tick();
+    assert.ok(h.shown('other~1'), 'the second worker is shown');
+    const listed = async () =>
+      ((await h.send('Target.getTargets')).result?.targetInfos ?? []).map((info) => info.targetId);
+    assert.ok((await listed()).includes('other'), 'and listed while its chain reads');
+    h.raw.failing.add('host');
+    await later(BOUND + 200);
+    const refused = await h.send('Runtime.evaluate', { expression: 'self.secret' }, session);
+    assert.ok(refused?.error, 'the first worker is refused when the read fails');
+    assert.ok(!(await listed()).includes('other'), 'the second worker is no longer listed');
+  });
+
   test(`over ${name}, a burst of worker events reads the creator chain at most once per bound`, async () => {
     const { h, session } = await shownWorker(route);
     await later(BOUND + 200);

@@ -861,6 +861,7 @@ class Guard {
     this.pausedSessions = new Set();
     this.workerCreators = new Map();
     this.creatorReads = new Map();
+    this.creatorFailed = new Map();
     this.workerVerdicts = new Map();
     this.workerStates = new Map();
     this.workerTargetsCut = new Set();
@@ -2693,7 +2694,13 @@ class Guard {
     if (!chain) return true;
     for (const id of chain) {
       const known = this.targets.get(id);
-      if (isHeld(id) || known?.guarded === true || this.is.url(known?.url)) return true;
+      if (
+        isHeld(id) ||
+        this.creatorFailed.has(id) ||
+        known?.guarded === true ||
+        this.is.url(known?.url)
+      )
+        return true;
     }
     return false;
   }
@@ -2748,34 +2755,47 @@ class Guard {
     const creator = this.workerCreators.get(worker);
     const chain = creator && this.workerChain(creator);
     if (!chain) return;
-    const now = Date.now();
-    const stale = [...chain].filter(
-      (id) => this.targets.has(id) && now - this.targets.get(id).at >= CREATOR_FRESH_MS
-    );
-    const reads = await Promise.all(stale.map((id) => this.creatorRead(id)));
-    if (reads.includes(null)) {
+    const { failed, moved } = await this.freshChain(chain);
+    if (failed) {
       this.workerVerdicts.set(worker, Promise.resolve(true));
       this.workerStates.set(worker, 'failed');
       return;
     }
-    for (const [index, moved] of reads.entries()) if (moved) this.rejudgeWorkers(stale[index]);
+    for (const id of moved) this.rejudgeWorkers(id);
+  }
+
+  async freshChain(chain) {
+    const now = Date.now();
+    const stale = [...chain].filter(
+      (id) =>
+        this.creatorFailed.has(id) ||
+        (this.targets.has(id) && now - this.targets.get(id).at >= CREATOR_FRESH_MS)
+    );
+    const reads = await Promise.all(stale.map((id) => this.creatorRead(id)));
+    return {
+      failed: reads.includes(null),
+      moved: stale.filter((_, index) => reads[index]),
+    };
   }
 
   creatorRead(targetId) {
-    if (!this.creatorReads.has(targetId)) {
-      const before = this.targets.get(targetId)?.info;
-      const read = this.openerInfo(targetId).then((info) => {
-        this.creatorReads.delete(targetId);
-        if (!info) {
-          if (this.targets.has(targetId)) this.targets.get(targetId).at = Date.now();
-          return null;
-        }
-        this.learn(info);
-        return !this.sameTarget(before, info);
-      });
-      this.creatorReads.set(targetId, read);
-    }
-    return this.creatorReads.get(targetId);
+    if (this.creatorReads.has(targetId)) return this.creatorReads.get(targetId);
+    const failed = this.creatorFailed.get(targetId);
+    if (failed !== undefined && Date.now() - failed < CREATOR_FRESH_MS)
+      return Promise.resolve(null);
+    const before = this.targets.get(targetId)?.info;
+    const read = this.openerInfo(targetId).then((info) => {
+      this.creatorReads.delete(targetId);
+      if (!info) {
+        this.creatorFailed.set(targetId, Date.now());
+        return null;
+      }
+      this.creatorFailed.delete(targetId);
+      this.learn(info);
+      return failed !== undefined || !this.sameTarget(before, info);
+    });
+    this.creatorReads.set(targetId, read);
+    return read;
   }
 
   createdUnset(info) {
@@ -5067,6 +5087,8 @@ class Guard {
     const info = params.targetInfo ?? {};
     this.workerCreators.set(params.sessionId, message);
     if (this.workerCutHonored(info, parent)) return true;
+    const chain = this.workerChain(message);
+    if (!chain || (await this.freshChain(chain)).failed) return true;
     if (
       !this.creatorSessionAlive(info, parent) &&
       this.priorWorkerPoisoned(params.sessionId, info.targetId)
