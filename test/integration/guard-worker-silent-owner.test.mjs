@@ -15,6 +15,7 @@ const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function chrome(infos) {
   const sent = [];
+  const failing = new Set();
   const owners = new Map();
   const slow = [];
   let sessions = 0;
@@ -24,6 +25,7 @@ function chrome(infos) {
     sent,
     owners,
     slow,
+    failing,
     onmessage: null,
     onclose: null,
     close() {},
@@ -48,7 +50,7 @@ function chrome(infos) {
       switch (command.method) {
         case 'Target.getTargetInfo': {
           const asked = command.params?.targetId ?? owner;
-          if (!infos[asked])
+          if (!infos[asked] || failing.has(asked))
             return reply({ error: { code: -32602, message: `no target ${asked}` } });
           return reply({ result: { targetInfo: info(asked) } });
         }
@@ -189,7 +191,7 @@ async function shownWorker(route) {
   assert.equal(enabled?.error, undefined, JSON.stringify(enabled?.error));
   const first = await h.send('Runtime.evaluate', { expression: '1' }, 'worker~90');
   assert.equal(first?.error, undefined, JSON.stringify(first?.error));
-  return { h, infos, session: 'worker~90' };
+  return { h, infos, session: 'worker~90', kid };
 }
 
 const routes = [
@@ -250,6 +252,64 @@ for (const [name, route] of routes) {
     const reads = h.reads('host');
     await h.send('Runtime.evaluate', { expression: 'self.secret' }, session);
     assert.ok(h.reads('host') - reads <= 1, 'a failed read is not repeated within the bound');
+  });
+
+  const reattach = async (h, infos, kid, sessionId) => {
+    h.raw.owners.set(sessionId, 'worker');
+    h.raw.emit({
+      method: 'Target.attachedToTarget',
+      sessionId: kid,
+      params: {
+        sessionId,
+        targetInfo: { targetId: 'worker', attached: true, ...infos.worker },
+        waitingForDebugger: false,
+      },
+    });
+    await later(300);
+    const read = await h.send('Runtime.evaluate', { expression: 'self.secret' }, sessionId);
+    return { shown: h.shown(sessionId), read, evaluated: h.evaluations(sessionId) };
+  };
+
+  test(`over ${name}, a worker cut for a failed creator read stays cut when it attaches again after its page moved onto seven`, async () => {
+    const { h, infos, session, kid } = await shownWorker(route);
+    h.raw.failing.add('host');
+    const mark = h.got.length;
+    await later(BOUND + 200);
+    const refused = await h.send('Runtime.evaluate', { expression: 'self.secret' }, session);
+    assert.ok(refused?.error, 'the command is refused while the read fails');
+    h.raw.failing.delete('host');
+    infos.host = { ...infos.host, url: SEVEN_PAGE };
+    const again = await reattach(h, infos, kid, 'worker~91');
+    assert.ok(!again.shown, 'the second attachment is not published');
+    assert.ok(again.read?.error, 'its command is refused');
+    assert.equal(again.evaluated, 0, 'no Runtime.evaluate reaches the worker');
+    assert.ok(
+      !JSON.stringify(h.got.slice(mark)).includes(SECRET),
+      'nothing of the worker reaches the client'
+    );
+  });
+
+  test(`over ${name}, a worker whose creator read keeps failing is refused on every attach without a read storm`, async () => {
+    const { h, infos, session, kid } = await shownWorker(route);
+    h.raw.failing.add('host');
+    const mark = h.got.length;
+    await later(BOUND + 200);
+    const before = h.reads('host');
+    const refused = await h.send('Runtime.evaluate', { expression: 'self.secret' }, session);
+    assert.ok(refused?.error, 'the command is refused while the read fails');
+    const start = Date.now();
+    for (let i = 0; i < 4; i++) {
+      const again = await reattach(h, infos, kid, `worker~${92 + i}`);
+      assert.ok(!again.shown, `attachment ${i} is not published`);
+      assert.ok(again.read?.error, `attachment ${i} refuses its command`);
+      assert.equal(again.evaluated, 0, `attachment ${i} gets no Runtime.evaluate`);
+    }
+    const windows = Math.ceil((Date.now() - start) / BOUND) + 1;
+    assert.ok(
+      h.reads('host') - before <= windows,
+      `at most one failing read per bound, got ${h.reads('host') - before}`
+    );
+    assert.ok(!JSON.stringify(h.got.slice(mark)).includes(SECRET));
   });
 
   test(`over ${name}, a burst of worker events reads the creator chain at most once per bound`, async () => {
