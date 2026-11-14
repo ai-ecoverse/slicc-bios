@@ -31,6 +31,7 @@ function world(t, transport) {
   });
   const state = {
     ownerUrl: 'about:blank',
+    ownerOpener: true,
     ownerFrame: frameOf('owner-frame', 'about:blank'),
     kidParent: 'steady',
   };
@@ -38,7 +39,12 @@ function world(t, transport) {
     for (const listener of listeners) listener(message);
   };
   const infos = () => ({
-    owner: { targetId: 'owner', type: 'page', url: state.ownerUrl },
+    owner: {
+      targetId: 'owner',
+      type: 'page',
+      url: state.ownerUrl,
+      ...(state.ownerOpener ? { openerId: 'steady', canAccessOpener: true } : {}),
+    },
     steady: { targetId: 'steady', type: 'page', url: ordinary },
     kid: { targetId: 'kid', type: 'iframe', url: CROSS, parentId: state.kidParent },
   });
@@ -236,5 +242,21 @@ for (const transport of ['direct', 'link', 'extension']) {
     );
     assert.equal(read.error, undefined);
     assert.equal(read.result?.result?.value ?? read.result?.value, SECRET);
+  });
+}
+
+for (const transport of ['direct', 'link']) {
+  test(`over ${transport}, an iframe of a createTarget page without an opener is judged like the page: admitted`, {
+    timeout: 60000,
+  }, async (t) => {
+    const w = world(t, transport);
+    w.state.ownerOpener = false;
+    w.state.kidParent = 'owner';
+    const created = w.send('Target.createTarget', { url: ordinary });
+    await w.navigating;
+    const attached = await w.send('Target.attachToTarget', { targetId: 'kid', flatten: true });
+    assert.equal(attached.error, undefined, JSON.stringify(attached.error));
+    w.commit();
+    await created;
   });
 }
