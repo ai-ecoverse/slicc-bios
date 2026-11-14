@@ -21,6 +21,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26"
       - name: Compare live vault-preview to the root pin
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -32,18 +35,19 @@ jobs:
             echo "::error::vault-preview reported a non-semver version"
             exit 1
           fi
-          if [ "$LIVE" = "$PIN" ]; then
-            echo "vault-preview $LIVE matches pin $PIN"
-            exit 0
+          if [ "$LIVE" != "$PIN" ]; then
+            TITLE="vault drift: live $LIVE, pinned $PIN"
+            echo "::error::$TITLE"
+            EXISTING=$(gh issue list --state open --search "in:title \"vault drift:\"" --json number,title --jq '[.[] | select(.title | startswith("vault drift:"))] | .[0].number // empty')
+            BODY=$(printf 'Live https://vault-preview.sliccy.ai/config.json reports `%s` while the root `@ai-ecoverse/slicc-vault` pin is `%s`.\n\nBump the root pin (and lockfile) to `%s`, or investigate an unexpected preview deploy.\n' "$LIVE" "$PIN" "$LIVE")
+            if [ -n "$EXISTING" ]; then
+              gh issue edit "$EXISTING" --title "$TITLE" --body "$BODY"
+              gh issue comment "$EXISTING" --body "Still drifting: live \`$LIVE\`, pinned \`$PIN\`."
+            else
+              gh issue create --title "$TITLE" --body "$BODY"
+            fi
+            exit 1
           fi
-          TITLE="vault drift: live $LIVE, pinned $PIN"
-          echo "::error::$TITLE"
-          EXISTING=$(gh issue list --state open --search "in:title \"vault drift:\"" --json number,title --jq '[.[] | select(.title | startswith("vault drift:"))] | .[0].number // empty')
-          BODY=$(printf 'Live https://vault-preview.sliccy.ai/config.json reports `%s` while the root `@ai-ecoverse/slicc-vault` pin is `%s`.\n\nBump the root pin (and lockfile) to `%s`, or investigate an unexpected preview deploy.\n' "$LIVE" "$PIN" "$LIVE")
-          if [ -n "$EXISTING" ]; then
-            gh issue edit "$EXISTING" --title "$TITLE" --body "$BODY"
-            gh issue comment "$EXISTING" --body "Still drifting: live \`$LIVE\`, pinned \`$PIN\`."
-          else
-            gh issue create --title "$TITLE" --body "$BODY"
-          fi
-          exit 1
+          echo "vault-preview $LIVE matches pin $PIN"
+          npm install --ignore-scripts --no-audit --no-fund "@ai-ecoverse/slicc-vault@${PIN}"
+          node test/integration/vault-drift-check.mjs
