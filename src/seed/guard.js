@@ -192,6 +192,7 @@ const TAB_COMMANDS = new Set([
 ]);
 const TAB_FILTER = [{ type: 'tab' }];
 const PAGE_FILTER = [{ type: 'page' }];
+const FRAME_FILTER = [{ type: 'page' }, { type: 'iframe' }];
 const WORKER_FAMILY = ['worker', 'shared_worker', 'service_worker'];
 const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
 
@@ -1414,8 +1415,15 @@ class Guard {
       (this.blocked.has(entry.parent) || this.gone.has(entry.parent))
     )
       return true;
-    for (const id of this.frameLineage(entry.targetId)) if (await this.current(id)) return true;
     return this.current(entry.targetId);
+  }
+
+  async freshFrames(targetId, limit, chain = new Set([targetId])) {
+    for (const id of this.frameParents(targetId)) {
+      if (id === TAINTED || chain.has(id) || chain.size > 64) return true;
+      if (await this.current(id, limit, undefined, new Set(chain).add(id))) return true;
+    }
+    return false;
   }
 
   classifyTarget(targetId, found, opener) {
@@ -2786,6 +2794,7 @@ class Guard {
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
       return true;
     this.learn(info);
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit, rest[1]))) return true;
     if (this.createdPending(info, targetId)) {
       ({ raw: info } = await this.createdTargetInfo(targetId));
       if (!info || info.targetId !== targetId || this.createdUnset(info)) return true;
@@ -3399,6 +3408,11 @@ class Guard {
     return { answer, raw };
   }
 
+  async placedTarget(targetId, info) {
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, ANSWER_MS))) return true;
+    return this.target(targetId);
+  }
+
   async inspect(sessionId, targetId, parent, recoverable = false) {
     if (this.privateSessions.has(sessionId) || this.retiredTargets.has(targetId)) return false;
     const { answer, raw } = await this.createdTargetInfo(targetId);
@@ -3416,7 +3430,7 @@ class Guard {
     )
       return this.uncertainProof(targetId);
     this.learn(info);
-    const guarded = await this.target(targetId);
+    const guarded = await this.placedTarget(targetId, info);
     const proof = await this.attachmentProof(sessionId, targetId, raw, guarded, recoverable);
     if (guarded && !proof) {
       if (await this.retainedBlank(sessionId, raw)) return true;
@@ -7009,8 +7023,13 @@ function narrowed(message, device) {
   )
     return { ...message, params: { ...params, filter: WORKERLESS_DEFAULT } };
   if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params, device)) {
-    const tabs = message.sessionId === undefined && admits(params.filter, 'tab');
-    return { ...message, params: { ...params, filter: tabs ? TAB_FILTER : PAGE_FILTER } };
+    const browser = message.sessionId === undefined;
+    const filter = browser
+      ? admits(params.filter, 'tab')
+        ? TAB_FILTER
+        : PAGE_FILTER
+      : FRAME_FILTER;
+    return { ...message, params: { ...params, filter } };
   }
   return message;
 }
