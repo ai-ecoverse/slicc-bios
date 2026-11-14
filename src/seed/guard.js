@@ -273,6 +273,46 @@ const COOKIES = new Set([
   'Storage.getCookies',
   'Page.getCookies',
 ]);
+const CREDENTIALS = catalog.credentialOrigins;
+export const CREDENTIAL = CREDENTIALS?.refusal ?? PROTECTED;
+const CREDENTIAL_DOMAINS = [
+  'Storage.',
+  'IndexedDB.',
+  'CacheStorage.',
+  'DOMStorage.',
+  'FileSystem.',
+];
+const COOKIE_WRITES = new Set([
+  'Network.setCookie',
+  'Network.setCookies',
+  'Network.deleteCookies',
+  'Page.deleteCookie',
+]);
+const AFFECTED = 'Storage.getAffectedUrlsForThirdPartyCookieMetadata';
+const SITES = new Set(['topLevelSite', 'ownerSite', 'partitionKey']);
+const COOKIE_HEADERS = new Set(['cookie', 'set-cookie', 'cookie2', 'set-cookie2']);
+const HEADER_MAPS = new Set(['headers', 'requestHeaders', 'responseHeaders']);
+const HEADER_TEXTS = new Set(['headersText', 'requestHeadersText']);
+const COOKIE_LISTS = new Set(['associatedCookies', 'blockedCookies', 'exemptedCookies']);
+const COOKIE_DOMAIN = /;\s*domain\s*=\s*([^;]*)/i;
+const COOKIE_LINE = /^(?:set-)?cookie2?\s*:/i;
+const credentialDomain = (method) => CREDENTIAL_DOMAINS.some((domain) => method.startsWith(domain));
+const cookieHeader = (name) => typeof name === 'string' && COOKIE_HEADERS.has(name.toLowerCase());
+const withoutCookies = (headers) => {
+  if (Array.isArray(headers)) return headers.filter((entry) => !cookieHeader(entry?.name));
+  if (!headers || typeof headers !== 'object') return headers;
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !cookieHeader(name)));
+};
+const cookieless = (text) => {
+  let dropping = false;
+  return text
+    .split('\n')
+    .filter((line) => {
+      dropping = COOKIE_LINE.test(line.trimStart()) || (dropping && /^[ \t]/.test(line));
+      return !dropping;
+    })
+    .join('\n');
+};
 const ORIGINS = new Set([
   'origin',
   'securityOrigin',
@@ -792,6 +832,53 @@ export function protection(own, { cut = false } = {}) {
   return { ...matcher, url: web, target };
 }
 
+const registrable = (host) => host.split('.').slice(-2).join('.');
+
+export function credentials(origins = CREDENTIALS?.origins ?? []) {
+  const hosts = origins
+    .filter((origin) => typeof origin === 'string' && URL.canParse(origin))
+    .map((origin) => new URL(origin).hostname.toLowerCase().replace(/\.$/, ''));
+  const matcher = protectedOrigins(
+    {
+      ...catalog.protectedOrigins,
+      domains: [],
+      hosts,
+      anySchemes: [],
+      protectedSchemes: [],
+      unparseable: 'open',
+    },
+    []
+  );
+  const hostOf = (text) =>
+    typeof text === 'string' && URL.canParse(text)
+      ? new URL(text).hostname.toLowerCase().replace(/\.$/, '')
+      : '';
+  const url = (text) =>
+    typeof text === 'string' && matcher.url(text.replace(/^ws(s?):/i, 'http$1:'));
+  const named = (text) => url(text) || (typeof text === 'string' && matcher.unparseable(text));
+  const site = (text) => {
+    if (typeof text !== 'string' || text === '' || text === 'null') return false;
+    const host = hostOf(text);
+    return host === '' || matcher.cookieDomain(host);
+  };
+  const storageKey = (key) => {
+    const [first, ...rest] = key.split('^');
+    return named(first) || rest.some((part) => part.startsWith('0') && site(part.slice(1)));
+  };
+  const partition = (key) =>
+    typeof key === 'string' ? site(key) : site(key?.topLevelSite ?? 'null');
+  const cookie = (item) =>
+    typeof item?.domain !== 'string' ||
+    matcher.cookieDomain(item.domain) ||
+    url(item.url) ||
+    partition(item.partitionKey);
+  const nearby = (text) => {
+    const host = hostOf(text);
+    return host !== '' && hosts.some((entry) => registrable(entry) === registrable(host));
+  };
+  return { url, named, site, storageKey, cookieDomain: matcher.cookieDomain, cookie, nearby };
+}
+
 class Guard {
   constructor(connection, own, tabs, route, privateFrames, caller) {
     this.device = caller?.kind === 'device';
@@ -808,6 +895,8 @@ class Guard {
     this.is = protection(own, { cut: this.route === 'link' });
     this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
     this.redact = redacting(this.is);
+    this.credential = credentials();
+    this.cookieSites = new Map();
     this.redirected = new Set();
     this.continued = new Set();
     this.delivered = new Set();
@@ -1059,6 +1148,8 @@ class Guard {
       message = this.metadataEvent(message, proof);
     }
     message = this.workerless(message);
+    if (message === null) return;
+    message = this.uncookied(message);
     if (message === null) return;
     if (!this.device) {
       message = this.workerGate(message);
@@ -5305,6 +5396,7 @@ class Guard {
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
     if (await this.swallowed(message)) return;
+    if (this.credentialStored(message)) return;
     if (this.stored(message)) return;
     if (sessionId && this.naming({ ...message, method })) return;
     if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
@@ -5682,11 +5774,19 @@ class Guard {
       this.contexts.add(result.browserContextId);
     }
     if (typeof result?.stream === 'string') this.streams.add(result.stream);
+    this.deliver(this.withVersionRoute(this.filtered(message, method, result), method, result));
+  }
+
+  filtered(message, method, result) {
     if (COOKIES.has(method) && Array.isArray(result?.cookies)) {
       const cookies = result.cookies.filter((item) => !this.cookie(item));
-      return this.deliver({ ...message, result: { ...result, cookies } });
+      return { ...message, result: { ...result, cookies } };
     }
-    this.deliver(this.withVersionRoute(message, method, result));
+    if (AFFECTED === method && Array.isArray(result?.matchedUrls)) {
+      const matchedUrls = result.matchedUrls.filter((url) => !this.credential.named(url));
+      return { ...message, result: { ...result, matchedUrls } };
+    }
+    return message;
   }
 
   emulatedAutoAttach(message, was) {
@@ -5717,6 +5817,7 @@ class Guard {
 
   cookie(item) {
     return (
+      this.credential.cookie(item) ||
       (typeof item?.domain === 'string' && this.is.cookieDomain(item.domain)) ||
       this.is.url(item?.url) ||
       this.is.url(item?.partitionKey?.topLevelSite)
@@ -5737,6 +5838,102 @@ class Guard {
     if (key === 'cacheId') return is.storageKey(value.split('|')[0]);
     if (key === 'domain') return is.cookieDomain(value);
     return false;
+  }
+
+  credentialKeyed(key, value) {
+    const { credential } = this;
+    if (typeof value !== 'string') return false;
+    if (SITES.has(key)) return credential.site(value);
+    if (ORIGINS.has(key)) return credential.named(value);
+    if (key === 'storageKey') return credential.storageKey(value);
+    if (key === 'cacheId') return credential.storageKey(value.split('|')[0]);
+    if (key === 'domain') return credential.cookieDomain(value);
+    return false;
+  }
+
+  credentialValued(params, depth = 0) {
+    if (!params || typeof params !== 'object') return false;
+    if (depth > 6) return true;
+    return Object.entries(params).some(
+      ([key, value]) =>
+        !FREE.has(key) &&
+        (this.credentialKeyed(key, value) ||
+          (typeof value === 'object' && this.credentialValued(value, depth + 1)))
+    );
+  }
+
+  credentialed(method, params) {
+    return (credentialDomain(method) || COOKIE_WRITES.has(method)) && this.credentialValued(params);
+  }
+
+  credentialStored({ method = '', params }) {
+    return credentialDomain(method) && this.credentialValued(params);
+  }
+
+  noteCookieSite({ id, method, params }) {
+    if (id !== undefined || !/^(?:Network|Fetch)\./.test(method ?? '') || !params) return;
+    const urls = [
+      params.request?.url,
+      params.response?.url,
+      params.redirectResponse?.url,
+      params.url,
+    ];
+    if (!urls.some((url) => typeof url === 'string')) return;
+    const near = urls.some((url) => this.credential.nearby(url));
+    for (const key of [params.requestId, params.networkId]) {
+      if (key === undefined) continue;
+      this.cookieSites.set(key, near || this.cookieSites.get(key) === true);
+      if (this.cookieSites.size > REMEMBERED)
+        this.cookieSites.delete(this.cookieSites.keys().next().value);
+    }
+  }
+
+  cookiesOut(value, near) {
+    if (Array.isArray(value)) return value.map((item) => this.cookiesOut(item, near));
+    if (!value || typeof value !== 'object') return value;
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (near && HEADER_MAPS.has(key)) out[key] = withoutCookies(item);
+      else if (near && HEADER_TEXTS.has(key) && typeof item === 'string')
+        out[key] = cookieless(item);
+      else if (COOKIE_LISTS.has(key) && Array.isArray(item))
+        out[key] = near ? [] : item.filter((entry) => !this.credentialCookie(entry));
+      else out[key] = this.cookiesOut(item, near);
+    }
+    return out;
+  }
+
+  credentialCookie(entry) {
+    return entry?.cookie !== undefined && this.credential.cookie(entry.cookie);
+  }
+
+  uncookied(message) {
+    const { method, params } = message;
+    if (message.id !== undefined || !params || typeof params !== 'object') return message;
+    if (method === 'Audits.issueAdded') {
+      const details = params.issue?.details?.cookieIssueDetails;
+      return details && typeof details === 'object' && this.cookieIssue(details) ? null : message;
+    }
+    if (!/^(?:Network|Fetch)\./.test(method ?? '')) return message;
+    const keys = [params.requestId, params.networkId].filter((key) => key !== undefined);
+    const near = !keys.length || keys.some((key) => this.cookieSites.get(key) !== false);
+    return { ...message, params: this.cookiesOut(params, near) };
+  }
+
+  cookieIssue(details) {
+    const url = (text) =>
+      typeof text === 'string' && (this.is.url(text) || this.credential.named(text));
+    const domain = (text) =>
+      typeof text === 'string' &&
+      (this.is.cookieDomain(text) || this.credential.cookieDomain(text));
+    const { cookie, cookieUrl, rawCookieLine, request } = details;
+    if (url(cookieUrl) || url(request?.url) || domain(cookie?.domain)) return true;
+    if (request?.requestId !== undefined && this.cookieSites.get(request.requestId) === true)
+      return true;
+    if (typeof rawCookieLine !== 'string') return false;
+    const named = COOKIE_DOMAIN.exec(rawCookieLine)?.[1]?.trim();
+    if (named && domain(named)) return true;
+    return !named && [cookieUrl, request?.url].every((text) => typeof text !== 'string');
   }
 
   valued(params, depth = 0, readOnly = false) {
@@ -5793,6 +5990,11 @@ class Guard {
     }
     const context = this.targets.get(this.sessions.get(sessionId)?.targetId)?.context;
     return params.browserContextId === undefined && this.contexts.has(context);
+  }
+
+  plainRefusal(method, params, sessionId) {
+    if (this.plainly(method, params, sessionId)) return PROTECTED;
+    return this.credentialed(method, params) ? CREDENTIAL : null;
   }
 
   plainly(method, params, sessionId) {
@@ -6131,7 +6333,8 @@ class Guard {
     if (SEARCHES[method] && (await this.searched(method, params, sessionId))) return PROTECTED;
     const world = await this.selecting(method, params, sessionId);
     if (world) return world;
-    if (this.plainly(method, params, sessionId)) return PROTECTED;
+    const plain = this.plainRefusal(method, params, sessionId);
+    if (plain) return plain;
     const unguarded = await this.guarding(method, sessionId);
     if (unguarded) return unguarded;
     if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {
@@ -6633,6 +6836,7 @@ class Guard {
   received(text) {
     const message = parse(text);
     this.noteListedEvent(message);
+    this.noteCookieSite(message);
     this.stamp(message);
     this.rememberFetchAnswer(message);
     this.loadingEvent(message);
