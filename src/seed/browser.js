@@ -67,6 +67,11 @@ export const ERRORS = new Set([
   'failed',
 ]);
 const OPENABLE = /^(https?:\/\/|about:blank$)/i;
+export const INTENT_CAP = 120;
+const LINE_BREAKS = /[\n\r\v\f\u0085\u2028\u2029]/u;
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Variation_Selector}]/gu;
+const TAINT = 'slicc-taint:';
+const TAGGING = new Set(['report', 'enforce']);
 
 function parse(text) {
   try {
@@ -127,6 +132,35 @@ export function agentOf(value) {
   return null;
 }
 
+function visible(line) {
+  return line
+    .replace(HIDDEN, (char) => (char === '\t' ? ' ' : ''))
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+export function intentOf(value) {
+  if (typeof value !== 'string') return undefined;
+  const line = value.split(LINE_BREAKS).map(visible).find(Boolean);
+  if (!line) return undefined;
+  const chars = [...line];
+  return chars.length > INTENT_CAP ? chars.slice(0, INTENT_CAP).join('').trimEnd() : line;
+}
+
+function tagsOf(stamp) {
+  const { tag, tags } = stamp;
+  if (tags === undefined) return tag === undefined ? [] : [tag];
+  return Array.isArray(tags) && (tag === undefined || tags[0] === tag) ? tags : null;
+}
+
+export function trusted(caller) {
+  if (caller?.kind !== 'kernel') return false;
+  const stamp = caller.stamp;
+  if (!stamp || typeof stamp !== 'object' || !TAGGING.has(stamp.users)) return false;
+  const tags = tagsOf(stamp);
+  return Boolean(tags) && tags.every((tag) => typeof tag === 'string' && !tag.startsWith(TAINT));
+}
+
 export function sanitize(params) {
   const kind = KINDS.has(params?.kind) ? params.kind : null;
   if (!kind) return null;
@@ -138,6 +172,8 @@ export function sanitize(params) {
   if ((kind === 'fill' || kind === 'type') && Number.isSafeInteger(params.length)) {
     action.length = Math.max(0, params.length);
   }
+  const intent = intentOf(params.intent);
+  if (intent) action.intent = intent;
   return action;
 }
 
@@ -587,6 +623,7 @@ class Browser {
   begin(link, params) {
     const sanitized = sanitize(params);
     if (!sanitized) return;
+    if (!link.trusted) delete sanitized.intent;
     const agentId = agentOf(params.agent);
     if (agentId) link.agent = agentId;
     const action = {
@@ -1007,7 +1044,7 @@ function annotate(browser, link, message) {
   if (params.phase === 'end') browser.finish(link, params);
 }
 
-function observeConnection(browser, connection) {
+function observeConnection(browser, connection, { caller } = {}) {
   const sessions = new Map();
   const touched = new Set();
   const calls = new Map();
@@ -1017,6 +1054,7 @@ function observeConnection(browser, connection) {
   const link = {
     agent: null,
     action: null,
+    trusted: trusted(caller),
     tab(id) {
       if (typeof id !== 'string') return null;
       if (touched.has(id) || browser.owns(id)) return id;
@@ -1156,7 +1194,7 @@ export function createBrowser(network, options = {}) {
   };
   return {
     port,
-    observe: (connection) => observeConnection(browser, connection),
+    observe: (connection, options) => observeConnection(browser, connection, options),
     stopping: (agent) => withStop(agent, browser),
   };
 }
