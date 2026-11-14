@@ -8,6 +8,9 @@ export const DISMISSED = 'the request to open the page was dismissed';
 export const LATE = 'nobody answered the request to open the page within 60 s';
 export const WAIT_MS = 60_000;
 export const REST_MS = 10_000;
+export const APPROVAL_MS = 300_000;
+export const ANSWER_MS = APPROVAL_MS + WAIT_MS;
+export const SLOW_MS = 1000;
 export const BUSY = 'another request is waiting for you';
 export const CAPTURE_DISMISSED = 'the request to capture the screen was dismissed';
 export const CAPTURE_LATE = 'nobody answered the request to capture the screen within 60 s';
@@ -305,6 +308,7 @@ export function personal(hook, guard, extras) {
 export const STOPPED = 'stopped in seven';
 export const CAPTURE_DENIED = 'the request to capture was denied';
 export const UNANSWERED = "the agent couldn't answer the request to capture";
+export const DECIDING = 'waiting for the agent to answer the request to capture';
 export const blocked = (what) => `${what} permission is blocked for this site`;
 export const CAMERA_REFUSED = "seven doesn't answer this camera request";
 export const CAMERA_DISMISSED = 'the request to use the camera was dismissed';
@@ -495,22 +499,51 @@ export function captures({
   permission = permissionOf,
   label = labelOf,
   where = () => undefined,
+  timers = globalThis,
+  wait = ANSWER_MS,
+  slow = SLOW_MS,
 }) {
   const open = new Set();
-  const asked = async ({ kind, options, stamp, signal }) => {
+  const asked = async (request) => {
+    const { kind, options, stamp, signal } = request;
     const owner = agent();
     if (typeof owner?.approveCapture !== 'function') return null;
     const device = await label(deviceOf(kind, options));
     const place = where(stamp);
-    try {
-      return await owner.approveCapture(
+    if (signal?.aborted) throw signal.reason;
+    const local = new AbortController();
+    const ending = signal ? AbortSignal.any([signal, local.signal]) : local.signal;
+    let over = false;
+    let note;
+    let late;
+    let withdraw = () => {};
+    const limit = new Promise((_, reject) => {
+      note = timers.setTimeout(() => request.progress?.(DECIDING), slow);
+      late = timers.setTimeout(() => {
+        over = true;
+        reject(refused(UNANSWERED));
+        local.abort(refused(UNANSWERED));
+      }, wait);
+      withdraw = () => reject(signal.reason);
+      signal?.addEventListener('abort', withdraw, { once: true });
+    });
+    const answer = (async () =>
+      owner.approveCapture(
         { kind, options, stamp, ...(device ? { label: device } : {}) },
-        { signal, ...(place ? { where: place } : {}) }
-      );
+        { signal: ending, ...(place ? { where: place } : {}) }
+      ))();
+    try {
+      const given = await Promise.race([answer, limit]);
+      if (over) throw refused(UNANSWERED);
+      return given;
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
-      if (error?.code !== 'EAGAIN') throw refused(UNANSWERED);
+      if (over || error?.code !== 'EAGAIN') throw refused(UNANSWERED);
       return null;
+    } finally {
+      timers.clearTimeout(note);
+      timers.clearTimeout(late);
+      signal?.removeEventListener('abort', withdraw);
     }
   };
   const needsClick = async ({ stamp }, capture) => {

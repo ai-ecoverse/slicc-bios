@@ -1659,20 +1659,64 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
         .find((item) => item.kind === 'click')
     );
   };
+  const approvalDialog = (id) => {
+    const dialog = window.deep(document, 'slicc-approvals')?.shadowRoot?.querySelector('dialog');
+    return {
+      open: !!dialog?.open,
+      approval: dialog?.dataset.approval ?? null,
+      gone: dialog?.dataset.gone ?? null,
+      listed: document
+        .querySelector('slicc-app')
+        .model.approvals.list()
+        .some((item) => item.id === id),
+    };
+  };
+  const dialogUntil = async (id, what, ready) => {
+    try {
+      await page.until(
+        (find, id, ready) =>
+          new Function(`return (${ready})`)()(new Function(`return (${find})`)()(id), id),
+        approvalDialog.toString(),
+        id,
+        ready.toString()
+      );
+    } catch (error) {
+      const seen = await page.evaluate(
+        (find, id) => new Function(`return (${find})`)()(id),
+        approvalDialog.toString(),
+        id
+      );
+      assert.fail(
+        `waited for ${what} for ${id}, and saw ${JSON.stringify(seen)}: ${error.message}`
+      );
+    }
+  };
   const cancelClick = async (id) => {
+    await dialogUntil(
+      id,
+      'the approvals dialog to open on the click',
+      (seen, id) => seen.open && seen.approval === id && !seen.gone
+    );
     await page.evaluate(
       (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
       id
     );
-    const since = Date.now();
-    await page.until((since) => {
-      const dialog = window.deep(document, 'slicc-approvals')?.shadowRoot?.querySelector('dialog');
-      if (dialog?.open) {
-        dialog.querySelector('[data-action="close"]')?.click();
-        return false;
-      }
-      return Date.now() - since > 1500;
-    }, since);
+    await dialogUntil(
+      id,
+      'the click to leave the list and its dialog to say it was answered elsewhere',
+      (seen, id) => !seen.listed && seen.open && seen.approval === id && !!seen.gone
+    );
+    await page.evaluate(() =>
+      window
+        .deep(document, 'slicc-approvals')
+        .shadowRoot.querySelector('dialog [data-action="close"]')
+        .click()
+    );
+    await dialogUntil(
+      id,
+      'the dialog to close',
+      (seen, id) => !seen.listed && !(seen.open && seen.approval === id)
+    );
   };
   const asking = agentRun(
     `printf '{"kind":"open.url","url":"%s"}\\n' https://example.test/agent | cat > /dev/embedder; echo "agent open $?"`
