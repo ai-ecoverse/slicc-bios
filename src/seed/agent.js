@@ -184,6 +184,46 @@ export async function deliverWebhook(owner, name, delivery, { load = loadChat } 
   }
 }
 
+export const APPROVAL_RUN_NOTICE_MS = 10_000;
+
+export async function deliverApprovalRunNotice(
+  owner,
+  notice,
+  { load = loadChat, timeoutMs = APPROVAL_RUN_NOTICE_MS } = {}
+) {
+  if (
+    globalThis.sliccKernelDebug === true &&
+    typeof globalThis.sliccApprovalRunNotice === 'function'
+  )
+    return globalThis.sliccApprovalRunNotice(notice);
+  if (!owner) return { delivered: false, reason: 'the agent is not running' };
+
+  let timer = null;
+  const work = (async () => {
+    const { connectAgent } = await load();
+    const connection = await connectAgent(await owner.port());
+    try {
+      if (typeof connection.approvalRunNotice !== 'function')
+        return { delivered: false, reason: 'this slicc-agent has no approvalRunNotice' };
+      return await connection.approvalRunNotice(notice);
+    } finally {
+      connection.close();
+    }
+  })();
+
+  if (!(timeoutMs > 0)) return work;
+  try {
+    return await Promise.race([
+      work,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ delivered: false, reason: 'timed out' }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
 export function streamSink(stream) {
   let writes = Promise.resolve();
   return {

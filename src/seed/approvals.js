@@ -1,3 +1,35 @@
+import {
+  DEFAULT_MAX_AGE,
+  endNotice,
+  ensureDir,
+  kernelGate,
+  messageOf,
+  quietUndelivered,
+  RUN_REASONS,
+  runnable,
+  runPaths,
+  runTag,
+  signalGroup,
+  startNotice,
+  validPgid,
+} from './approvals-run.js';
+
+export {
+  DEFAULT_MAX_AGE,
+  endNotice,
+  kernelGate,
+  quietUndelivered,
+  RUN_REASONS,
+  runnable,
+  runPaths,
+  runsHome,
+  runTag,
+  SUDO_RUN_PROTOCOL,
+  startNotice,
+  tooOld,
+  validPgid,
+} from './approvals-run.js';
+
 const CHANNEL = 'slicc-approvals';
 const SAFE = /^[\w@%+=:,./-]+$/;
 
@@ -20,9 +52,16 @@ export function requester({ user, tag }) {
   return { kind: 'user', name: user };
 }
 
+export const BIOS_APPROVAL = 'bios:';
+
+export function biosApprovalId(id) {
+  const raw = String(id);
+  return raw.startsWith(BIOS_APPROVAL) ? raw : `${BIOS_APPROVAL}${raw}`;
+}
+
 export function approval(req) {
   return {
-    id: String(req.id),
+    id: biosApprovalId(req.id),
     kind: 'sudo',
     requester: requester(req),
     command: req.validate
@@ -52,6 +91,42 @@ export function trayApproval({ op, stamp, device }, now = Date.now()) {
   };
 }
 
+export function replayOf(req) {
+  if (!req || typeof req !== 'object') return null;
+  const {
+    id,
+    user,
+    uid,
+    target,
+    argv,
+    path,
+    cwd,
+    stdin,
+    rootOnly,
+    userWritable,
+    tag,
+    tags,
+    validate,
+  } = req;
+  if (typeof id !== 'string' && typeof id !== 'number') return null;
+  if (typeof user !== 'string' || !Array.isArray(argv)) return null;
+  return {
+    id: String(id),
+    user,
+    ...(uid === undefined ? {} : { uid }),
+    ...(target === undefined ? {} : { target }),
+    argv: [...argv],
+    ...(path === undefined ? {} : { path }),
+    ...(cwd === undefined ? {} : { cwd }),
+    ...(stdin === undefined ? {} : { stdin }),
+    ...(rootOnly === undefined ? {} : { rootOnly }),
+    ...(userWritable === undefined ? {} : { userWritable }),
+    ...(tag === undefined ? {} : { tag }),
+    ...(tags === undefined ? {} : { tags: [...tags] }),
+    ...(validate === undefined ? {} : { validate }),
+  };
+}
+
 function emitter() {
   const listeners = new Map();
   return {
@@ -66,15 +141,367 @@ function emitter() {
   };
 }
 
-export function createApprovals({ channel = new BroadcastChannel(CHANNEL) } = {}) {
+function settledRecord(item, decision, reason, at) {
+  if (reason === 'expired')
+    return { approval: item, state: 'unanswered', reason: 'timeout', decidedAt: at };
+  if (reason === 'withdrawn')
+    return { approval: item, state: 'withdrawn', reason: 'withdrawn', decidedAt: at };
+  if (decision === 'once' || decision === 'always')
+    return {
+      approval: item,
+      state: 'approved',
+      decidedAt: at,
+      answer: decision,
+      decidedBy: 'you',
+    };
+  return { approval: item, state: 'rejected', decidedAt: at, decidedBy: 'you' };
+}
+
+function takeEndTell(held, id) {
+  const prior = held.get(id) ?? {};
+  if (prior.endTold) return false;
+  held.set(id, { ...prior, endTold: true });
+  return true;
+}
+
+function watchEnded({
+  started,
+  id,
+  record,
+  running,
+  paths,
+  replay,
+  remember,
+  listed,
+  held,
+  runs,
+  tell,
+  now,
+}) {
+  void Promise.resolve(started.ended)
+    .then((exit) => {
+      const current = listed().find((item) => item.approval.id === id);
+      if (current?.run?.state === 'stopped') return;
+      if (!takeEndTell(held, id)) return;
+      const prior = current?.run ?? running;
+      const base = current ?? record;
+      const status = exit?.status === undefined ? {} : { status: exit.status };
+      const signal = exit?.signal ? { signal: exit.signal } : {};
+      const endedAt = now();
+      const next = {
+        ...base,
+        run: { ...prior, state: 'done', endedAt, ...status, ...signal },
+      };
+      remember(next, { replay, pgid: started.pgid });
+      runs.delete(id);
+      void tell(endNotice(next, paths, { ...exit, endedAt }, { replay }));
+    })
+    .catch((error) => {
+      const current = listed().find((item) => item.approval.id === id);
+      if (current?.run?.state === 'stopped') return;
+      const prior = current?.run ?? running;
+      const base = current ?? record;
+      remember(
+        { ...base, run: { ...prior, state: 'failed', endedAt: now(), error: messageOf(error) } },
+        { replay }
+      );
+      runs.delete(id);
+    });
+}
+
+async function finishStop(ctx, id, record, baseRun, started, paths, replay) {
+  const { held, kernel, remember, runs, tell, now } = ctx;
+  const running = { ...baseRun, state: 'running', pid: started.pid };
+  const mine = takeEndTell(held, id);
+  runs.delete(id);
+  try {
+    await signalGroup(kernel(), started.pgid);
+  } catch (error) {
+    held.set(id, { ...(held.get(id) ?? {}), stop: false, pgid: started.pgid, endTold: false });
+    runs.set(id, { pgid: started.pgid, ended: started.ended });
+    remember(
+      { ...record, runnable: true, run: { ...running, error: messageOf(error) } },
+      { pgid: started.pgid }
+    );
+    return running;
+  }
+  held.set(id, { ...(held.get(id) ?? {}), stop: false, pgid: started.pgid });
+  const endedAt = now();
+  const stopped = { ...baseRun, state: 'stopped', pid: started.pid, endedAt };
+  const next = { ...record, runnable: true, run: stopped };
+  remember(next, { pgid: started.pgid });
+  if (mine)
+    void tell(endNotice(next, paths, { endedAt, stopped: true }, { replay, stopped: true }));
+  return stopped;
+}
+
+async function runOwned(ctx, id) {
+  const { listed, held, gatesOf, remember, kernel, runner, runs, tell, now } = ctx;
+  const record = listed().find((entry) => entry.approval.id === id);
+  if (!record) throw new Error("This request isn't here.");
+  const entry = held.get(id);
+  const verdict = runnable(record, now(), gatesOf(entry?.replay));
+  if (verdict !== true) throw new Error(verdict.reason);
+  const replay = entry?.replay;
+  if (!replay) throw new Error(RUN_REASONS.missing);
+  const client = kernel();
+  if (typeof client?.sudoRun !== 'function') throw new Error(RUN_REASONS.kernel);
+  const who = runner() ?? { by: 'you' };
+  const at = now();
+  const paths = runPaths(replay.user, id);
+  const baseRun = {
+    by: who.by,
+    ...(who.device ? { device: who.device } : {}),
+    at,
+    stdout: paths.stdout,
+    stderr: paths.stderr,
+  };
+  remember({ ...record, runnable: true, run: { ...baseRun, state: 'starting' } }, { replay });
+  try {
+    await ensureDir(client, replay.user, paths.dir);
+    const started = await client.sudoRun(replay, {
+      stdout: paths.stdout,
+      stderr: paths.stderr,
+      tag: runTag(id),
+    });
+    const running = { ...baseRun, state: 'running', pid: started.pid };
+    remember({ ...record, runnable: true, run: running }, { replay, pgid: started.pgid });
+    runs.set(id, { pgid: started.pgid, ended: started.ended });
+    void tell(startNotice({ ...record, run: running }, paths, { pid: started.pid, at, replay }));
+    if (held.get(id)?.stop) {
+      const stopped = await finishStop(ctx, id, record, baseRun, started, paths, replay);
+      watchEnded({
+        started,
+        id,
+        record,
+        running: stopped,
+        paths,
+        replay,
+        remember,
+        listed,
+        held,
+        runs,
+        tell,
+        now,
+      });
+      return;
+    }
+    watchEnded({
+      started,
+      id,
+      record,
+      running,
+      paths,
+      replay,
+      remember,
+      listed,
+      held,
+      runs,
+      tell,
+      now,
+    });
+  } catch (error) {
+    held.set(id, { ...(held.get(id) ?? {}), stop: false });
+    remember(
+      { ...record, run: { ...baseRun, state: 'failed', endedAt: now(), error: messageOf(error) } },
+      { replay }
+    );
+    runs.delete(id);
+    throw new Error(messageOf(error));
+  }
+}
+
+async function peekEnded(ended) {
+  if (!ended || typeof ended.then !== 'function') return undefined;
+  let settled;
+  void Promise.resolve(ended).then(
+    (exit) => {
+      settled = { exit };
+    },
+    () => {
+      settled = { exit: null };
+    }
+  );
+  await Promise.resolve();
+  return settled;
+}
+
+async function stopOwned(ctx, id) {
+  const { listed, held, runs, kernel, remember, tell, now } = ctx;
+  const record = listed().find((entry) => entry.approval.id === id);
+  if (!record?.run || (record.run.state !== 'running' && record.run.state !== 'starting'))
+    throw new Error("This request isn't running.");
+  const tracked = runs.get(id);
+  const pgid = tracked?.pgid ?? held.get(id)?.pgid;
+  if (record.run.state === 'starting' && !validPgid(pgid)) {
+    held.set(id, { ...(held.get(id) ?? {}), stop: true });
+    return;
+  }
+  const mine = takeEndTell(held, id);
+  runs.delete(id);
+  try {
+    await signalGroup(kernel(), pgid);
+  } catch (error) {
+    held.set(id, { ...(held.get(id) ?? {}), endTold: false, pgid });
+    runs.set(id, tracked ?? { pgid });
+    remember(
+      { ...record, run: { ...record.run, state: 'running', error: messageOf(error) } },
+      { pgid }
+    );
+    const already = await peekEnded(tracked?.ended);
+    if (already?.exit && takeEndTell(held, id)) {
+      const endedAt = now();
+      const status = already.exit.status === undefined ? {} : { status: already.exit.status };
+      const signal = already.exit.signal ? { signal: already.exit.signal } : {};
+      const next = {
+        ...record,
+        run: {
+          ...record.run,
+          state: 'done',
+          endedAt,
+          ...status,
+          ...signal,
+          error: messageOf(error),
+        },
+      };
+      remember(next, { pgid });
+      runs.delete(id);
+      const replay = held.get(id)?.replay;
+      void tell(
+        endNotice(
+          next,
+          { stdout: next.run.stdout, stderr: next.run.stderr },
+          { ...already.exit, endedAt },
+          { replay }
+        )
+      );
+    }
+    throw new Error(messageOf(error));
+  }
+  const { error: _error, ...clean } = record.run;
+  const endedAt = now();
+  const next = { ...record, run: { ...clean, state: 'stopped', endedAt } };
+  remember(next);
+  const replay = held.get(id)?.replay;
+  const paths = {
+    stdout: next.run.stdout,
+    stderr: next.run.stderr,
+  };
+  if (mine)
+    void tell(endNotice(next, paths, { endedAt, stopped: true }, { replay, stopped: true }));
+}
+
+export const APPROVALS_LAYOUT = { side: 'right', open: [] };
+
+export function hostApprovals({
+  kernel,
+  runner = () => ({ by: 'you' }),
+  deliver = null,
+  debug = globalThis,
+  warn = (...args) => console.warn(...args),
+  ...rest
+} = {}) {
+  const notices = [];
+  let missingWarned = false;
+  let undeliveredWarned = false;
+  const lick = async (notice) => {
+    notices.push(notice);
+    if (debug.sliccKernelDebug === true) debug.sliccApprovalRunNotices = notices;
+    if (typeof deliver !== 'function') {
+      if (!missingWarned) {
+        missingWarned = true;
+        warn('approval run notice: no deliver callback (agent approvalRunNotice unavailable)');
+      }
+      return;
+    }
+    let result;
+    try {
+      result = await deliver(notice);
+    } catch (error) {
+      if (!undeliveredWarned) {
+        undeliveredWarned = true;
+        warn(`approval run notice: ${error?.message ?? error}`);
+      }
+      return;
+    }
+    if (result?.delivered === false && !undeliveredWarned) {
+      if (quietUndelivered(result.reason)) return;
+      undeliveredWarned = true;
+      warn(`approval run notice: ${result.reason ?? 'not delivered'}`);
+    }
+  };
+  const approvals = createApprovals({ kernel, lick, runner, ...rest });
+  if (debug.sliccKernelDebug === true) {
+    debug.sliccApprovals = approvals;
+    debug.sliccApprovalRunNotices = notices;
+  }
+  return approvals;
+}
+
+export function createApprovals({
+  channel = new BroadcastChannel(CHANNEL),
+  kernel = () => null,
+  lick = null,
+  runner = () => ({ by: 'you' }),
+  maxAgeMinutes = DEFAULT_MAX_AGE,
+  now = Date.now,
+} = {}) {
   const events = emitter();
   const waiting = new Map();
+  const held = new Map();
   const mine = new Set();
+  const runs = new Map();
   let shown = [];
+  let past = [];
   let owning = false;
+
+  const gatesOf = (replay) => ({
+    maxAgeMinutes: typeof maxAgeMinutes === 'function' ? maxAgeMinutes() : maxAgeMinutes,
+    kernel: kernelGate(kernel()),
+    replay,
+  });
+  const withRunnable = (record) => {
+    if (
+      record.state !== 'unanswered' ||
+      record.reason !== 'timeout' ||
+      record.approval.kind !== 'sudo'
+    )
+      return record;
+    return {
+      ...record,
+      runnable: runnable(record, now(), gatesOf(held.get(record.approval.id)?.replay)),
+    };
+  };
+  const listed = () =>
+    [...(owning ? past.map(withRunnable) : past)].sort(
+      (a, b) => b.approval.createdAt - a.approval.createdAt
+    );
+  const publishHistory = () => {
+    const records = listed();
+    events.emit('history', records);
+    if (owning) channel.postMessage({ history: records });
+    return records;
+  };
   const show = (list) => {
     shown = list;
     events.emit('approvals', shown);
+  };
+  const remember = (record, extra = {}) => {
+    const id = record.approval.id;
+    const previous = past.findIndex((entry) => entry.approval.id === id);
+    const next = { ...record };
+    past =
+      previous >= 0
+        ? past.map((entry, index) => (index === previous ? next : entry))
+        : [next, ...past];
+    if (extra.replay !== undefined || held.has(id)) {
+      const prior = held.get(id) ?? {};
+      const replay = extra.replay !== undefined ? { replay: extra.replay } : {};
+      const pgid = extra.pgid !== undefined ? { pgid: extra.pgid } : {};
+      held.set(id, { ...prior, ...replay, ...pgid });
+    }
+    publishHistory();
+    return next;
   };
   const end = (id, reason) => {
     if (!shown.some((item) => item.id === id)) return;
@@ -83,41 +510,61 @@ export function createApprovals({ channel = new BroadcastChannel(CHANNEL) } = {}
     if (!decided || reason !== 'answered') events.emit('ended', { id, reason });
   };
   const publish = () => {
-    const list = [...waiting.values()].map(({ item }) => item);
-    show(list);
-    channel.postMessage({ list });
+    show([...waiting.values()].map(({ item }) => item));
+    channel.postMessage({ list: shown });
   };
   const offers = (id, decision) => decision !== 'always' || waiting.get(id)?.item.always === true;
+  const tell = async (event) => {
+    if (typeof lick === 'function')
+      try {
+        await lick(event);
+      } catch {}
+  };
+  const ctx = { listed, held, gatesOf, remember, kernel, runner, runs, tell, now };
   const settle = (id, decision, reason) => {
     const entry = waiting.get(id);
     if (!entry) return;
     waiting.delete(id);
+    remember(settledRecord(entry.item, decision, reason, now()), { replay: entry.replay });
     entry.resolve(decision);
     end(id, reason);
     channel.postMessage({ ended: { id, reason } });
     publish();
   };
-  channel.onmessage = ({ data }) => {
-    if (owning && data?.hello) publish();
-    else if (owning && data?.decide && offers(data.decide.id, data.decide.decision))
-      settle(data.decide.id, data.decide.decision, 'answered');
-    else if (!owning && data?.list) show(data.list);
-    else if (!owning && data?.ended) end(data.ended.id, data.ended.reason);
-  };
-  const wait = (item, signal) =>
+  const wait = (item, signal, replay = null) =>
     new Promise((resolve) => {
-      waiting.set(item.id, { item, resolve });
+      waiting.set(item.id, { item, resolve, replay });
+      if (replay) held.set(item.id, { replay });
+      remember({ approval: item, state: 'pending' }, { replay });
       publish();
       const stop = () =>
         settle(item.id, 'deny', signal.reason === 'expired' ? 'expired' : 'withdrawn');
       if (signal?.aborted) stop();
       else signal?.addEventListener('abort', stop);
     });
+
+  channel.onmessage = ({ data }) => {
+    if (owning && data?.hello) {
+      publish();
+      publishHistory();
+    } else if (owning && data?.decide && offers(data.decide.id, data.decide.decision))
+      settle(data.decide.id, data.decide.decision, 'answered');
+    else if (owning && data?.run) void runOwned(ctx, data.run.id).catch(() => undefined);
+    else if (owning && data?.stopRun) void stopOwned(ctx, data.stopRun.id).catch(() => undefined);
+    else if (!owning && data?.list) show(data.list);
+    else if (!owning && data?.ended) end(data.ended.id, data.ended.reason);
+    else if (!owning && data?.history) {
+      past = data.history;
+      events.emit('history', past);
+    }
+  };
   channel.postMessage({ hello: true });
+
   return {
     port: {
       on: events.on,
       list: () => shown,
+      history: () => listed(),
       async decide(id, decision) {
         const item = shown.find((entry) => entry.id === id);
         if (decision === 'always' && item?.always !== true)
@@ -126,13 +573,27 @@ export function createApprovals({ channel = new BroadcastChannel(CHANNEL) } = {}
         if (owning) settle(id, decision, 'answered');
         else channel.postMessage({ decide: { id, decision } });
       },
+      async run(id) {
+        if (owning) return runOwned(ctx, id);
+        channel.postMessage({ run: { id } });
+        for (let i = 0; i < 100; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (listed().find((entry) => entry.approval.id === id)?.run) return;
+        }
+        throw new Error('Run now did not start.');
+      },
+      async stopRun(id) {
+        if (owning) return stopOwned(ctx, id);
+        channel.postMessage({ stopRun: { id } });
+      },
     },
     own() {
       owning = true;
       publish();
+      publishHistory();
     },
     approve(req, { signal } = {}) {
-      return wait(approval(req), signal).then((decision) => {
+      return wait(approval(req), signal, replayOf(req)).then((decision) => {
         if (decision !== 'once') return 'deny';
         return req.timestamp === true ? { answer: 'once', timestamp: true } : 'once';
       });
@@ -169,4 +630,28 @@ export function routeSudo({ agent, judges = () => false, fallback, where = () =>
       return 'deny';
     }
   };
+}
+
+export function mergeApprovalsPorts(host, agent) {
+  const pick = (id) => {
+    if (host.history?.().some((entry) => entry.approval.id === id)) return host;
+    if (agent.history?.().some((entry) => entry.approval.id === id)) return agent;
+    return null;
+  };
+  const history = () => {
+    const hostRows = host.history?.() ?? [];
+    const agentRows = agent.history?.() ?? [];
+    return [...hostRows, ...agentRows].sort((a, b) => b.approval.createdAt - a.approval.createdAt);
+  };
+  const run = (id) => {
+    const port = pick(id);
+    if (!port?.run) throw new Error("This request isn't here.");
+    return port.run(id);
+  };
+  const stopRun = (id) => {
+    const port = pick(id);
+    if (!port?.stopRun) throw new Error("This request isn't running.");
+    return port.stopRun(id);
+  };
+  return { history, run, stopRun };
 }

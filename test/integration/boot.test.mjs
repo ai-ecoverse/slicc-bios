@@ -55,7 +55,7 @@ test('reports each step and the download as it happens', async (t) => {
   );
   const [installed] = bios.texts('seed');
   assert.ok(installed.startsWith(`os/{${seed.join(',')}} `), installed);
-  assert.match(installed, / [\d.]+kB$/);
+  assert.match(installed, / [\d.]+[kM]B$/);
   const origin = await page.evaluate(() => new URL('/', location).href);
   assert.deepEqual(bios.texts('intercept'), [origin]);
   assert.deepEqual(bios.texts('navigate'), ['/os/']);

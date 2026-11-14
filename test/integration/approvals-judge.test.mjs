@@ -430,7 +430,7 @@ test('a running agent older than 7.17.0 has no judge, so bios’s own dialog ask
   const before = judged.length;
   await run(page, 'clear; cd /; sudo -u cone sudo id -Gn; echo older=$?');
   const item = await asked(page, /\/id -Gn$/);
-  assert.match(item.id, /^sudo-/);
+  assert.match(item.id, /^bios:sudo-/);
   assert.equal(item.always, false);
   assert.equal('verdict' in item, false);
   assert.deepEqual(await buttons(page, item.id), ['deny', 'once']);
