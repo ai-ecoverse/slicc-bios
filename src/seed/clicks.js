@@ -1,8 +1,8 @@
 import { tabList } from './live.js';
-import { BUSY, REST_MS, refused, session } from './requests.js';
+import { APPROVAL_MS, BUSY, REST_MS, refused, session } from './requests.js';
 
 export const CLICKS_CHANNEL = 'slicc-clicks';
-export const APPROVAL_MS = 300_000;
+export { APPROVAL_MS };
 export const CLICK_LATE = 'nobody clicked within 5 min';
 export const CLICK_DISMISSED = 'the click in seven was cancelled';
 export const NOT_HERE = "Click in seven's tab that asked.";
