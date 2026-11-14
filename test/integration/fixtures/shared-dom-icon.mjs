@@ -53,7 +53,7 @@ export function iconSnapshot({
 export function sharedIconBrowser(
   t,
   snapshot = iconSnapshot(),
-  { tabURL, captureScreenshot, getTargetInfo } = {}
+  { tabURL, captureScreenshot, getTargetInfo, onStartScreencast, onStopScreencast } = {}
 ) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 5000 });
   const calls = [];
@@ -64,6 +64,9 @@ export function sharedIconBrowser(
   let liveURL = tabURL ?? 'https://ordinary.invalid/page';
   let liveTitle = 'ordinary';
   const privateRead = Promise.withResolvers();
+  const emit = (event) => {
+    for (const listener of [...listeners]) listener(event);
+  };
   const api = {
     on(listener) {
       listeners.add(listener);
@@ -93,6 +96,14 @@ export function sharedIconBrowser(
       if (method === 'Page.captureScreenshot') {
         if (typeof captureScreenshot === 'function') return captureScreenshot({ params, session });
         return { data: 'fake-not-decoded' };
+      }
+      if (method === 'Page.startScreencast') {
+        if (typeof onStartScreencast === 'function') onStartScreencast({ params, session, emit });
+        return {};
+      }
+      if (method === 'Page.stopScreencast') {
+        if (typeof onStopScreencast === 'function') return onStopScreencast({ params, session });
+        return {};
       }
       if (method === 'Page.navigate') {
         if (typeof params.url === 'string') liveURL = params.url;
@@ -130,12 +141,20 @@ export function sharedIconBrowser(
   });
   const browser = createBrowser({}, { storage: null, own: 'https://protected.invalid' });
   const clients = [];
+  const stops = [];
+  const watch = browser.port.watch.bind(browser.port);
+  browser.port.watch = (id, size) => {
+    const stop = watch(id, size);
+    stops.push(stop);
+    return stop;
+  };
   function client() {
     const connection = browser.observe(extensionConnection(api));
     clients.push(connection);
     return { connection, call: pageClient(async () => connection, globalThis).call };
   }
   t.after(() => {
+    for (const stop of stops) stop();
     for (const connection of clients) connection.close();
   });
   return {
@@ -147,8 +166,6 @@ export function sharedIconBrowser(
       liveURL = url;
       liveTitle = title;
     },
-    emit: (event) => {
-      for (const listener of [...listeners]) listener(event);
-    },
+    emit,
   };
 }
