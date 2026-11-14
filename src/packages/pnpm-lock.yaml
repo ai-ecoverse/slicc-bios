@@ -12,8 +12,8 @@ importers:
         specifier: 1.2.0
         version: 1.2.0
       '@ai-ecoverse/slicc-browsers':
-        specifier: 1.23.0
-        version: 1.23.0
+        specifier: 1.25.0
+        version: 1.25.0
       '@ai-ecoverse/slicc-capture':
         specifier: 1.5.0
         version: 1.5.0
@@ -52,8 +52,8 @@ packages:
     engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
     hasBin: true
 
-  '@ai-ecoverse/slicc-browsers@1.23.0':
-    resolution: {integrity: sha512-l+it/tYC/NtNPEu2ZwDBXUMLaVxTOF+s8BxI6U+pqgk3WFct080wPwXC/EnLVVD2CzquDhbCznea4CbSjKDUWw==}
+  '@ai-ecoverse/slicc-browsers@1.25.0':
+    resolution: {integrity: sha512-BJKu+Yvv6KmoErSBUwcf+DdFF7Ide2seo5JuutzjMMpYWJ0OVH64ULDAUPbMsAXixh8jAViXeYIsRq0+XtL9Ow==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-capture@1.5.0':
@@ -264,7 +264,7 @@ snapshots:
       - utf-8-validate
       - webgpu
 
-  '@ai-ecoverse/slicc-browsers@1.23.0': {}
+  '@ai-ecoverse/slicc-browsers@1.25.0': {}
 
   '@ai-ecoverse/slicc-capture@1.5.0': {}
 
