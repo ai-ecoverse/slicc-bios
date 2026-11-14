@@ -136,10 +136,11 @@ const watched = (id, text, outgoing) => {
 };
 async function step(route, client, name, work) {
   const started = Date.now();
+  const stopped = new AbortController();
   let timer;
   try {
     return await Promise.race([
-      work(),
+      work(stopped.signal),
       new Promise((_, reject) => {
         timer = setTimeout(
           () =>
@@ -150,6 +151,7 @@ async function step(route, client, name, work) {
     ]);
   } finally {
     clearTimeout(timer);
+    stopped.abort();
     const took = Date.now() - started;
     if (took > HELD_MS) {
       holds.push(`${route} ${client} ${name}: ${took} ms`);
@@ -563,8 +565,8 @@ async function playwright(route, endpoint) {
     await run('popup load', () => popup.waitForLoadState());
     assert.equal(await popup.title(), 'popup');
     await run('iframe', () => page.goto(`${ORDINARY}/framed`));
-    const frame = await run('iframe frame', async () => {
-      for (;;) {
+    const frame = await run('iframe frame', async (signal) => {
+      while (!signal.aborted) {
         const found = page.frames().find((item) => item.url().startsWith(FRAME));
         if (found) return found;
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -640,8 +642,8 @@ async function puppeteerFlow(route, endpoint) {
     await run('iframe', () =>
       page.goto(`${ORDINARY}/${SAME_SITE_IFRAMES_ONLY.has(route) ? 'framed-same' : 'framed'}`)
     );
-    const frame = await run('iframe frame', async () => {
-      for (;;) {
+    const frame = await run('iframe frame', async (signal) => {
+      while (!signal.aborted) {
         const found = page.frames().find((item) => item.url().startsWith(inner));
         if (found) return found;
         await new Promise((resolve) => setTimeout(resolve, 100));
