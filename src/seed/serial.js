@@ -45,7 +45,7 @@ export function serialLive(ports, live) {
       live.add({
         kind: 'serial',
         label: SERIAL_LABEL,
-        what: event.handle,
+        what: event.node ? `${event.handle} (${event.node})` : event.handle,
         asker: who(event.stamp),
         since: event.since,
         action: { label: 'Close', run: () => ports.close(event.handle) },
@@ -62,5 +62,14 @@ export function serialPorts({ create, switches, clicks, live }) {
   return {
     kinds: devices.kinds,
     handlers: plugged(devices, serialPrompts(devices), undefined, serialClick(clicks)),
+    devices: { open: (request) => devices.devices.open(request) },
+    nodes(kernel) {
+      try {
+        return devices.devices.nodes(kernel);
+      } catch (error) {
+        console.warn(`serial nodes: ${error.message}`);
+        return null;
+      }
+    },
   };
 }

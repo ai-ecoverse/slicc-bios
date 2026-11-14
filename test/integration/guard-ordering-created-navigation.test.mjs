@@ -206,3 +206,388 @@ for (const transport of ['direct', 'extension']) {
     );
   });
 }
+
+const sevenSecret = `${protectedOrigin}/seven#session-secret`;
+const routes = [
+  { name: 'devtools', kind: undefined, connection: 'direct' },
+  { name: 'link', kind: { kind: 'link' }, connection: 'direct' },
+  { name: 'extension', kind: { kind: 'extension' }, connection: 'extension' },
+];
+
+const openerUrls = {
+  seven: `${protectedOrigin}/seven`,
+  ordinary: `${new URL(ordinary).origin}/opener`,
+};
+
+function laggingCreated(t, route, { commit, openerId, lag = 400, settle = true, from = 'seven' }) {
+  const id = `created-lag-${route.name}-${commit ?? 'pending'}-${Math.random().toString(36).slice(2, 8)}`;
+  const openerTarget = openerId ?? `${from}-opener-${id}`;
+  const opener = {
+    targetId: openerTarget,
+    type: 'page',
+    url: openerUrls[from],
+  };
+  const related = from === 'none' ? {} : { openerId: openerTarget, canAccessOpener: true };
+  const listeners = new Set();
+  const waiting = new Map();
+  const delivered = [];
+  let nextSession = 0;
+  let next = 0;
+  let timer;
+  let info = {
+    targetId: id,
+    type: 'page',
+    url: 'about:blank',
+  };
+  let frame = { id, url: 'about:blank', securityOrigin: '://', loaderId: 'blank-document' };
+  const blankWithOpener = (loaderId) => {
+    info = {
+      targetId: id,
+      type: 'page',
+      url: 'about:blank',
+      ...related,
+    };
+    frame = {
+      id,
+      url: 'about:blank',
+      securityOrigin: '://',
+      loaderId,
+    };
+  };
+  const cdp = {
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async send(method, params = {}, sessionId) {
+      if (method === 'Target.createTarget') return { targetId: id };
+      if (method === 'Target.getTargetInfo') {
+        if (params.targetId === openerTarget) return { targetInfo: opener };
+        return { targetInfo: { ...info } };
+      }
+      if (method === 'Target.attachToTarget') return { sessionId: `session-${++nextSession}` };
+      if (method === 'Page.navigate') {
+        return new Promise((resolve) => {
+          timer = setTimeout(() => {
+            blankWithOpener('navigating');
+            resolve({ frameId: id, loaderId: 'navigating' });
+            if (!settle || !commit) return;
+            setTimeout(() => {
+              info = {
+                targetId: id,
+                type: 'page',
+                url: commit,
+                ...related,
+              };
+              frame = {
+                id,
+                url: commit,
+                securityOrigin: new URL(commit).origin,
+                loaderId: 'committed-document',
+              };
+              for (const listener of listeners)
+                listener({ method: 'Page.frameNavigated', sessionId, params: { frame } });
+            }, lag);
+          }, 20);
+        });
+      }
+      if (method === 'Page.getFrameTree') return { frameTree: { frame } };
+      if (method === 'Page.getNavigationHistory')
+        return { currentIndex: 0, entries: [{ id: 1, url: info.url, title: 'lag' }] };
+      if (method === 'DOM.getDocument')
+        return { root: { nodeId: 1, nodeName: '#document', children: [] } };
+      if (method === 'Runtime.evaluate') {
+        if (params.expression === 'opener.location.href') {
+          const open =
+            info.canAccessOpener === true &&
+            (info.url === '' || info.url === 'about:blank' || info.url.startsWith('about:'));
+          const secret = from === 'seven' ? sevenSecret : opener.url;
+          return { result: { value: open ? secret : null } };
+        }
+        return {
+          result: {
+            value: params.expression === 'location.href' ? info.url : 'synthetic-content',
+          },
+        };
+      }
+      return {};
+    },
+  };
+  const raw = {
+    send(text) {
+      const { id, method, params, sessionId } = JSON.parse(text);
+      const deliver = (answer) =>
+        raw.onmessage(JSON.stringify({ id, ...(sessionId ? { sessionId } : {}), ...answer }));
+      void cdp.send(method, params, sessionId).then(
+        (result) => deliver({ result }),
+        (error) => deliver({ error: { code: -32000, message: error.message } })
+      );
+    },
+    close() {},
+  };
+  const off = cdp.on((message) => raw.onmessage?.(JSON.stringify(message)));
+  const guard = guardProtected(
+    route.connection === 'extension' ? extensionConnection(cdp) : raw,
+    protectedOrigin,
+    new Map(),
+    route.kind
+  );
+  guard.onmessage = (text) => {
+    const message = JSON.parse(text);
+    delivered.push(message);
+    waiting.get(message.id)?.(message);
+    waiting.delete(message.id);
+  };
+  t.after(() => {
+    clearTimeout(timer);
+    guard.close();
+    off();
+  });
+  return {
+    id,
+    delivered,
+    reblank() {
+      blankWithOpener('reblank-document');
+    },
+    emit(message) {
+      raw.onmessage?.(JSON.stringify(message));
+    },
+    send(method, params = {}, sessionId) {
+      const id = ++next;
+      const answer = new Promise((resolve) => waiting.set(id, resolve));
+      guard.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      return answer;
+    },
+  };
+}
+
+async function admittedCreated(t, route, options = {}) {
+  const wire = laggingCreated(t, route, { commit: ordinary, lag: 50, ...options });
+  const before = wire.delivered.length;
+  const created = await wire.send('Target.createTarget', { url: ordinary });
+  assert.equal(created.error, undefined);
+  assert.equal(
+    wire.delivered.slice(before).some((message) => message.method),
+    false,
+    'no events or auto-attach delivered during the create wait'
+  );
+  const attached = await wire.send('Target.attachToTarget', {
+    targetId: created.result.targetId,
+    flatten: true,
+  });
+  assert.equal(attached.error, undefined);
+  return { wire, sessionId: attached.result.sessionId };
+}
+
+for (const route of routes) {
+  test(`an ordinary createTarget waits out a lagging blank getTargetInfo before attach over ${route.name}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const wire = laggingCreated(t, route, { commit: ordinary });
+    const created = await wire.send('Target.createTarget', { url: ordinary });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.equal(
+      attached.error,
+      undefined,
+      'attach is admitted once the created tab leaves its protected opener blank'
+    );
+    const content = await wire.send(
+      'Runtime.evaluate',
+      { expression: 'document.title' },
+      attached.result.sessionId
+    );
+    assert.equal(content.error, undefined);
+  });
+
+  test(`a createTarget still loading after navigate stays refused over ${route.name}`, {
+    timeout: 8000,
+  }, async (t) => {
+    const wire = laggingCreated(t, route, { commit: ordinary, settle: false });
+    const before = wire.delivered.length;
+    const created = await wire.send('Target.createTarget', { url: ordinary });
+    assert.equal(created.error, undefined);
+    assert.equal(
+      wire.delivered.slice(before).some((message) => message.method),
+      false,
+      'no events or auto-attach delivered while the created tab stays blank'
+    );
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.match(attached.error?.message ?? '', /^slicc: refused:/);
+    assert.equal(attached.result, undefined);
+  });
+
+  test(`a createTarget that ends on a protected URL stays refused over ${route.name}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const protectedPage = `${protectedOrigin}/final`;
+    const wire = laggingCreated(t, route, {
+      commit: protectedPage,
+      lag: 50,
+    });
+    const created = await wire.send('Target.createTarget', { url: ordinary });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.match(attached.error?.message ?? '', /^slicc: refused:/);
+    assert.equal(attached.result, undefined);
+  });
+
+  test(`a createTarget that commits after the create answer still attaches over ${route.name}`, {
+    timeout: 8000,
+  }, async (t) => {
+    const wire = laggingCreated(t, route, { commit: ordinary, lag: 2500 });
+    const created = await wire.send('Target.createTarget', { url: ordinary });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.equal(attached.error, undefined);
+  });
+
+  test(`a steady re-blank after an ordinary createTarget refuses opener.location.href over ${route.name}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const { wire, sessionId } = await admittedCreated(t, route);
+    wire.reblank();
+    const evaluated = await wire.send(
+      'Runtime.evaluate',
+      { expression: 'opener.location.href' },
+      sessionId
+    );
+    assert.match(
+      evaluated.error?.message ?? '',
+      /^slicc: refused: seven.s own pages and the vault are out of reach of browser automation$/
+    );
+    assert.notEqual(evaluated.result?.result?.value, sevenSecret);
+  });
+
+  test(`a Page.frameNavigated re-blank after an ordinary createTarget refuses opener.location.href over ${route.name}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const { wire, sessionId } = await admittedCreated(t, route);
+    wire.reblank();
+    wire.emit({
+      method: 'Page.frameNavigated',
+      sessionId,
+      params: {
+        frame: {
+          id: wire.id,
+          url: 'about:blank',
+          securityOrigin: '://',
+          loaderId: 'reblank-frame',
+        },
+      },
+    });
+    const evaluated = await wire.send(
+      'Runtime.evaluate',
+      { expression: 'opener.location.href' },
+      sessionId
+    );
+    assert.match(
+      evaluated.error?.message ?? '',
+      /^slicc: refused: seven.s own pages and the vault are out of reach of browser automation$/
+    );
+    assert.notEqual(evaluated.result?.result?.value, sevenSecret);
+  });
+}
+
+for (const route of routes) {
+  test(`a createTarget without an opener that never commits is admitted as on main over ${route.name}`, {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = laggingCreated(t, route, { from: 'none' });
+    const created = await wire.send('Target.createTarget', { url: `${ordinary}/no-content` });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.equal(attached.error, undefined, JSON.stringify(attached));
+    assert.ok(attached.result.sessionId);
+  });
+
+  for (const from of ['seven', 'ordinary']) {
+    test(`a createTarget with a${from === 'ordinary' ? 'n ordinary' : ' seven'} opener that never commits stays refused for the whole wait over ${route.name}`, {
+      timeout: 20000,
+    }, async (t) => {
+      const wire = laggingCreated(t, route, { from });
+      const before = wire.delivered.length;
+      const started = Date.now();
+      const creating = wire.send('Target.createTarget', { url: `${ordinary}/no-content` });
+      const early = await wire.send('Target.attachToTarget', { targetId: wire.id, flatten: true });
+      const created = await creating;
+      assert.equal(created.error, undefined);
+      assert.ok(Date.now() - started >= 1500, 'createTarget waits for the first commit');
+      assert.equal(
+        wire.delivered.slice(before).some((message) => message.method),
+        false,
+        'no events or auto-attach delivered while the created tab stays blank'
+      );
+      const answers = [early];
+      for (let n = 0; n < 2; n++)
+        answers.push(
+          await wire.send('Target.attachToTarget', {
+            targetId: created.result.targetId,
+            flatten: true,
+          })
+        );
+      for (const attached of answers) {
+        assert.match(
+          attached.error?.message ?? '',
+          /^slicc: refused: seven.s own pages and the vault are out of reach of browser automation$/,
+          JSON.stringify(attached)
+        );
+        assert.equal(attached.result, undefined);
+      }
+      assert.equal(
+        wire.delivered.some((message) => JSON.stringify(message).includes('session-secret')),
+        false
+      );
+    });
+  }
+
+  test(`a createTarget with an ordinary opener that commits attaches as before over ${route.name}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const { wire, sessionId } = await admittedCreated(t, route, { from: 'ordinary' });
+    const content = await wire.send(
+      'Runtime.evaluate',
+      { expression: 'document.title' },
+      sessionId
+    );
+    assert.equal(content.error, undefined, JSON.stringify(content));
+  });
+
+  for (const [from, admitted] of [
+    ['ordinary', true],
+    ['seven', false],
+  ]) {
+    test(`after its first commit a created tab with a${from === 'ordinary' ? 'n ordinary' : ' seven'} opener that re-blanks is judged by its opener over ${route.name}`, {
+      timeout: 5000,
+    }, async (t) => {
+      const { wire } = await admittedCreated(t, route, { from });
+      wire.reblank();
+      const again = await wire.send('Target.attachToTarget', { targetId: wire.id, flatten: true });
+      if (admitted) {
+        assert.equal(again.error, undefined, JSON.stringify(again));
+        assert.ok(again.result.sessionId);
+      } else {
+        assert.match(
+          again.error?.message ?? '',
+          /^slicc: refused: seven.s own pages and the vault are out of reach of browser automation$/
+        );
+        assert.equal(again.result, undefined);
+      }
+    });
+  }
+}

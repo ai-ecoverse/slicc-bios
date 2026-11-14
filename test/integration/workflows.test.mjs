@@ -10,8 +10,11 @@ const pkg = JSON.parse(await read('package.json'));
 const input = (name) => ci.match(new RegExp(`\\n {6}${name}: (.+)\\n`))?.[1];
 const block = (name) => ci.match(new RegExp(`\\n {6}${name}: \\|\\n((?: {8}.*\\n)+)`))?.[1];
 
-test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; and the only workflow', async () => {
-  assert.deepEqual(await readdir(new URL('../../.github/workflows/', import.meta.url)), ['ci.yml']);
+test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; vault drift is the only other workflow', async () => {
+  assert.deepEqual(await readdir(new URL('../../.github/workflows/', import.meta.url)), [
+    'ci.yml',
+    'vault-drift.yml',
+  ]);
   assert.deepEqual(await readdir(new URL('../../.github/', import.meta.url)), ['workflows']);
   const version = pkg.devDependencies['@ai-ecoverse/slicc-shared-web'];
   assert.match(version, /^2\.\d+\.\d+$/);
@@ -22,6 +25,39 @@ test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the h
     )
   );
   assert.deepEqual(ci.split('\njobs:\n')[1].match(/^ {2}[a-z-]+:$/gm), ['  ci:']);
+});
+
+test('vault drift compares vault-preview to the root pin on main and on a schedule, never on a pull request or merge group', async () => {
+  const drift = await read('.github/workflows/vault-drift.yml');
+  assert.match(
+    drift,
+    /^name: vault drift\n\non:\n {2}push:\n {4}branches: \[main\]\n {2}schedule:\n {4}- cron: "0 \*\/6 \* \* \*"\n\npermissions:\n {2}contents: read\n {2}issues: write\n/
+  );
+  assert.match(drift, /\njobs:\n {2}vault-drift:\n/);
+  assert.match(drift, /vault-preview\.sliccy\.ai\/config\.json/);
+  assert.match(drift, /devDependencies\['@ai-ecoverse\/slicc-vault'\]/);
+  assert.match(drift, /vault drift: live/);
+  assert.match(drift, /node test\/integration\/vault-drift-check\.mjs/);
+  assert.match(drift, /actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
+  assert.match(
+    drift,
+    /\n {10}if ! \[\[ "\$LIVE" =~ \^\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then\n {12}echo "::error::vault-preview reported a non-semver version"\n {12}exit 1\n {10}fi\n/
+  );
+  assert.match(
+    drift,
+    /\n {6}- uses: actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n {8}with:\n {10}persist-credentials: false\n/
+  );
+  for (const line of drift.split('\n')) {
+    if (/^\s*#/.test(line)) assert.match(line, /^\s*# renovate:/);
+    const used = line.match(/^\s+- uses:\s+(\S+)\s*$/);
+    if (used) assert.match(used[1], /^[^@]+@[0-9a-f]{40}$/);
+  }
+  const check = await read('test/integration/vault-drift-check.mjs');
+  assert.match(check, /\/fonts\/AdobeClean-Regular\.woff2/);
+  assert.match(check, /\.wasm/);
+  assert.match(check, /stripFrameAncestors|frame-ancestors <dynamic>/);
+  assert.match(check, /Object\.entries\(expected\)/);
+  assert.match(check, /vault drift: headers differ/);
 });
 
 test('CI runs on pull requests, merge groups and pushes to main, and cancels a superseded run only on a pull request', () => {

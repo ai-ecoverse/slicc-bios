@@ -18,14 +18,14 @@ importers:
         specifier: 1.5.0
         version: 1.5.0
       '@ai-ecoverse/slicc-devices':
-        specifier: 1.1.0
-        version: 1.1.0
+        specifier: 1.2.1
+        version: 1.2.1
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.179.0
-        version: 1.179.0
+        specifier: 1.186.0
+        version: 1.186.0
       '@ai-ecoverse/slicc-spectrum':
-        specifier: 2.15.0
-        version: 2.15.0
+        specifier: 2.16.1
+        version: 2.16.1
       '@ai-ecoverse/wasi-fnox':
         specifier: 1.47.0-1
         version: 1.47.0-1
@@ -61,12 +61,12 @@ packages:
     engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
     hasBin: true
 
-  '@ai-ecoverse/slicc-devices@1.1.0':
-    resolution: {integrity: sha512-wCSAiNGB2Q2pYE8GmYofIrVWFPSgQP4itQDzY990dlWASiPRrtJnagnLVbdouRSE1guLUuN3KD6eiuLauebMfQ==}
-    engines: {node: '>=24', slicc-kernel: '>=1.176.0'}
+  '@ai-ecoverse/slicc-devices@1.2.1':
+    resolution: {integrity: sha512-7Ihkpq8b5ruq0gtB6HUJJbwZKFVgqRZjSxd4nsYk2VyszdUCLf2lEvsmb9MIqHOEPEI94ZOZHEOj7ExLU7A1LA==}
+    engines: {node: '>=24', slicc-kernel: '>=1.183.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.179.0':
-    resolution: {integrity: sha512-9pzXdY6bupz1pZxfDGRRU7nxBqxiX9wM3REt7cU7ARcbXouGTYwIcnO2Xk2ACcgAZVaz+Sd/oLmzL1bEtKAaRg==}
+  '@ai-ecoverse/slicc-kernel@1.186.0':
+    resolution: {integrity: sha512-f9FAPjfz9IWB7ZaRRpH/HEZry1DocFxPRJKhBcn2ufnShI9Kwv4XEw8jHyRTZu6G3R7g9lpuO4NNWprz6OHIcA==}
     engines: {node: '>=26'}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
@@ -112,8 +112,8 @@ packages:
       webgpu:
         optional: true
 
-  '@ai-ecoverse/slicc-spectrum@2.15.0':
-    resolution: {integrity: sha512-xkq+DgwoqO3fLuMDp8OcMTmxNbj7r55XgM1sukC/NXeu7/AIzwj+/p0tx9mSkMfJTTwUGzCHfuEXMFl6bnUWzw==}
+  '@ai-ecoverse/slicc-spectrum@2.16.1':
+    resolution: {integrity: sha512-N6Zot1/18xbRJyBGvTq9oq58P0TrIqYquvykWK87e9vPzpga329zgD2I9OVjZApYewm3D6ph6IvlwQTciFGIow==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/wasi-fnox@1.47.0-1':
@@ -268,11 +268,11 @@ snapshots:
 
   '@ai-ecoverse/slicc-capture@1.5.0': {}
 
-  '@ai-ecoverse/slicc-devices@1.1.0':
+  '@ai-ecoverse/slicc-devices@1.2.1':
     dependencies:
       esptool-js: 0.7.1
 
-  '@ai-ecoverse/slicc-kernel@1.179.0': {}
+  '@ai-ecoverse/slicc-kernel@1.186.0': {}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
     dependencies:
@@ -290,7 +290,7 @@ snapshots:
       - utf-8-validate
     optional: true
 
-  '@ai-ecoverse/slicc-spectrum@2.15.0': {}
+  '@ai-ecoverse/slicc-spectrum@2.16.1': {}
 
   '@ai-ecoverse/wasi-fnox@1.47.0-1': {}
 

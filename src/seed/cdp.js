@@ -1,6 +1,6 @@
 import { EXTENSION_UPDATE, extensionAutomationSupported } from './extension.js';
 import { admits, guardProtected, NO_AUTO_ATTACH, TAB_ONLY, TAB_PREFIX } from './guard.js';
-import { isHeld, MARK } from './held.js';
+import { isHeld, LINKED, MARK } from './held.js';
 
 const RUNTIMES = ['extension', 'devtools'];
 
@@ -390,14 +390,18 @@ export function devtoolsConnection(
 
 export function browserHosts(
   extension = globalThis.sliccExtension,
-  devtools = globalThis.crestDevTools
+  devtools = globalThis.crestDevTools,
+  links = panelLinks
 ) {
   const cdp = extensionAutomationSupported(extension) ? extension?.cdp : undefined;
   const url = devtools?.webSocketDebuggerUrl;
-  return {
+  const hosts = {
     extension: cdp && (() => extensionConnection(cdp)),
     devtools: url && (() => devtoolsConnection(url)),
   };
+  for (const browser of linkedBrowsers(links))
+    if (browser.seven && browser.local) hosts[`${LINKED}${browser.runtime}`] = browser.open;
+  return hosts;
 }
 
 export function linkedBrowsers(links) {

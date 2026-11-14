@@ -49,11 +49,61 @@ const media = () => {
 };
 
 async function pressDeep(page, selector) {
-  await page.until((selector) => {
-    const box = window.deep(selector)?.getBoundingClientRect();
-    return !!box && box.width > 0;
-  }, selector);
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  const ready = (selector) => {
+    const button = window.deep(selector);
+    const box = button?.getBoundingClientRect();
+    let owner = button;
+    while (owner && typeof owner.arming !== 'number')
+      owner = owner.parentElement ?? owner.getRootNode()?.host;
+    const arming = owner?.arming ?? 500;
+    const x = box ? box.x + box.width / 2 : 0;
+    const y = box ? box.y + box.height / 2 : 0;
+    let hit = box?.width > 0 ? document.elementFromPoint(x, y) : null;
+    while (hit?.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    const within = (outer, node) => {
+      for (let at = node; at; at = at.parentNode ?? at.host) if (at === outer) return true;
+      return false;
+    };
+    const on = !!hit && (within(button, hit) || within(hit, button));
+    const key = [
+      selector,
+      button?.disabled,
+      button?.textContent,
+      box?.x,
+      box?.y,
+      box?.width,
+      box?.height,
+    ].join();
+    const now = performance.now();
+    if (window.settled?.key !== key) window.settled = { key, since: now };
+    const stable = now - window.settled.since;
+    window.pressing = {
+      found: !!button,
+      box: box && [box.x, box.y, box.width, box.height].map(Math.round),
+      hit: hit
+        ? `${hit.localName}${hit.dataset?.action ? `[data-action=${hit.dataset.action}]` : ''}`
+        : null,
+      on,
+      stable: Math.round(stable),
+      arming,
+    };
+    return box?.width > 0 && on && stable >= arming + 100;
+  };
+  await page.evaluate(() => {
+    window.settled = null;
+  });
+  try {
+    await page.until(ready, selector);
+  } catch (error) {
+    const seen = await page.evaluate(() => window.pressing);
+    assert.fail(
+      `waited for ${selector} to be the hit target at its centre with its rect unchanged for the arming time, and saw ${JSON.stringify(seen)}: ${error.message}`
+    );
+  }
   const { x, y } = await page.evaluate((selector) => {
     const box = window.deep(selector).getBoundingClientRect();
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
