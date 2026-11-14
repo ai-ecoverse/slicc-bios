@@ -987,6 +987,7 @@ async function own() {
     cdp: control.hook,
     clipboard: clipboardHook(),
     requests,
+    devices: serial.devices,
     commands: { append: [TOOLS_MODULES, USER_MODULES, '/opt/slicc/pending/node_modules'] },
     facades: { link: { port: LINK_PORT, hook: link } },
     ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault, {
@@ -1001,6 +1002,7 @@ async function own() {
   void startTools();
   const cone = await addCone(kernel);
   await deviceGroups(kernel).catch((error) => console.warn(`device groups: ${error.message}`));
+  serial.nodes(kernel);
   coneIds = cone && { uid: cone.uid, gid: cone.gid };
   denials.drain();
   await lockLegacy(kernel, { text, write, root }).catch((error) =>

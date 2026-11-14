@@ -18,6 +18,10 @@ const faux = () => {
   globalThis.sliccKernelDebug = true;
   const ids = { usbVendorId: 0x2e8a, usbProductId: 0x0005 };
   const granted = [];
+  let chosen = ids;
+  window.choose = (info) => {
+    chosen = info;
+  };
   window.serialLog = { chooser: [], opened: [], closed: 0, set: [], held: [] };
   const gates = {};
   window.hold = (what) => {
@@ -173,7 +177,7 @@ const faux = () => {
         'SecurityError'
       );
     await passed('chooser');
-    const port = new FakePort(ids);
+    const port = new FakePort(chosen);
     granted.push(port);
     return port;
   };
@@ -371,6 +375,62 @@ test('a cone in dialout lists, opens and reads a port, but its writes and signal
   assert.match(sudo.stdout, /2 bytes written/, sudo.stderr);
   assert.match(sudo.stdout, /hi sudo 0/, sudo.stderr);
   assert.deepEqual(await page.evaluate(() => window.serialLog.set), [{ dataTerminalReady: true }]);
+  assert.deepEqual(page.errors, []);
+});
+
+test('a typed serial request makes the port /dev/ttyUSB0, root:dialout 0640 with its by-id link; a cone cats it and the chip names the node, Serial ports off hangs the cat up, and the cone’s write is EACCES while sudo’s reaches the port', async (t) => {
+  const page = await seven(t);
+  await page.evaluate(() => window.choose({ usbVendorId: 0x0403, usbProductId: 0x6001 }));
+  await run(page, 'serial request --vid 0x0403; echo "typed $?"');
+  await shows(page, 'typed 0');
+  await run(
+    page,
+    'for i in $(seq 100); do [ -c /dev/ttyUSB0 ] && break; sleep 0.1; done; ls -l /dev/ttyUSB0; readlink /dev/serial/by-id/usb-0403_6001-if00; serial list; echo "node $?"'
+  );
+  await shows(page, 'node 0');
+  const shown = await screen(page);
+  assert.match(shown, /crw-r----- 1 root dialout 188, 0 .*\/dev\/ttyUSB0/);
+  assert.match(shown, /\.\.\/\.\.\/ttyUSB0/);
+  assert.match(shown, /serial1\s+0x0403:0x6001\s+\/dev\/ttyUSB0/);
+  assert.equal(await page.evaluate(() => window.serialLog.opened.length), 0);
+
+  const reading = await started(page, 'cat /dev/ttyUSB0 > /tmp/node-read; echo "cat $?"', {
+    user: 'cone',
+    tag: AGENT,
+  });
+  await page.until(() => window.chips().length === 1);
+  const [chip] = await page.evaluate(() => window.chips());
+  assert.match(chip, /Serial port open · serial1 \(\/dev\/ttyUSB0\) · cone · \d+:\d\d/);
+  await page.evaluate(() => window.feed('node-bytes'));
+  const deadline = Date.now() + 60000;
+  let read = '';
+  while (!read.includes('node-bytes') && Date.now() < deadline) {
+    read = (await asCone(page, 'cat /tmp/node-read')).stdout;
+    if (!read.includes('node-bytes')) await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(read, 'node-bytes');
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').model.switches.set('serial', false)
+  );
+  const hung = await finished(page, reading);
+  assert.match(hung.stdout, /cat 0/, hung.stderr);
+  await page.until(() => window.chips().length === 0);
+  await page.evaluate(() => document.querySelector('slicc-app').model.switches.set('serial', true));
+
+  const refused = await asCone(page, 'printf x > /dev/ttyUSB0; echo "write $?"');
+  assert.match(refused.stdout, /write 1/);
+  assert.match(refused.stderr, /\/dev\/ttyUSB0: Permission denied/);
+  assert.equal(await page.evaluate(() => window.serialLog.opened.length), 1);
+  await run(
+    page,
+    'echo \'NOPASSWD cone Cmnd *\' > /etc/sudoers.d/cone-node && chmod 0440 /etc/sudoers.d/cone-node; echo "rule $?"'
+  );
+  await shows(page, 'rule 0');
+  const sudo = await asCone(
+    page,
+    `for i in $(seq 20); do sudo -n sh -c 'exec 3<>/dev/ttyUSB0 && printf hi >&3 && head -c 2 <&3' && break; sleep 0.25; done; echo " sudo $?"`
+  );
+  assert.match(sudo.stdout, /hi sudo 0/, sudo.stderr);
   assert.deepEqual(page.errors, []);
 });
 
@@ -602,7 +662,7 @@ test('turning Serial ports off while a serial open is still in flight closes the
   );
   await shows(page, 'fresh 0');
   const shown = await screen(page);
-  assert.match(shown, /serial1\s+0x2e8a:0x0005\s+serial: serial1 is not open/);
+  assert.match(shown, /serial1\s+0x2e8a:0x0005\s+\/dev\/ttyACM0\s+serial: serial1 is not open/);
   assert.match(shown, /read 1/);
   assert.match(shown, /fresh 0/);
   assert.doesNotMatch(shown, /stale|73 74 61 6c 65/);
@@ -648,7 +708,7 @@ test('turning Serial ports off while an agent’s serial request waits on the cl
     page,
     'serial list; serial read serial1 --timeout-ms 200; echo "read $?"'
   );
-  assert.match(after.stdout, /^serial1\s+0x2e8a:0x0005$/m);
+  assert.match(after.stdout, /^serial1\s+0x2e8a:0x0005(\s+\/dev\/ttyACM0)?$/m);
   assert.doesNotMatch(after.stdout, /\[open\]/);
   assert.match(after.stdout, /read 1/);
   assert.match(after.stderr, /serial: serial1 is not open/);
