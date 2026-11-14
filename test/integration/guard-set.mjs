@@ -30,6 +30,7 @@ export const targets = {
   own: origin('client.example.test'),
   client: origin('client.example.test'),
   log: origin('log.example.test'),
+  idp: origin('ims-na1.adobelogin.com'),
 };
 const PATHS = {
   devtools: {
@@ -99,7 +100,7 @@ const browserAt = () =>
     extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
     args: [
       '--remote-allow-origins=*',
-      '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1',
+      '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1, MAP *.adobelogin.com 127.0.0.1',
     ],
   });
 const chrome = await browserAt();
