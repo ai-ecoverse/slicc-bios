@@ -194,3 +194,27 @@ test('ordering parent depth past the bound refuses without a hold', async (t) =>
   assert.equal(answer.error?.message, PROTECTED);
   assert.deepEqual(held(ids), []);
 });
+
+for (const parent of ['protected', 'protected and opener']) {
+  test(`ordering parent depth a lent page under a ${parent} parent keeps its opener hold`, async (t) => {
+    const wire = protocol(t);
+    const root = `lent-root-${parent}`;
+    const child = `lent-child-${parent}`;
+    const url = `${protectedOrigin}/root`;
+    wire.target(root, 'page', { id: root, url, securityOrigin: protectedOrigin });
+    const entry = wire.target(child, 'page', {
+      id: child,
+      url: `${protectedOrigin}/child`,
+      securityOrigin: protectedOrigin,
+    });
+    Object.assign(entry.info, {
+      canAccessOpener: true,
+      openerId: root,
+      ...(parent === 'protected and opener' ? { parentId: root } : {}),
+    });
+    const answer = await attach(wire, child);
+    assert.equal(answer.error?.message, PROTECTED);
+    assert.equal(isHeld(child), true);
+    assert.equal(isHeld(root), false);
+  });
+}
