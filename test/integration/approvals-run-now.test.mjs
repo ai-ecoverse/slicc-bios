@@ -18,7 +18,7 @@ import {
   NOTICE_COMMAND_MAX,
   NOTICE_PATH_MAX,
 } from '../../src/seed/approvals-run.js';
-import { ready } from './bios.mjs';
+import { agentUp, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const turn = () => new Promise((resolve) => setImmediate(resolve));
@@ -787,7 +787,7 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
   timeout: 900_000,
 }, async (t) => {
   const chrome = await launch({
-    agent: false,
+    agent: true,
     timeout: 120_000,
   });
   after(async () => {
@@ -796,14 +796,25 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
   const page = await chrome.page(t);
   await page.init(`() => {
     globalThis.sliccKernelDebug = true;
-    globalThis.sliccApprovalRunNoticesSpy = [];
-    globalThis.sliccApprovalRunNotice = async (notice) => {
-      globalThis.sliccApprovalRunNoticesSpy.push(notice);
-      return { delivered: true };
-    };
   }`);
   await page.goto('/');
-  await ready(page, undefined, { tools: false });
+  await ready(page);
+  await agentUp(page);
+  const agentVersion = await page.evaluate(async () => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['opt', 'agent', 'node_modules', '@ai-ecoverse', 'slicc-agent'])
+      dir = await dir.getDirectoryHandle(part);
+    return JSON.parse(await (await (await dir.getFileHandle('package.json')).getFile()).text())
+      .version;
+  });
+  t.diagnostic(`slicc-agent ${agentVersion}`);
+  {
+    const [major, minor] = agentVersion.split('.').map(Number);
+    assert.ok(
+      major > 7 || (major === 7 && minor >= 34),
+      `need slicc-agent ≥ 7.34.0 for approvalRunNotice licks, got ${agentVersion}`
+    );
+  }
 
   const late = await page.evaluate(async () => {
     const approvals = globalThis.sliccApprovals;
@@ -965,7 +976,23 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
   }, 'slicc-approvals-panel');
 
   const ran = await page.evaluate(async (okId) => {
-    const before = globalThis.sliccApprovalRunNoticesSpy?.length ?? 0;
+    const licksOf = (id) => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return agent
+        .messages(agent.active())
+        .filter(
+          (message) =>
+            message.role === 'lick' && message.channel === 'sudo-run' && message.approval === id
+        )
+        .map((message) => ({
+          approval: message.approval,
+          channel: message.channel,
+          title: message.title ?? '',
+          text: message.text ?? '',
+          body: message.body ?? '',
+        }));
+    };
+    const before = licksOf(okId).length;
     await document.querySelector('slicc-app').model.approvals.run(okId);
     const history = () => document.querySelector('slicc-app').model.approvals.history();
     for (
@@ -974,33 +1001,62 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       i += 1
     )
       await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let i = 0; i < 200 && licksOf(okId).length < before + 2; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 20));
     const record = history().find((entry) => entry.approval.id === okId);
-    const notices = (globalThis.sliccApprovalRunNoticesSpy ?? []).slice(before);
     return {
       run: record?.run,
-      notices: notices.map((notice) => ({
-        id: notice.id,
-        phase: notice.phase,
-        agentId: notice.agentId,
-        pid: notice.pid,
-        status: notice.status,
-        command: notice.command,
-      })),
+      licks: licksOf(okId).slice(before),
     };
   }, late.okId);
 
   assert.equal(ran.run?.state, 'done');
   assert.equal(ran.run?.status, 0);
-  assert.equal(ran.notices.length, 2);
-  assert.equal(ran.notices[0].phase, 'start');
-  assert.equal(ran.notices[0].id, late.okId);
-  assert.equal(ran.notices[0].agentId, 'cone');
-  assert.equal(typeof ran.notices[0].pid, 'number');
-  assert.equal(ran.notices[1].phase, 'end');
-  assert.equal(ran.notices[1].status, 0);
+  assert.equal(typeof ran.run?.pid, 'number');
+  assert.equal(ran.licks.length, 2);
+  assert.equal(ran.licks[0].channel, 'sudo-run');
+  assert.equal(ran.licks[0].approval, late.okId);
+  assert.match(ran.licks[0].title, /sudo runs now/);
+  assert.match(ran.licks[0].text, /the owner ran your timed-out sudo request/);
+  assert.match(ran.licks[0].body, /Output: \//);
+  assert.match(ran.licks[0].body, /\.slicc\/sudo-runs\//);
+  assert.doesNotMatch(ran.licks[0].body, /Its output isn't shown here/);
+  assert.equal(ran.licks[1].channel, 'sudo-run');
+  assert.equal(ran.licks[1].approval, late.okId);
+  assert.match(ran.licks[1].text, /your late sudo run ended: exit 0/);
+  assert.match(ran.licks[1].body, /Its output isn't shown here/);
+  assert.match(ran.licks[1].body, /\.slicc\/sudo-runs\//);
+  assert.equal(ran.run.stdout, ran.licks[0].body.match(/Output: (\S+)/)?.[1]);
+  assert.match(
+    ran.licks[1].body,
+    new RegExp(`${ran.run.stdout.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+  );
+  assert.match(
+    ran.licks[1].body,
+    new RegExp(`${ran.run.stderr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+  );
+  assert.deepEqual(
+    ran.licks.map((lick) =>
+      /sudo runs now/.test(lick.title)
+        ? `${lick.approval}:start`
+        : /late sudo run ended/.test(lick.text)
+          ? `${lick.approval}:end`
+          : null
+    ),
+    [`${late.okId}:start`, `${late.okId}:end`]
+  );
 
   const refused = await page.evaluate(async (badId) => {
-    const before = globalThis.sliccApprovalRunNoticesSpy?.length ?? 0;
+    const licksOf = (id) => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return agent
+        .messages(agent.active())
+        .filter(
+          (message) =>
+            message.role === 'lick' && message.channel === 'sudo-run' && message.approval === id
+        );
+    };
+    const before = licksOf(badId).length;
     const error = await document
       .querySelector('slicc-app')
       .model.approvals.run(badId)
@@ -1014,17 +1070,18 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       if (record?.run?.state === 'failed' || error) break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const record = history().find((entry) => entry.approval.id === badId);
     return {
       error,
       run: record?.run ?? null,
-      notices: (globalThis.sliccApprovalRunNoticesSpy ?? []).length - before,
+      licks: licksOf(badId).length - before,
     };
   }, late.badId);
 
   assert.match(refused.run?.error ?? refused.error ?? '', /changed since it was requested/);
   assert.equal(refused.run?.state, 'failed');
-  assert.equal(refused.notices, 0);
+  assert.equal(refused.licks, 0);
 
   await page.evaluate((id) => {
     const walk = (root) => {
