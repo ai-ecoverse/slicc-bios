@@ -1310,7 +1310,9 @@ class Guard {
     if (found.type === 'iframe') {
       if (await this.frameAncestry(targetId, found, depth, seen)) return true;
     } else if (found.parentId && found.parentId !== targetId) {
-      const refused = await this.target(found.parentId, depth + 1, seen);
+      const refused =
+        (await this.createdOwner(found.parentId)) ||
+        (await this.target(found.parentId, depth + 1, seen));
       if (isHeld(found.parentId)) {
         hold(targetId);
         found.guarded = true;
@@ -1393,6 +1395,7 @@ class Guard {
       found.guarded = true;
       return true;
     }
+    if (await this.createdOwner(parent)) return true;
     return this.target(parent, depth + 1, seen);
   }
 
@@ -2690,7 +2693,13 @@ class Guard {
     if (!chain) return true;
     for (const id of chain) {
       const known = this.targets.get(id);
-      if (isHeld(id) || known?.guarded === true || this.is.url(known?.url)) return true;
+      if (
+        isHeld(id) ||
+        known?.guarded === true ||
+        this.is.url(known?.url) ||
+        this.createdPending(known?.info, id)
+      )
+        return true;
     }
     return false;
   }
@@ -2774,6 +2783,14 @@ class Guard {
       if (!this.createdPending(info, targetId)) return;
       await pause(POLL_MS);
     }
+  }
+
+  async createdOwner(targetId) {
+    if (!this.navs.get(targetId)?.created) return false;
+    const { answer, raw } = await this.createdTargetInfo(targetId);
+    if (!answer || answer.error || raw?.targetId !== targetId) return true;
+    this.learn(raw);
+    return this.createdPending(raw, targetId);
   }
 
   async current(targetId, limit = ANSWER_MS, ...rest) {
@@ -5001,7 +5018,10 @@ class Guard {
   async unsafeCreator(targetId) {
     return Boolean(
       targetId &&
-        (isHeld(targetId) || this.targets.get(targetId)?.guarded || (await this.target(targetId)))
+        (isHeld(targetId) ||
+          this.targets.get(targetId)?.guarded ||
+          (await this.createdOwner(targetId)) ||
+          (await this.target(targetId)))
     );
   }
 
