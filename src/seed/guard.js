@@ -2743,7 +2743,11 @@ class Guard {
     const nav = this.navs.get(targetId);
     if (!nav?.created || nav.failed || inherits(nav.created) || this.is.url(nav.created))
       return false;
-    return this.createdUnset(info);
+    if (!this.createdUnset(info)) {
+      nav.created = undefined;
+      return false;
+    }
+    return Boolean(info?.openerId) || info?.canAccessOpener === true;
   }
 
   async createdReady(targetId, limit = PROBE_WAIT) {
