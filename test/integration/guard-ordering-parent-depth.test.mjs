@@ -55,17 +55,17 @@ for (const order of ['leaf first', 'ancestors first']) {
 }
 
 for (const order of ['leaf first', 'ancestors first']) {
-  test(`ordering parent depth protected root stays unheld: ${order}`, async (t) => {
+  test(`ordering parent depth protected root refuses its children and stays unheld: ${order}`, async (t) => {
     const wire = protocol(t);
     const ids = chain(wire, `own-${order}`, `${protectedOrigin}/root`);
     if (order === 'leaf first') {
       const answer = await attach(wire, ids[11]);
-      assert.equal(answer.error, undefined, JSON.stringify(answer));
+      assert.equal(answer.error?.message, PROTECTED, JSON.stringify(answer));
       assert.equal(isHeld(ids[11]), false);
     } else {
       for (let i = 1; i <= 11; i++) {
         const answer = await attach(wire, ids[i]);
-        assert.equal(answer.error, undefined, JSON.stringify(answer));
+        assert.equal(answer.error?.message, PROTECTED, JSON.stringify(answer));
         assert.equal(isHeld(ids[i]), false);
       }
     }

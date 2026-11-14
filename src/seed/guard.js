@@ -1316,7 +1316,7 @@ class Guard {
         found.guarded = true;
         return true;
       }
-      if (refused && !this.targets.get(found.parentId)?.guarded) return true;
+      if (refused) return true;
     }
     const opener = cross ? undefined : await this.opener(found.openerId, depth, seen);
     const lent = found.type === 'page' && !cross && !emptyNoAccess(found.info);
