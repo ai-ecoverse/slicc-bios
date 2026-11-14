@@ -110,7 +110,24 @@ function redactedPopup(info, infos, is) {
   return opener?.type === 'page' && is.url(opener.url ?? '');
 }
 
-async function find(open, url, { deadline, now, sleep, storage, redacted }) {
+async function listing(open) {
+  let connection;
+  try {
+    connection = await open();
+  } catch {
+    return null;
+  }
+  try {
+    const result = await ask(connection, 'Target.getTargets');
+    if (!Array.isArray(result?.targetInfos)) return null;
+    return new Set(result.targetInfos.map((info) => info?.targetId));
+  } finally {
+    connection.close();
+  }
+}
+
+async function find(open, url, { deadline, now, sleep, storage, redacted, before }) {
+  if (before === null) return 'missing';
   let connection;
   try {
     connection = await open();
@@ -125,7 +142,8 @@ async function find(open, url, { deadline, now, sleep, storage, redacted }) {
         (info) =>
           info?.type === 'page' &&
           typeof info.targetId === 'string' &&
-          (info.url === url || (redacted && redactedPopup(info, infos, redacted)))
+          (info.url === url ||
+            (redacted && !before?.has(info.targetId) && redactedPopup(info, infos, redacted)))
       );
       if (found.length) {
         for (const info of found) hold(info.targetId, storage);
@@ -151,23 +169,64 @@ export function watchSignIns({
   asked = () => {},
 }) {
   const channel = listen(CHANNEL);
+  const bases = new Map();
+  const queued = new Set();
+  let turn = Promise.resolve();
+  const openers = () =>
+    Object.entries(hosts() ?? {}).filter(([, open]) => typeof open === 'function');
+  const base = async (marker) => {
+    const linked = openers().filter(([name]) => name.startsWith(LINKED));
+    const lists = await Promise.all(
+      linked.map(async ([name, open]) => [name, await listing(open)])
+    );
+    const entry = { lists: new Map(lists) };
+    const done = new Promise((resolve) => {
+      entry.release = resolve;
+    });
+    bases.set(marker, entry);
+    channel.postMessage({ type: 'based', marker });
+    void sleep(wait).then(() => {
+      if (bases.get(marker) !== entry) return;
+      bases.delete(marker);
+      entry.release();
+    });
+    await done;
+  };
+  const claim = (marker) => {
+    const entry = bases.get(marker) ?? { lists: new Map(), release() {} };
+    bases.delete(marker);
+    return entry;
+  };
   channel.onmessage = async ({ data }) => {
-    if (data?.type !== 'hold' || typeof data.marker !== 'string' || !data.marker) return;
+    if (typeof data?.marker !== 'string' || !data.marker) return;
+    if (data.type === 'base') {
+      if (queued.has(data.marker)) return;
+      queued.add(data.marker);
+      turn = turn
+        .then(() => base(data.marker))
+        .catch(() => {})
+        .then(() => queued.delete(data.marker));
+      return;
+    }
+    if (data.type !== 'hold') return;
     asked();
     const url = markerUrl(data.marker);
     const deadline = now() + wait;
-    const opens = Object.entries(hosts() ?? {}).filter(([, open]) => typeof open === 'function');
+    const entry = data.based === true ? claim(data.marker) : undefined;
     const found = await Promise.all(
-      opens.map(([name, open]) =>
-        find(open, url, {
+      openers().map(([name, open]) => {
+        const linked = name.startsWith(LINKED);
+        return find(open, url, {
           deadline,
           now,
           sleep,
           storage,
-          redacted: name.startsWith(LINKED) && is,
-        })
-      )
+          redacted: linked && is,
+          before: linked && entry ? (entry.lists.get(name) ?? null) : undefined,
+        });
+      })
     );
+    entry?.release();
     const type = !found.length
       ? 'none'
       : found.every((state) => state === 'held')
@@ -181,6 +240,33 @@ export function watchSignIns({
 
 const ANSWERS = new Set(['held', 'none', 'unheld']);
 
+export function askBase(
+  marker,
+  {
+    listen = (name) => new BroadcastChannel(name),
+    wait = WAIT + 1000,
+    signal,
+    present = () => false,
+  } = {}
+) {
+  return new Promise((resolve) => {
+    const channel = listen(CHANNEL);
+    const finish = (answer) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+      channel.close();
+      resolve(answer);
+    };
+    const stop = () => finish('aborted');
+    const timer = setTimeout(() => finish(present() ? 'unheld' : 'none'), wait);
+    signal?.addEventListener('abort', stop, { once: true });
+    channel.onmessage = ({ data }) => {
+      if (data?.marker === marker && data.type === 'based') finish('based');
+    };
+    channel.postMessage({ type: 'base', marker });
+  });
+}
+
 export function askHold(
   marker,
   {
@@ -189,6 +275,7 @@ export function askHold(
     signal,
     present = () => false,
     now = Date.now,
+    based = false,
   } = {}
 ) {
   return new Promise((resolve) => {
@@ -207,7 +294,7 @@ export function askHold(
     channel.onmessage = ({ data }) => {
       if (data?.marker === marker && ANSWERS.has(data.type)) finish(data.type);
     };
-    channel.postMessage({ type: 'hold', marker });
+    channel.postMessage({ type: 'hold', marker, ...(based ? { based } : {}) });
   });
 }
 
