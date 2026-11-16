@@ -161,6 +161,7 @@ async function sweep(path, keep) {
 const IDLE = 30000;
 const stalled = Symbol('stalled');
 let heard = 0;
+let fetched = 0;
 
 function within(promise) {
   let timer;
@@ -192,6 +193,8 @@ async function receive(url, signal) {
     );
   }
   heard = Date.now();
+  const remote = new URL(url).origin !== self.location.origin;
+  if (remote) fetched = heard;
   if (!response.ok) throw new Error(`${response.status} ${response.url}`);
   const reader = response.body.getReader();
   const chunks = [];
@@ -199,6 +202,7 @@ async function receive(url, signal) {
     const next = await within(reader.read());
     if (next === stalled) return stalled;
     heard = Date.now();
+    if (remote) fetched = heard;
     if (next.done) return new Blob(chunks).arrayBuffer();
     chunks.push(next.value);
   }
@@ -693,6 +697,7 @@ const ops = {
   hello: async (_args, _progress, work) => ({
     connections,
     born,
+    received: fetched ? Date.now() - fetched : null,
     busy: busy(work.key),
     reach: connections > 1 ? await reach() : null,
   }),
