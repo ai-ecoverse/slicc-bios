@@ -73,9 +73,21 @@ function within(promise, ms, what) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-function wedged({ reach, busy = [] }) {
+const FLOWING = 30000;
+
+function flowing({ reach, received, busy = [] }) {
+  return (
+    reach === 'silent' &&
+    received !== null &&
+    received < FLOWING &&
+    busy.some((work) => work.op === 'packages' && work.phase === 'running')
+  );
+}
+
+function wedged(hello) {
+  const { reach, busy = [] } = hello;
   if (reach === 'worker') return 'a service worker answered its downloads';
-  if (reach === 'silent') return 'its downloads got no answer in 10 s';
+  if (reach === 'silent' && !flowing(hello)) return 'its downloads got no answer in 10 s';
   const stuck = busy.find(
     (work) => work.op === 'packages' && work.phase === 'running' && work.quiet >= STUCK
   );
