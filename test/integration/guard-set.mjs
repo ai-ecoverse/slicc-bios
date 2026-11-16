@@ -22,7 +22,7 @@ const origin = (host) => `http://${host}:${fixture.port}`;
 export const targets = {
   ordinary: origin('ordinary.example.test'),
   plain: origin('ordinary.example.test'),
-  cross: origin('cross.example.test'),
+  cross: origin('cross.test'),
   seven: origin('seven.sliccy.ai'),
   vault: origin('vault.sliccy.ai'),
   'vault-x': origin('vault-x.sliccy.ai'),
@@ -99,7 +99,7 @@ const browserAt = () =>
     extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
     args: [
       '--remote-allow-origins=*',
-      '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1',
+      '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1, MAP cross.test 127.0.0.1',
     ],
   });
 const chrome = await browserAt();
