@@ -48,7 +48,13 @@ test('reports each step and the download as it happens', async (t) => {
   const [opfs] = bios.texts('opfs');
   assert.match(opfs, /^(persistent|best effort), [\d,.]+[kMG]?B free$/);
   assert.deepEqual(bios.texts('installer'), ['connection #1']);
-  assert.match(bios.texts('packages')[0], new RegExp(`^1/${installable} node_modules/[@\\w./-]+$`));
+  const packages = bios.texts('packages');
+  assert.equal(packages[0], 'reading the lockfile');
+  assert.match(packages[1], /^downloading node_modules\/[@\w./-]+$/);
+  assert.match(
+    packages.find((text) => /^\d+\//.test(text)),
+    new RegExp(`^1/${installable} node_modules/[@\\w./-]+$`)
+  );
   assert.match(
     bios.texts('packages').at(-1),
     new RegExp(`^${installable}/${installable} downloaded from npm, [\\d.]+MB$`)

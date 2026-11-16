@@ -52,11 +52,48 @@ function connect() {
     if ('error' in data) call.reject(new Error(data.error));
     else call.resolve(data.result);
   };
-  return (op, args, progress = () => {}) =>
+  const ask = (op, args, progress = () => {}) =>
     new Promise((resolve, reject) => {
       calls.set(++id, { resolve, reject, progress });
       port.postMessage({ id, op, args });
     });
+  ask.close = () => port.close();
+  return ask;
+}
+
+const HELLO = 30000;
+const STUCK = 120000;
+const QUIET = 15000;
+
+function within(promise, ms, what) {
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} didn't answer within ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+function wedged({ reach, busy = [] }) {
+  if (reach === 'worker') return 'a service worker answered its downloads';
+  if (reach === 'silent') return 'its downloads got no answer in 10 s';
+  const stuck = busy.find(
+    (work) => work.op === 'packages' && work.phase === 'running' && work.quiet >= STUCK
+  );
+  if (!stuck) return null;
+  const where = stuck.inflight?.length ? stuck.inflight.join(', ') : stuck.note;
+  const at = where ? ` at ${where}` : '';
+  return `its packages run made no progress for ${Math.round(stuck.quiet / 1000)} s${at}`;
+}
+
+async function fresh(old, born) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const next = connect();
+    const hello = await within(next('hello'), 3000, 'the new installer').catch(() => null);
+    if (hello && hello.born !== born) return { next, hello };
+    next.close();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  throw new Error(`the old installer didn't stop (${old})`);
 }
 
 function remember(key, list) {
@@ -75,8 +112,21 @@ async function step(name, task) {
   const output = item.querySelector('output');
   item.dataset.state = 'active';
   splash.begin(name);
+  let last = '';
+  let said = performance.now();
+  let beaten = 0;
+  const beat = setInterval(() => {
+    const now = performance.now();
+    const quiet = now - said;
+    if (quiet < QUIET || now - beaten < QUIET) return;
+    beaten = now;
+    output.value = `${last || 'started'}, nothing new for ${Math.round(quiet / 1000)} s`;
+    splash.report(name, output.value);
+  }, 1000);
   try {
     output.value = await task((text, counted) => {
+      last = text;
+      said = performance.now();
       output.value = text;
       splash.report(name, text, counted);
     });
@@ -86,6 +136,7 @@ async function step(name, task) {
     splash.fail(name, error.message);
     throw error;
   } finally {
+    clearInterval(beat);
     if (item.dataset.state === 'failed') clearHandOff();
   }
   item.dataset.state = 'done';
@@ -109,11 +160,22 @@ await step('opfs', async () => {
   return `${persisted ? 'persistent' : 'best effort'}, ${size(quota - usage)} free`;
 });
 
-await step('installer', async () => {
+await step('installer', async (report) => {
   const six = await disarmSix();
   installer = connect();
-  const { connections } = await installer('hello');
-  return `connection #${connections}${disarmLine(six)}`;
+  const hello = await within(installer('hello'), HELLO, 'the installer');
+  const why = wedged(hello);
+  if (!why) return `connection #${hello.connections}${disarmLine(six)}`;
+  report(`connection #${hello.connections}: ${why}, starting a new installer`);
+  await within(
+    installer('reset', { reason: `seven's BIOS replaced it: ${why}` }),
+    3000,
+    'reset'
+  ).catch(() => {});
+  installer.close();
+  const { next, hello: started } = await fresh(why, hello.born);
+  installer = next;
+  return `connection #${started.connections}, replaced the installer (${why})${disarmLine(six)}`;
 });
 
 await step('packages', async (report) => {
@@ -126,7 +188,9 @@ await step('packages', async (report) => {
     repaired: changed,
     stopped: kept,
   } = await installer('packages', { from, ...baseProject() }, (progress) =>
-    report(`${progress.done}/${progress.total} ${progress.path}`, progress)
+    progress.note
+      ? report(progress.note)
+      : report(`${progress.done}/${progress.total} ${progress.path}`, progress)
   );
   const pruned = removed ? `, ${removed} removed` : '';
   repaired.push(...changed);

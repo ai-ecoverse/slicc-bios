@@ -1,10 +1,42 @@
 const TAR = 'https://cdn.jsdelivr.net/npm/modern-tar@0.8.6/dist/web/index.js';
 const INTEGRITY = new URL('sw/integrity.js', self.location.href).href;
+const IMPORT = 60000;
+const PROBE = 10000;
+const LISTED = 30000;
+const LOCK_NOTE = 30000;
+const born = Date.now();
+const running = new Map();
+let serial = 0;
 let ledger;
+let decoder;
+
+function bounded(promise, ms, what) {
+  let timer;
+  promise.catch(() => {});
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} didn't answer within ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
 
 function integrity() {
-  ledger ??= import(INTEGRITY).then(({ openIntegrity }) => openIntegrity());
+  ledger ??= bounded(
+    import(INTEGRITY).then(({ openIntegrity }) => openIntegrity()),
+    IMPORT,
+    'the integrity ledger'
+  );
+  ledger.catch(() => {
+    ledger = null;
+  });
   return ledger;
+}
+
+function tar() {
+  decoder ??= bounded(import(TAR), IMPORT, `modern-tar from ${new URL(TAR).host}`);
+  decoder.catch(() => {
+    decoder = null;
+  });
+  return decoder;
 }
 const root = navigator.storage.getDirectory();
 let connections = 0;
@@ -260,7 +292,7 @@ function entryPoints(manifest) {
 }
 
 async function unpack(bytes, path, stamps = []) {
-  const { createTarDecoder } = await import(TAR);
+  const { createTarDecoder } = await tar();
   const { sha256 } = await import(INTEGRITY);
   const gzip = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
   const read = [];
@@ -302,7 +334,7 @@ async function current(path, entry, changed) {
 }
 
 async function headers(bytes, path) {
-  const { createTarDecoder } = await import(TAR);
+  const { createTarDecoder } = await tar();
   const gzip = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
   const found = [];
   for await (const { header, body } of gzip.pipeThrough(createTarDecoder())) {
@@ -347,9 +379,10 @@ async function repair(entries, fresh) {
   return repaired;
 }
 
-async function add([path, entry], changed, stamps, fresh, replacing) {
+async function add([path, entry], changed, stamps, fresh, replacing, started = () => {}) {
   const { resolved, integrity: expected } = entry;
   if (await current(path, entry, changed).catch(() => false)) return 0;
+  started(path);
   const bytes = await download(resolved);
   await verify(bytes, expected, path);
   const write = async () => {
@@ -366,7 +399,9 @@ async function add([path, entry], changed, stamps, fresh, replacing) {
 const TOOLS = 'opt/slicc/tools/node_modules';
 
 async function moved(from) {
-  const response = await fetch(new URL('tools.json', from)).catch(() => null);
+  const response = await fetch(new URL('tools.json', from), {
+    signal: AbortSignal.timeout(LISTED),
+  }).catch(() => null);
   if (response?.status === 404) return new Set();
   if (!response?.ok) return null;
   const listed = await response.json().catch(() => null);
@@ -409,9 +444,47 @@ async function retire({ names }) {
   return { retired: gone };
 }
 
-async function packages({ from, held = false, base = '' }, progress) {
-  if (held) return replay(from, progress, base);
-  return navigator.locks.request('slicc-packages', () => replay(from, progress, base));
+async function holders() {
+  const { held = [], pending = [] } = (await navigator.locks.query?.()) ?? {};
+  const mine = [...running.values()].find(
+    (work) => work.op === 'packages' && work.phase === 'running'
+  );
+  const waiting = pending.filter(({ name }) => name === 'slicc-packages').length;
+  const at = mine?.inflight?.size ? [...mine.inflight].join(', ') : mine?.note;
+  const by = mine
+    ? `this installer's other run, ${Math.round((Date.now() - mine.since) / 1000)} s in${at ? `, at ${at}` : ''}`
+    : held.some(({ name }) => name === 'slicc-packages')
+      ? 'another seven tab'
+      : 'nobody now';
+  return `held by ${by}${waiting > 1 ? `, ${waiting - 1} more waiting` : ''}`;
+}
+
+async function packages({ from, held = false, base = '' }, progress, work = {}) {
+  const run = () => {
+    work.phase = 'running';
+    return replay(from, progress, base, work);
+  };
+  if (held) return run();
+  const now = await navigator.locks.request('slicc-packages', { ifAvailable: true }, (lock) =>
+    lock ? run().then((result) => ({ result })) : null
+  );
+  if (now) return now.result;
+  work.phase = 'waiting';
+  const since = Date.now();
+  const say = async () =>
+    progress({
+      note: `waiting ${Math.round((Date.now() - since) / 1000)} s for another install of the packages (${await holders()})`,
+    });
+  await say();
+  const timer = setInterval(() => void say().catch(() => {}), LOCK_NOTE);
+  try {
+    return await navigator.locks.request('slicc-packages', () => {
+      clearInterval(timer);
+      return run();
+    });
+  } finally {
+    clearInterval(timer);
+  }
 }
 
 const ROOTED = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc'];
@@ -480,9 +553,10 @@ async function outcome(ledger, prefix, task) {
   return { ...result, repaired: healed.map(({ path }) => path), stopped };
 }
 
-async function replay(from, progress, base) {
+async function replay(from, progress, base, work = {}) {
   const ledger = await integrity();
   return outcome(ledger, '/node_modules/', async () => {
+    progress({ note: 'reading the lockfile' });
     const lock = JSON.parse(new TextDecoder().decode(await download(from)));
     const queue = Object.entries(lock.packages).filter(
       ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu && !entry.optional
@@ -500,17 +574,25 @@ async function replay(from, progress, base) {
     const entries = [...queue];
     const { replacing } = await meta();
     let failure = null;
+    const inflight = new Set();
+    work.inflight = inflight;
+    const started = (path) => {
+      inflight.add(path);
+      progress({ note: `downloading ${path}` });
+    };
     const worker = async () => {
       while (queue.length && !failure) {
         const entry = queue.shift();
         try {
-          const size = await add(entry, changed, stamps, fresh, replacing);
+          const size = await add(entry, changed, stamps, fresh, replacing, started);
           done += 1;
           downloaded += size ? 1 : 0;
           bytes += size;
           progress({ done, total, path: entry[0] });
         } catch (error) {
           failure ??= error;
+        } finally {
+          inflight.delete(entry[0]);
         }
       }
     };
@@ -573,25 +655,79 @@ async function list(dir, prefix) {
   return entries;
 }
 
+async function reach() {
+  try {
+    const response = await fetch(TAR, { cache: 'no-store', signal: AbortSignal.timeout(PROBE) });
+    response.body?.cancel().catch(() => {});
+    return madeByWorker(TAR, response) ? 'worker' : 'network';
+  } catch (error) {
+    return error?.name === 'TimeoutError' ? 'silent' : 'unreachable';
+  }
+}
+
+function busy(except) {
+  const now = Date.now();
+  return [...running]
+    .filter(([key]) => key !== except)
+    .map(([, { op, phase, since, at, note, inflight }]) => ({
+      op,
+      phase: phase ?? null,
+      for: now - since,
+      quiet: now - Math.max(at, heard),
+      note,
+      inflight: [...(inflight ?? [])],
+    }));
+}
+
+function reset({ reason = 'the BIOS restarted it' } = {}, _progress, work) {
+  for (const [key, { port, id }] of running) {
+    if (key === work.key) continue;
+    running.delete(key);
+    port.postMessage({ id, error: `the installer stopped: ${reason}` });
+  }
+  setTimeout(() => self.close(), 0);
+  return { closed: true };
+}
+
 const ops = {
-  hello: () => ({ connections }),
+  hello: async (_args, _progress, work) => ({
+    connections,
+    born,
+    busy: busy(work.key),
+    reach: connections > 1 ? await reach() : null,
+  }),
   install,
   list: async () => (await list(await root, '')).sort((a, b) => (a.path < b.path ? -1 : 1)),
   packages,
+  reset,
   retire,
 };
+
+function noted(value) {
+  if (typeof value?.note === 'string') return value.note;
+  if (value?.path) return `${value.done}/${value.total} ${value.path}`;
+  return value?.file ?? '';
+}
 
 self.onconnect = ({ ports: [port] }) => {
   connections += 1;
   port.onmessage = async ({ data: { id, op, args } }) => {
     handles = new Map();
+    const key = ++serial;
+    const work = { key, port, id, op, since: Date.now(), at: Date.now(), note: '' };
+    running.set(key, work);
+    const progress = (value) => {
+      work.at = Date.now();
+      work.note = noted(value);
+      port.postMessage({ id, progress: value });
+    };
     try {
-      const result = await ops[op](args, (progress) => port.postMessage({ id, progress }));
+      const result = await ops[op](args, progress, work);
       await announce();
-      port.postMessage({ id, result });
+      if (running.delete(key)) port.postMessage({ id, result });
     } catch (error) {
       await announce();
-      port.postMessage({ id, error: error.message });
+      if (running.delete(key)) port.postMessage({ id, error: error.message });
     }
   };
 };
