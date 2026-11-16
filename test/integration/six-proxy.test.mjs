@@ -76,40 +76,6 @@ test("SLICC 6's proxy worker answers a cross-origin download with its 404 under 
   });
 });
 
-test("an installer already running under an old SLICC 6 worker fails its first download saying a service worker answered, not with npm's 404", async (t) => {
-  state.proxy = 'old';
-  const holder = await open(t);
-  await sixTab(holder);
-  assert.equal(await keepInstaller(holder), `${origin}/llm-proxy-sw.js`);
-
-  const page = await holder.tab();
-  const bios = await watch(page);
-  await page.goto(`${origin}/7/`);
-  await page.until(
-    () => document.querySelector('[data-step="packages"]')?.dataset.state === 'failed'
-  );
-  const seen = await steps(page);
-  assert.equal(seen.installer.state, 'done');
-  assert.equal(seen.installer.text, "connection #2, SLICC 6's service worker unregistered");
-  assert.match(
-    seen.packages.text,
-    new RegExp(
-      `^404 https://registry\\.npmjs\\.org/\\S+\\.tgz came from a service worker, not the network: close every tab of ${origin.replaceAll('.', '\\.')} and open seven again$`
-    )
-  );
-  assert.deepEqual(bios.states().slice(0, 4), [
-    'opfs:active',
-    'opfs:done',
-    'installer:active',
-    'installer:done',
-  ]);
-  assert.match(
-    await page.evaluate(() => document.querySelector('.diagnostics')?.textContent ?? ''),
-    /boot \(under \/llm-proxy-sw\.js\)/
-  );
-  assert.deepEqual(await registered(page), []);
-});
-
 test('an old SLICC 6 worker that ignores the disarm message is unregistered before the installer starts, so seven downloads from npm and boots', async (t) => {
   state.proxy = 'old';
   const page = await open(t);
@@ -156,3 +122,59 @@ test('without SLICC 6 the installer step says nothing about it', async (t) => {
   await ready(page, undefined, { tools: false });
   assert.deepEqual(bios.texts('installer'), ['connection #1']);
 });
+
+for (const { proxy, why } of [
+  { proxy: 'old', why: 'a service worker answered its downloads' },
+  { proxy: 'hang', why: 'its downloads got no answer in 10 s' },
+]) {
+  test(`an installer already running under a SLICC 6 worker that ${proxy === 'old' ? 'answers npm with its 404 is replaced by a new one, and seven boots' : 'never answers is replaced by a new one, which installs the packages'}`, async (t) => {
+    state.proxy = proxy;
+    const holder = await open(t);
+    await sixTab(holder);
+    assert.equal(await keepInstaller(holder), `${origin}/llm-proxy-sw.js`);
+    if (proxy === 'hang') {
+      await holder.evaluate(() => {
+        window.kept.port.onmessage = ({ data }) => {
+          if (!('progress' in data)) window.ended = data;
+        };
+        window.kept.port.postMessage({
+          id: 8,
+          op: 'packages',
+          args: { from: new URL('/7/packages/package-lock.json', location.href).href },
+        });
+      });
+    }
+
+    const page = await holder.tab();
+    const bios = await watch(page);
+    await page.goto(`${origin}/7/`);
+    if (proxy === 'hang') {
+      await page.until(
+        () => document.querySelector('[data-step="packages"]')?.dataset.state === 'done'
+      );
+    } else {
+      await ready(page, undefined, { tools: false });
+      assert.deepEqual(bios.states(), booted);
+    }
+    assert.deepEqual(
+      bios.texts('installer').filter((text) => !/, nothing new for \d+ s$/.test(text)),
+      [
+        `connection #2: ${why}, starting a new installer`,
+        `connection #1, replaced the installer (${why}), SLICC 6's service worker unregistered`,
+      ]
+    );
+    assert.match(bios.texts('packages').at(-1), /^\d+\/\d+ downloaded from npm/);
+    if (proxy === 'old') {
+      assert.equal(
+        await page.evaluate(() => navigator.serviceWorker.controller?.scriptURL),
+        `${origin}/7/sw.js`
+      );
+      assert.deepEqual(await registered(page), [{ scope: '/', script: '/7/sw.js' }]);
+    } else {
+      assert.deepEqual(await holder.until(() => window.ended), {
+        id: 8,
+        error: `the installer stopped: seven's BIOS replaced it: ${why}`,
+      });
+    }
+  });
+}

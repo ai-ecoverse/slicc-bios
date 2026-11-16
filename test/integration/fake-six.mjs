@@ -71,7 +71,7 @@ export const sixTab = `<!doctype html>
 </script>
 `;
 
-export function proxyWorker(disarmable) {
+export function proxyWorker(disarmable, hang = false) {
   const disarm = `self.addEventListener('message', (event) => {
   const source = event.source;
   if (event.data?.type !== 'slicc-six-disarm' || Object.keys(event.data).length !== 1) return;
@@ -88,10 +88,14 @@ ${disarmable ? disarm : ''}self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin === location.origin || !/^https?:$/.test(url.protocol)) return;
   event.respondWith(
-    new Response(JSON.stringify({ error: ${JSON.stringify(PROXY_ERROR)} }), {
+    ${
+      hang
+        ? 'new Promise(() => {})'
+        : `new Response(JSON.stringify({ error: ${JSON.stringify(PROXY_ERROR)} }), {
       status: 404,
       headers: { 'content-type': 'application/json; charset=utf-8' },
-    })
+    })`
+    }
   );
 });
 `;
@@ -255,7 +259,7 @@ export async function startWww(seven) {
     if (url.pathname === '/llm-proxy-sw.js') {
       return response
         .writeHead(200, { ...js, 'cache-control': 'no-store' })
-        .end(proxyWorker(state.proxy === 'new'));
+        .end(proxyWorker(state.proxy === 'new', state.proxy === 'hang'));
     }
     if (url.pathname === '/six-tab.html') return response.writeHead(200, html).end(sixTab);
     if (url.pathname === '/spoof.html') {
