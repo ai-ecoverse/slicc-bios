@@ -7,16 +7,77 @@ export const RECENT = 60 * 1000;
 function done(request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onerror = () => reject(request.error ?? lost());
   });
 }
 
 function finished(transaction) {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error);
+    const failed = () => reject(transaction.error ?? lost());
+    transaction.onerror = failed;
+    transaction.onabort = failed;
   });
+}
+
+function lost() {
+  return new DOMException(
+    'the integrity ledger lost its IndexedDB connection',
+    'InvalidStateError'
+  );
+}
+
+function opened(factory) {
+  const request = factory.open(DB, 1);
+  request.onupgradeneeded = () => {
+    const db = request.result;
+    db.createObjectStore('files', { keyPath: 'path' }).createIndex('source', 'source');
+    db.createObjectStore('sources', { keyPath: 'source' });
+    db.createObjectStore('trees', { keyPath: 'tree' });
+    db.createObjectStore('tampered', { keyPath: 'path' });
+  };
+  return done(request);
+}
+
+const LOST = new Set(['InvalidStateError', 'UnknownError']);
+
+export function reconnecting(open) {
+  let current = null;
+  const closed = new WeakSet();
+  const forget = (attempt, db) => {
+    closed.add(db);
+    if (current === attempt) current = null;
+  };
+  const connect = () => {
+    if (current) return current;
+    const attempt = open().then((db) => {
+      db.addEventListener?.('close', () => forget(attempt, db));
+      db.addEventListener?.('versionchange', () => {
+        forget(attempt, db);
+        db.close();
+      });
+      return db;
+    });
+    current = attempt;
+    attempt.catch(() => {
+      if (current === attempt) current = null;
+    });
+    return attempt;
+  };
+  return async (task) => {
+    const attempt = connect();
+    const db = await attempt;
+    try {
+      return await task(db);
+    } catch (error) {
+      if (!closed.has(db) && !LOST.has(error?.name)) throw error;
+      forget(attempt, db);
+      try {
+        db.close();
+      } catch {}
+      return task(await connect());
+    }
+  };
 }
 
 export function treeOf(path) {
@@ -71,20 +132,15 @@ function due(entry, prefix, now) {
 }
 
 export function openIntegrity(factory = indexedDB) {
-  const request = factory.open(DB, 1);
-  request.onupgradeneeded = () => {
-    const db = request.result;
-    db.createObjectStore('files', { keyPath: 'path' }).createIndex('source', 'source');
-    db.createObjectStore('sources', { keyPath: 'source' });
-    db.createObjectStore('trees', { keyPath: 'tree' });
-    db.createObjectStore('tampered', { keyPath: 'path' });
-  };
-  return done(request).then(createIntegrity);
+  const using = reconnecting(() => opened(factory));
+  return using(() => {}).then(() => createIntegrity(using));
 }
 
-export function createIntegrity(db) {
-  const get = (store, key) => done(db.transaction(store).objectStore(store).get(key));
-  const all = (store) => done(db.transaction(store).objectStore(store).getAll());
+export function createIntegrity(connection) {
+  const using = typeof connection === 'function' ? connection : (task) => task(connection);
+  const get = (store, key) =>
+    using((db) => done(db.transaction(store).objectStore(store).get(key)));
+  const all = (store) => using((db) => done(db.transaction(store).objectStore(store).getAll()));
   async function drop(files, source) {
     const keys = await done(files.index('source').getAllKeys(source));
     for (const key of keys) files.delete(key);
@@ -93,7 +149,9 @@ export function createIntegrity(db) {
     lookup: (path) => get('files', path),
     source: (source) => get('sources', source),
     files: (source) =>
-      done(db.transaction('files').objectStore('files').index('source').getAll(source)),
+      using((db) =>
+        done(db.transaction('files').objectStore('files').index('source').getAll(source))
+      ),
     generation: async (tree) => (await get('trees', tree))?.generation ?? 0,
     tampered: async (now = Date.now()) =>
       (await all('tampered')).filter((entry) => due(entry, '/', now)).map(({ path }) => path),
@@ -111,61 +169,73 @@ export function createIntegrity(db) {
         changed: open.map(({ path }) => path),
       };
     },
-    async record(source, entries, integrity = null) {
-      const transaction = db.transaction(['files', 'sources'], 'readwrite');
-      const files = transaction.objectStore('files');
-      await drop(files, source);
-      for (const entry of entries) files.put({ ...entry, source });
-      transaction.objectStore('sources').put({ source, integrity });
-      await finished(transaction);
-    },
-    async forget(source) {
-      const transaction = db.transaction(['files', 'sources'], 'readwrite');
-      await drop(transaction.objectStore('files'), source);
-      transaction.objectStore('sources').delete(source);
-      await finished(transaction);
-    },
-    async bump(tree) {
-      const transaction = db.transaction('trees', 'readwrite');
-      const trees = transaction.objectStore('trees');
-      const generation = ((await done(trees.get(tree)))?.generation ?? 0) + 1;
-      trees.put({ tree, generation });
-      await finished(transaction);
-      return generation;
-    },
-    async tamper(path, { expected = null, actual = null } = {}, now = Date.now()) {
-      const transaction = db.transaction('tampered', 'readwrite');
-      const store = transaction.objectStore('tampered');
-      const old = await done(store.get(path));
-      if (old?.open && (!old.stopped || now - old.at < WINDOW)) {
+    record(source, entries, integrity = null) {
+      return using(async (db) => {
+        const transaction = db.transaction(['files', 'sources'], 'readwrite');
+        const files = transaction.objectStore('files');
+        await drop(files, source);
+        for (const entry of entries) files.put({ ...entry, source });
+        transaction.objectStore('sources').put({ source, integrity });
         await finished(transaction);
-        return { fresh: false, stopped: old.stopped, entry: old };
-      }
-      const seen = [...(old?.seen ?? []).filter((at) => now - at < WINDOW), now];
-      const restoredAt = old?.restoredAt ?? null;
-      const stopped = seen.length >= 3 || (restoredAt !== null && now - restoredAt < RECENT);
-      const entry = { path, open: true, stopped, seen, at: now, expected, actual, restoredAt };
-      store.put(entry);
-      await finished(transaction);
-      return { fresh: true, stopped, entry };
+      });
     },
-    async heal(prefix, now = Date.now()) {
-      const transaction = db.transaction('tampered', 'readwrite');
-      const store = transaction.objectStore('tampered');
-      const healed = (await done(store.getAll())).filter((entry) => due(entry, prefix, now));
-      for (const entry of healed) {
-        store.put({ ...entry, open: false, stopped: false, restoredAt: now });
-      }
-      await finished(transaction);
-      return healed;
+    forget(source) {
+      return using(async (db) => {
+        const transaction = db.transaction(['files', 'sources'], 'readwrite');
+        await drop(transaction.objectStore('files'), source);
+        transaction.objectStore('sources').delete(source);
+        await finished(transaction);
+      });
     },
-    async fail(prefix, now = Date.now()) {
-      const transaction = db.transaction('tampered', 'readwrite');
-      const store = transaction.objectStore('tampered');
-      const failed = (await done(store.getAll())).filter((entry) => due(entry, prefix, now));
-      for (const entry of failed) store.put({ ...entry, stopped: true, at: now });
-      await finished(transaction);
-      return failed;
+    bump(tree) {
+      return using(async (db) => {
+        const transaction = db.transaction('trees', 'readwrite');
+        const trees = transaction.objectStore('trees');
+        const generation = ((await done(trees.get(tree)))?.generation ?? 0) + 1;
+        trees.put({ tree, generation });
+        await finished(transaction);
+        return generation;
+      });
+    },
+    tamper(path, { expected = null, actual = null } = {}, now = Date.now()) {
+      return using(async (db) => {
+        const transaction = db.transaction('tampered', 'readwrite');
+        const store = transaction.objectStore('tampered');
+        const old = await done(store.get(path));
+        if (old?.open && (!old.stopped || now - old.at < WINDOW)) {
+          await finished(transaction);
+          return { fresh: false, stopped: old.stopped, entry: old };
+        }
+        const seen = [...(old?.seen ?? []).filter((at) => now - at < WINDOW), now];
+        const restoredAt = old?.restoredAt ?? null;
+        const stopped = seen.length >= 3 || (restoredAt !== null && now - restoredAt < RECENT);
+        const entry = { path, open: true, stopped, seen, at: now, expected, actual, restoredAt };
+        store.put(entry);
+        await finished(transaction);
+        return { fresh: true, stopped, entry };
+      });
+    },
+    heal(prefix, now = Date.now()) {
+      return using(async (db) => {
+        const transaction = db.transaction('tampered', 'readwrite');
+        const store = transaction.objectStore('tampered');
+        const healed = (await done(store.getAll())).filter((entry) => due(entry, prefix, now));
+        for (const entry of healed) {
+          store.put({ ...entry, open: false, stopped: false, restoredAt: now });
+        }
+        await finished(transaction);
+        return healed;
+      });
+    },
+    fail(prefix, now = Date.now()) {
+      return using(async (db) => {
+        const transaction = db.transaction('tampered', 'readwrite');
+        const store = transaction.objectStore('tampered');
+        const failed = (await done(store.getAll())).filter((entry) => due(entry, prefix, now));
+        for (const entry of failed) store.put({ ...entry, stopped: true, at: now });
+        await finished(transaction);
+        return failed;
+      });
     },
   };
 }

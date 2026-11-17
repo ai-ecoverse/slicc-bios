@@ -12,7 +12,10 @@ const namesProtected = ({ urlPattern } = {}) => {
 };
 
 export function extensionOver(browser) {
-  return async function fakeExtension(page, { slow = {}, version = '7.10.0' } = {}) {
+  return async function fakeExtension(
+    page,
+    { slow = {}, version = '7.10.0', refuse = () => undefined } = {}
+  ) {
     const socket = new WebSocket(browser);
     await new Promise((resolve, reject) => {
       socket.onopen = resolve;
@@ -20,11 +23,31 @@ export function extensionOver(browser) {
     });
     const sent = [];
     const shielding = [];
+    const attaching = new Map();
+    const attached = new Map();
+    let own = 2 ** 31 - 2 ** 20;
     const deliver = (message) =>
       void page.evaluate((message) => window.cdpIn(message), message).catch(() => false);
-    socket.onmessage = ({ data }) => deliver(data);
+    socket.onmessage = ({ data }) => {
+      const message = JSON.parse(data);
+      if (message.id >= 2 ** 31 - 2 ** 20) return;
+      const targetId = attaching.get(message.id);
+      attaching.delete(message.id);
+      if (targetId && message.result?.sessionId) {
+        const sessions = attached.get(targetId) ?? new Set();
+        sessions.add(message.result.sessionId);
+        attached.set(targetId, sessions);
+      }
+      if (message.method === 'Target.detachedFromTarget')
+        for (const sessions of attached.values()) sessions.delete(message.params?.sessionId);
+      deliver(data);
+    };
     await page.expose('cdpOut', (command) => {
       sent.push(command.method);
+      const refusal = refuse(command);
+      if (refusal) return deliver(JSON.stringify({ id: command.id, error: { message: refusal } }));
+      if (command.method === 'Target.attachToTarget')
+        attaching.set(command.id, command.params?.targetId);
       if (
         command.method === 'Fetch.enable' &&
         (command.params?.patterns ?? []).some(namesProtected)
@@ -75,6 +98,14 @@ export function extensionOver(browser) {
     return {
       sent,
       shielding,
+      detach(targetId) {
+        for (const sessionId of attached.get(targetId) ?? []) {
+          own += 1;
+          socket.send(
+            JSON.stringify({ id: own, method: 'Target.detachFromTarget', params: { sessionId } })
+          );
+        }
+      },
       close: () => socket.close(),
       install: () => page.evaluate(bridge, version),
     };

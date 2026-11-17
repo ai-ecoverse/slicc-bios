@@ -107,6 +107,63 @@ function journal(boot) {
   return render;
 }
 
+const LOOK = 5000;
+const SIX_LOCKS = ['slicc-six-kernel', 'slicc-tray-leader-active'];
+
+const path = (url) => (url ? new URL(url).pathname : 'none');
+
+async function workers(container = navigator.serviceWorker) {
+  if (!container) return 'unavailable';
+  const registrations = await container.getRegistrations();
+  const listed = registrations.map((registration) => {
+    const worker = registration.active ?? registration.waiting ?? registration.installing;
+    const state = worker ? worker.state : 'none';
+    return `${new URL(registration.scope).pathname} ${path(worker?.scriptURL)} ${state}`;
+  });
+  return `${listed.join('; ') || 'none'}, controller ${path(container.controller?.scriptURL)}`;
+}
+
+const NOISE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+
+function lockLine({ held = [], pending = [] }) {
+  const count = (all) => {
+    const list = all.filter(({ name }) => !NOISE.test(name));
+    const names = new Map();
+    for (const { name } of list) names.set(name, (names.get(name) ?? 0) + 1);
+    return [...names].map(([name, times]) => (times > 1 ? `${name} ×${times}` : name)).join(', ');
+  };
+  const parts = [
+    ['held', count(held)],
+    ['waiting', count(pending)],
+  ].filter(([, names]) => names);
+  return parts.map(([what, names]) => `${what} ${names}`).join('; ') || 'none';
+}
+
+async function six(locks) {
+  const root = await navigator.storage.getDirectory();
+  const profile = await root.getDirectoryHandle('slicc-fs').then(
+    async (dir) => !(await dir.keys().next()).done,
+    () => false
+  );
+  const marker = localStorage.getItem('slicc-os.six');
+  const retired = Boolean(await globalThis.cookieStore?.get('__Host-slicc-six-retired'));
+  const tabs = (locks.held ?? []).some(({ name }) => SIX_LOCKS.includes(name));
+  if (!profile && !marker && !retired && !tabs) return 'none';
+  return [
+    `profile ${profile ? 'yes' : 'no'}`,
+    `marker ${marker ?? 'none'}`,
+    `retired ${retired ? 'yes' : 'no'}`,
+    `tab ${tabs ? 'open' : 'none seen'}`,
+  ].join(', ');
+}
+
+async function surroundings() {
+  const locks = (await navigator.locks?.query?.().catch(() => null)) ?? {};
+  const settle = (promise) => promise.catch((error) => `unavailable, ${error.message}`);
+  const [registered, sixth] = await Promise.all([settle(workers()), settle(six(locks))]);
+  return { workers: registered, locks: lockLine(locks), six: sixth };
+}
+
 function environment(boot) {
   const env = find('.env', boot.drawer);
   const row = (key, value) => {
@@ -127,9 +184,21 @@ function environment(boot) {
   row('gpu', '…');
   row('storage', '…');
   row('render', 'static artwork');
+  row('workers', '…');
+  row('locks', '…');
+  row('six', '…');
   const set = (key, value) => {
     env.querySelector(`[data-key="${key}"]`).textContent = value;
   };
+  const look = () =>
+    surroundings()
+      .then((found) => {
+        for (const [key, value] of Object.entries(found)) set(key, value);
+      })
+      .catch(() => {});
+  void look();
+  setInterval(look, LOOK);
+  set.look = look;
   navigator.storage
     ?.estimate?.()
     .then(async ({ quota, usage }) => {
@@ -241,9 +310,10 @@ async function scene(boot, set, reduced) {
   }
 }
 
-function copier(boot) {
+function copier(boot, set) {
   return async (event) => {
     const button = event.currentTarget;
+    await set.look?.().catch(() => {});
     const lines = [
       'SLICC seven boot diagnostics',
       ...[...boot.drawer.querySelectorAll('dt')].map(
@@ -284,7 +354,7 @@ export function attach(boot) {
   });
   boot.toggle.addEventListener('click', () => boot.open());
   find('.close', boot.drawer).addEventListener('click', () => boot.open(false));
-  find('.copy', boot.drawer).addEventListener('click', copier(boot));
+  find('.copy', boot.drawer).addEventListener('click', copier(boot, set));
   addEventListener('keydown', (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === 'd' || event.key === 'D') boot.open();
