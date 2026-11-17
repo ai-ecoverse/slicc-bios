@@ -350,6 +350,7 @@ export function pnpmAs(kernel, { user, home, where }, report, to, argv) {
 }
 
 export const CEILING = 15 * 60;
+export const STALL = 180;
 
 function watchdog(limit, command) {
   const since = Date.now();
@@ -496,7 +497,7 @@ async function install(kernel, from, report, record, ready) {
     };
     await write(root, RECEIPT, JSON.stringify(written));
   }
-  await pnpm(kernel, cwd, report, null, [...INSTALL, ...flags]);
+  await pnpm(kernel, cwd, report, null, [...INSTALL, ...flags], true, STALL);
   const base = guard.on ? { base: BASE } : {};
   await record('packages', { from: new URL('package-lock.json', from).href, held: true, ...base });
   await write(root, 'var/lib/slicc/pnpm-lock.yaml', lock);

@@ -245,7 +245,10 @@ for (const route of [undefined, { kind: 'link' }]) {
         [{ type: 'worker' }, { type: 'other' }],
       ]) {
         await send('Target.setAutoAttach', { autoAttach: true, flatten: true, filter }, session);
-        assert.deepEqual(lastAutoAttach(raw, session).params.filter, [{ type: 'page' }]);
+        assert.deepEqual(
+          lastAutoAttach(raw, session).params.filter,
+          session ? [{ type: 'page' }, { type: 'iframe' }] : [{ type: 'page' }]
+        );
       }
     }
     const holder = {
@@ -385,7 +388,7 @@ for (const route of [undefined, { kind: 'link' }]) {
     await send('Target.setAutoAttach', { autoAttach: true, flatten: true, filter: [{}] }, page);
     assert.deepEqual(
       lastAutoAttach(raw, page).params.filter,
-      [{ type: 'page' }],
+      [{ type: 'page' }, { type: 'iframe' }],
       'a tab-admitting filter is narrowed'
     );
     await send('Target.setAutoAttach', {

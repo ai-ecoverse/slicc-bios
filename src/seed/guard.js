@@ -31,6 +31,16 @@ export const PROFILED =
   'slicc: refused: a browser extension runs scripts in this page, and profiling it would expose them';
 export const DEBUGGER =
   'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
+export const EXTENSION_FRAME =
+  "slicc: refused: another browser extension has a frame in this tab, and Chrome doesn't let one extension debug another's frames; reload the tab, which clears that frame until the extension adds it again, or drive the tab through the linked slicc CLI";
+const FOREIGN_FRAME = /chrome-extension:\/\/ URL of different extension/i;
+const foreignFrame = (message) =>
+  message === EXTENSION_FRAME || FOREIGN_FRAME.test(typeof message === 'string' ? message : '');
+const KEPT_CAUSES = new Set([
+  PROTECTED,
+  catalog.protectedOrigins.refusal,
+  catalog.protectedOrigins.unparseableRefusal,
+]);
 
 const EXTENSION_FRAMES = catalog.protectedOrigins.extensionFrames;
 export const SHOWN_REFUSAL = EXTENSION_FRAMES.shownRefusal;
@@ -193,6 +203,7 @@ const TAB_COMMANDS = new Set([
 ]);
 const TAB_FILTER = [{ type: 'tab' }];
 const PAGE_FILTER = [{ type: 'page' }];
+const FRAME_FILTER = [{ type: 'page' }, { type: 'iframe' }];
 const WORKER_FAMILY = ['worker', 'shared_worker', 'service_worker'];
 const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
 
@@ -1422,8 +1433,15 @@ class Guard {
       (this.blocked.has(entry.parent) || this.gone.has(entry.parent))
     )
       return true;
-    for (const id of this.frameLineage(entry.targetId)) if (await this.current(id)) return true;
     return this.current(entry.targetId);
+  }
+
+  async freshFrames(targetId, limit, chain = new Set([targetId])) {
+    for (const id of this.frameParents(targetId)) {
+      if (id === TAINTED || chain.has(id) || chain.size > 64) return true;
+      if (await this.current(id, limit, undefined, new Set(chain).add(id))) return true;
+    }
+    return false;
   }
 
   classifyTarget(targetId, found, opener) {
@@ -2850,6 +2868,7 @@ class Guard {
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
       return true;
     this.learn(info);
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit, rest[1]))) return true;
     if (this.createdPending(info, targetId)) {
       ({ raw: info } = await this.createdTargetInfo(targetId));
       if (!info || info.targetId !== targetId || this.createdUnset(info)) return true;
@@ -3234,13 +3253,44 @@ class Guard {
     this.navs.set(targetId, nav);
     this.pendingAttachments.add(nav);
     nav.attaching = this.call('Target.attachToTarget', { targetId, flatten: true }).then(
-      (answer) => answer.result?.sessionId ?? null
+      (answer) => {
+        if (answer.error) nav.cause = answer.error.message;
+        return answer.result?.sessionId ?? null;
+      }
     );
-    void nav.attaching.then((session) => {
-      if (session) this.privateSessions.add(session);
+    void nav.attaching.then(async (session) => {
+      if (session) {
+        this.gone.delete(session);
+        this.privateSessions.add(session);
+      }
       this.pendingAttachments.delete(nav);
-      return this.arm(nav, session);
+      await this.arm(nav, session);
+      nav.ended = true;
     });
+  }
+
+  renew(targetId) {
+    const nav = this.navs.get(targetId);
+    if (
+      !nav?.done ||
+      !nav.failed ||
+      !nav.ended ||
+      nav.retired ||
+      nav.scrub ||
+      nav.erred ||
+      nav.taken ||
+      KEPT_CAUSES.has(nav.cause)
+    )
+      return;
+    nav.retired = true;
+    this.navs.delete(targetId);
+    if (!nav.session) return;
+    this.navSessions.delete(nav.session);
+    void this.call('Target.detachFromTarget', { sessionId: nav.session });
+  }
+
+  unguarded(nav) {
+    return foreignFrame(nav?.cause) ? EXTENSION_FRAME : UNGUARDED;
   }
 
   async arm(nav, session) {
@@ -3264,6 +3314,7 @@ class Guard {
       this.call('Page.enable', {}, session),
     ]);
     nav.holds = steps[0].result?.holdsDocuments === true;
+    nav.cause ??= steps.find((step) => step.error)?.error.message;
     await this.focusCreated(nav);
     this.placing.set(nav.targetId, this.place(nav.targetId, session));
     await this.placing.get(nav.targetId);
@@ -3317,7 +3368,7 @@ class Guard {
     if (!nav) return null;
     await nav.ready;
     if (nav.scrub && !RECOVERS.has(method)) await nav.scrub;
-    return nav.failed ? UNGUARDED : null;
+    return nav.failed ? this.unguarded(nav) : null;
   }
 
   async verify(sessionId, proof, loading = false) {
@@ -3463,6 +3514,11 @@ class Guard {
     return { answer, raw };
   }
 
+  async placedTarget(targetId, info) {
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, ANSWER_MS))) return true;
+    return this.target(targetId);
+  }
+
   async inspect(sessionId, targetId, parent, recoverable = false) {
     if (this.privateSessions.has(sessionId) || this.retiredTargets.has(targetId)) return false;
     const { answer, raw } = await this.createdTargetInfo(targetId);
@@ -3480,7 +3536,7 @@ class Guard {
     )
       return this.uncertainProof(targetId);
     this.learn(info);
-    const guarded = await this.target(targetId);
+    const guarded = await this.placedTarget(targetId, info);
     const proof = await this.attachmentProof(sessionId, targetId, raw, guarded, recoverable);
     if (guarded && !proof) {
       if (await this.retainedBlank(sessionId, raw)) return true;
@@ -6212,6 +6268,7 @@ class Guard {
     const target = this.targets.get(params.targetId);
     if (target?.type === 'tab' && !this.ordinaryTab(params.targetId)) return true;
     if (method === 'Target.attachToTarget' && !guarded) {
+      this.renew(params.targetId);
       this.touch(params.targetId);
       await this.navs.get(params.targetId)?.ready;
     }
@@ -6235,7 +6292,7 @@ class Guard {
       const nav = this.navs.get(params.targetId);
       if (nav) await nav.ready;
       if (nav?.scrub && !proof) await nav.scrub;
-      if (nav?.failed) return UNGUARDED;
+      if (nav?.failed) return this.unguarded(nav);
     }
     if (
       params.frameId !== undefined &&
@@ -7076,8 +7133,13 @@ function narrowed(message, device) {
   )
     return { ...message, params: { ...params, filter: WORKERLESS_DEFAULT } };
   if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params, device)) {
-    const tabs = message.sessionId === undefined && admits(params.filter, 'tab');
-    return { ...message, params: { ...params, filter: tabs ? TAB_FILTER : PAGE_FILTER } };
+    const browser = message.sessionId === undefined;
+    const filter = browser
+      ? admits(params.filter, 'tab')
+        ? TAB_FILTER
+        : PAGE_FILTER
+      : FRAME_FILTER;
+    return { ...message, params: { ...params, filter } };
   }
   return message;
 }
