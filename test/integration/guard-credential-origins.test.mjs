@@ -667,6 +667,23 @@ for (const [label, route] of routes) {
       exemptedCookies: [
         ...lines.map((cookieLine) => ({ cookieLine, exemptionReason: 'None' })),
         { exemptionReason: 'None' },
+        {
+          cookie: { name: 'seven', value: SECRET, domain: '.sliccy.ai' },
+          exemptionReason: 'None',
+        },
+        {
+          cookie: { name: 'own', value: SECRET, domain: 'protected.invalid' },
+          exemptionReason: 'None',
+        },
+        {
+          cookie: {
+            name: 'under-seven',
+            value: SECRET,
+            domain: 'ordinary.example',
+            partitionKey: { topLevelSite: 'https://sliccy.ai' },
+          },
+          exemptionReason: 'None',
+        },
       ],
     });
     for (let turn = 0; turn < 40; turn += 1) await flush();

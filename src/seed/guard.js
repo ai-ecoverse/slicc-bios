@@ -5981,7 +5981,7 @@ class Guard {
   }
 
   credentialCookie(entry) {
-    if (entry?.cookie !== undefined && this.credential.cookie(entry.cookie)) return true;
+    if (entry?.cookie !== undefined && this.cookie(entry.cookie)) return true;
     if (typeof entry?.cookieLine === 'string') return this.lineDomains(entry.cookieLine) === true;
     return entry?.cookie === undefined;
   }
