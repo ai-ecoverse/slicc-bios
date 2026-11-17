@@ -315,6 +315,93 @@ for (const [name, scene] of Object.entries(SCENES))
     }
   });
 
+const UNHELD =
+  "Seven couldn't keep the sign-in window out of reach of browser automation, so it didn't open the sign-in. Try again.";
+
+const CROWDED = {
+  'another page’s blank listed before the sign-in popup': {
+    popup: { id: 'C1', after: 2 },
+    others: [{ id: 'X1', after: 1 }],
+  },
+  'another page’s blank listed after the sign-in popup': {
+    popup: { id: 'C2', after: 1 },
+    others: [{ id: 'X2', after: 2 }],
+  },
+  'two other pages’ blanks at the same moment': {
+    popup: { id: 'C3', after: 1 },
+    others: [
+      { id: 'X3a', after: 1 },
+      { id: 'X3b', after: 1 },
+    ],
+  },
+};
+
+for (const [name, scene] of Object.entries(CROWDED))
+  test(`on the link route, with ${name}, the sign-in can’t tell its popup apart, holds every new blank and stops before the IdP`, {
+    timeout: 30000,
+  }, async () => {
+    const infos = {
+      seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' },
+      [`L-${scene.popup.id}`]: blank(`L-${scene.popup.id}`),
+    };
+    const open = browser(infos, { redacted: true });
+    const { listen } = bus();
+    const stop = owner({ route: 'link', open, listen });
+    const controller = new AbortController();
+    const idps = [];
+    try {
+      const real = opener(infos, open, { ...scene.popup, idps });
+      let ended;
+      void start({
+        open: (url) => {
+          for (const other of scene.others)
+            open.after(other.after, () => {
+              infos[other.id] = blank(other.id);
+            });
+          return real(url);
+        },
+        listen,
+        controller,
+      }).then((answer) => {
+        ended = answer;
+      });
+      for (let n = 0; n < 2000 && ended === undefined && !idps.length; n++) await pause(5);
+      assert.deepEqual(idps, [], 'the sign-in went to the IdP');
+      assert.equal(ended, UNHELD);
+      for (const id of [scene.popup.id, ...scene.others.map((other) => other.id)])
+        assert.equal(isHeld(id, undefined), true, `${id} is not held`);
+      assert.equal(isHeld(`L-${scene.popup.id}`, undefined), false);
+      await unreachable('link', open, [scene.popup.id]);
+    } finally {
+      controller.abort();
+      stop();
+    }
+  });
+
+test('on the link route, a sign-in popup listed only in the confirmation listing is held before the IdP', {
+  timeout: 30000,
+}, async () => {
+  const infos = {
+    seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' },
+    L7: blank('L7'),
+  };
+  const open = browser(infos, { redacted: true });
+  const { listen } = bus();
+  const stop = owner({ route: 'link', open, listen });
+  const controller = new AbortController();
+  const idps = [];
+  try {
+    start({ open: opener(infos, open, { id: 'C4', after: 3, idps }), listen, controller });
+    const [first] = await navigated(idps);
+    assert.deepEqual(first, { id: 'C4', held: true, listed: true });
+    assert.equal(isHeld('L7', undefined), false);
+    await unreachable('link', open, ['C4']);
+  } finally {
+    controller.abort();
+    stop();
+  }
+});
+
 test('on the link route, two overlapping sign-ins each answer held only once their own popup is held', {
   timeout: 30000,
 }, async () => {
@@ -388,10 +475,7 @@ test('on the link route, a sign-in whose popup never shows up is refused before 
     });
     for (let n = 0; n < 2000 && ended === undefined && !idps.length; n++) await pause(5);
     assert.deepEqual(idps, []);
-    assert.equal(
-      ended,
-      "Seven couldn't keep the sign-in window out of reach of browser automation, so it didn't open the sign-in. Try again."
-    );
+    assert.equal(ended, UNHELD);
     assert.equal(isHeld('L5', undefined), false);
   } finally {
     controller.abort();

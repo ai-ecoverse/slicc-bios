@@ -126,7 +126,16 @@ async function listing(open) {
   }
 }
 
-async function find(open, url, { deadline, now, sleep, storage, redacted, before }) {
+const same = (a, b) => a.size === b.size && [...a].every((id) => b.has(id));
+
+function counted(fresh, seen, last, expect) {
+  for (const id of fresh) seen.add(id);
+  if (seen.size > expect) return 'missing';
+  if (last && seen.size === expect && same(fresh, seen) && same(fresh, last)) return 'held';
+  return 'waiting';
+}
+
+async function find(open, url, { deadline, now, sleep, storage, redacted, before, expect }) {
   if (before === null) return 'missing';
   let connection;
   try {
@@ -134,6 +143,8 @@ async function find(open, url, { deadline, now, sleep, storage, redacted, before
   } catch {
     return 'missing';
   }
+  const seen = new Set();
+  let last = null;
   try {
     for (;;) {
       const result = await ask(connection, 'Target.getTargets');
@@ -145,9 +156,13 @@ async function find(open, url, { deadline, now, sleep, storage, redacted, before
           (info.url === url ||
             (redacted && !before?.has(info.targetId) && redactedPopup(info, infos, redacted)))
       );
-      if (found.length) {
-        for (const info of found) hold(info.targetId, storage);
-        return 'held';
+      for (const info of found) hold(info.targetId, storage);
+      if (!before && found.length) return 'held';
+      if (before) {
+        const fresh = new Set(found.map((info) => info.targetId));
+        const state = counted(fresh, seen, last, expect);
+        if (state === 'missing' || (result && state === 'held')) return state;
+        last = fresh;
       }
       if (!result || now() >= deadline) return 'missing';
       await sleep(EVERY);
@@ -223,6 +238,7 @@ export function watchSignIns({
           storage,
           redacted: linked && is,
           before: linked && entry ? (entry.lists.get(name) ?? null) : undefined,
+          expect: Number.isInteger(data.expect) && data.expect > 0 ? data.expect : 1,
         });
       })
     );
@@ -294,7 +310,7 @@ export function askHold(
     channel.onmessage = ({ data }) => {
       if (data?.marker === marker && ANSWERS.has(data.type)) finish(data.type);
     };
-    channel.postMessage({ type: 'hold', marker, ...(based ? { based } : {}) });
+    channel.postMessage({ type: 'hold', marker, ...(based ? { based, expect: 1 } : {}) });
   });
 }
 
