@@ -31,6 +31,16 @@ export const PROFILED =
   'slicc: refused: a browser extension runs scripts in this page, and profiling it would expose them';
 export const DEBUGGER =
   'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
+export const EXTENSION_FRAME =
+  "slicc: refused: another browser extension has a frame in this tab, and Chrome doesn't let one extension debug another's frames; reload the tab, which clears that frame until the extension adds it again, or drive the tab through the linked slicc CLI";
+const FOREIGN_FRAME = /chrome-extension:\/\/ URL of different extension/i;
+const foreignFrame = (message) =>
+  message === EXTENSION_FRAME || FOREIGN_FRAME.test(typeof message === 'string' ? message : '');
+const KEPT_CAUSES = new Set([
+  PROTECTED,
+  catalog.protectedOrigins.refusal,
+  catalog.protectedOrigins.unparseableRefusal,
+]);
 
 const EXTENSION_FRAMES = catalog.protectedOrigins.extensionFrames;
 export const SHOWN_REFUSAL = EXTENSION_FRAMES.shownRefusal;
@@ -3185,13 +3195,44 @@ class Guard {
     this.navs.set(targetId, nav);
     this.pendingAttachments.add(nav);
     nav.attaching = this.call('Target.attachToTarget', { targetId, flatten: true }).then(
-      (answer) => answer.result?.sessionId ?? null
+      (answer) => {
+        if (answer.error) nav.cause = answer.error.message;
+        return answer.result?.sessionId ?? null;
+      }
     );
-    void nav.attaching.then((session) => {
-      if (session) this.privateSessions.add(session);
+    void nav.attaching.then(async (session) => {
+      if (session) {
+        this.gone.delete(session);
+        this.privateSessions.add(session);
+      }
       this.pendingAttachments.delete(nav);
-      return this.arm(nav, session);
+      await this.arm(nav, session);
+      nav.ended = true;
     });
+  }
+
+  renew(targetId) {
+    const nav = this.navs.get(targetId);
+    if (
+      !nav?.done ||
+      !nav.failed ||
+      !nav.ended ||
+      nav.retired ||
+      nav.scrub ||
+      nav.erred ||
+      nav.taken ||
+      KEPT_CAUSES.has(nav.cause)
+    )
+      return;
+    nav.retired = true;
+    this.navs.delete(targetId);
+    if (!nav.session) return;
+    this.navSessions.delete(nav.session);
+    void this.call('Target.detachFromTarget', { sessionId: nav.session });
+  }
+
+  unguarded(nav) {
+    return foreignFrame(nav?.cause) ? EXTENSION_FRAME : UNGUARDED;
   }
 
   async arm(nav, session) {
@@ -3215,6 +3256,7 @@ class Guard {
       this.call('Page.enable', {}, session),
     ]);
     nav.holds = steps[0].result?.holdsDocuments === true;
+    nav.cause ??= steps.find((step) => step.error)?.error.message;
     await this.focusCreated(nav);
     this.placing.set(nav.targetId, this.place(nav.targetId, session));
     await this.placing.get(nav.targetId);
@@ -3268,7 +3310,7 @@ class Guard {
     if (!nav) return null;
     await nav.ready;
     if (nav.scrub && !RECOVERS.has(method)) await nav.scrub;
-    return nav.failed ? UNGUARDED : null;
+    return nav.failed ? this.unguarded(nav) : null;
   }
 
   async verify(sessionId, proof, loading = false) {
@@ -6165,6 +6207,7 @@ class Guard {
     const target = this.targets.get(params.targetId);
     if (target?.type === 'tab' && !this.ordinaryTab(params.targetId)) return true;
     if (method === 'Target.attachToTarget' && !guarded) {
+      this.renew(params.targetId);
       this.touch(params.targetId);
       await this.navs.get(params.targetId)?.ready;
     }
@@ -6188,7 +6231,7 @@ class Guard {
       const nav = this.navs.get(params.targetId);
       if (nav) await nav.ready;
       if (nav?.scrub && !proof) await nav.scrub;
-      if (nav?.failed) return UNGUARDED;
+      if (nav?.failed) return this.unguarded(nav);
     }
     if (
       params.frameId !== undefined &&
