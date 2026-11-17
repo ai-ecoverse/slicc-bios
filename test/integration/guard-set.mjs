@@ -46,7 +46,7 @@ const PATHS = {
     stockSetup: true,
   },
   extension: {
-    autoAttach: false,
+    autoAttach: true,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: false,
