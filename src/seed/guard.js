@@ -5981,7 +5981,22 @@ class Guard {
   }
 
   credentialCookie(entry) {
-    return entry?.cookie !== undefined && this.credential.cookie(entry.cookie);
+    if (entry?.cookie !== undefined && this.credential.cookie(entry.cookie)) return true;
+    if (typeof entry?.cookieLine === 'string') return this.lineDomains(entry.cookieLine) === true;
+    return entry?.cookie === undefined;
+  }
+
+  cookieDomainNamed(text) {
+    return (
+      typeof text === 'string' && (this.is.cookieDomain(text) || this.credential.cookieDomain(text))
+    );
+  }
+
+  lineDomains(line) {
+    const named = [...line.matchAll(COOKIE_DOMAIN)].map(([, value]) => attributeDomain(value));
+    if (named.some((value) => !DOMAIN_VALUE.test(value) || this.cookieDomainNamed(value)))
+      return true;
+    return named.length ? false : null;
   }
 
   uncookied(message) {
@@ -6000,19 +6015,14 @@ class Guard {
   cookieIssue(details) {
     const url = (text) =>
       typeof text === 'string' && (this.is.url(text) || this.credential.named(text));
-    const domain = (text) =>
-      typeof text === 'string' &&
-      (this.is.cookieDomain(text) || this.credential.cookieDomain(text));
     const { cookie, cookieUrl, rawCookieLine, request } = details;
-    if (url(cookieUrl) || url(request?.url) || domain(cookie?.domain)) return true;
+    if (url(cookieUrl) || url(request?.url) || this.cookieDomainNamed(cookie?.domain)) return true;
     if (request?.requestId !== undefined && this.cookieSites.get(request.requestId) === true)
       return true;
     if (typeof rawCookieLine !== 'string') return false;
-    const named = [...rawCookieLine.matchAll(COOKIE_DOMAIN)].map(([, value]) =>
-      attributeDomain(value)
-    );
-    if (named.some((value) => !DOMAIN_VALUE.test(value) || domain(value))) return true;
-    return !named.length && [cookieUrl, request?.url].every((text) => typeof text !== 'string');
+    const named = this.lineDomains(rawCookieLine);
+    if (named !== null) return named;
+    return [cookieUrl, request?.url].every((text) => typeof text !== 'string');
   }
 
   valued(params, depth = 0, readOnly = false) {

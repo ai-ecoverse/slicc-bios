@@ -620,6 +620,71 @@ for (const [label, route] of routes) {
     assert.equal(seen.length, kept.length);
   });
 
+  test(`cookie lines of credential cookies are left out of ExtraInfo lists on the ${label} route`, async (t) => {
+    const wire = wired(t, route);
+    wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });
+    const session = await wire.attach('plain');
+    await wire.send('Network.enable', {}, session);
+    const withheld = [
+      `id=${SECRET}; Domain=.adobelogin.com; Path=/`,
+      `id=${SECRET}; Domain="adobelogin.com"`,
+      `id=${SECRET}; domain='ims-na1.adobelogin.com'`,
+      `id=${SECRET}; DOMAIN=IMS-NA1-STG1.ADOBELOGIN.COM.`,
+      `id=${SECRET}; Domain=ordinary.example; Domain=adobelogin.com`,
+      `id=${SECRET}; Domain=.sliccy.ai`,
+      `id=${SECRET}; Domain=adobelogin.com%00`,
+      `id=${SECRET}; Domain=`,
+    ];
+    const kept = [
+      'plain=visible; Domain=ordinary.example; Path=/',
+      'plain=visible; Domain=".adobe.com"',
+      'plain=visible; Path=/',
+    ];
+    const lines = [...withheld, ...kept];
+    const mark = wire.delivered.length;
+    const emit = (method, params) => wire.emit({ method, sessionId: session, params });
+    emit('Network.requestWillBeSent', {
+      requestId: 'lines-1',
+      loaderId: 'loader',
+      documentURL: `${ORDINARY}/`,
+      frameId: 'plain',
+      type: 'XHR',
+      request: { url: `${ORDINARY}/api`, method: 'GET', headers: {} },
+    });
+    emit('Network.requestWillBeSentExtraInfo', {
+      requestId: 'lines-1',
+      associatedCookies: lines.map((cookieLine) => ({ cookieLine, blockedReasons: [] })),
+      headers: {},
+    });
+    emit('Network.responseReceivedExtraInfo', {
+      requestId: 'lines-1',
+      statusCode: 200,
+      headers: {},
+      blockedCookies: lines.map((cookieLine) => ({
+        cookieLine,
+        blockedReasons: ['DomainMismatch'],
+      })),
+      exemptedCookies: [
+        ...lines.map((cookieLine) => ({ cookieLine, exemptionReason: 'None' })),
+        { exemptionReason: 'None' },
+      ],
+    });
+    for (let turn = 0; turn < 40; turn += 1) await flush();
+    const seen = wire.delivered.slice(mark);
+    assert.ok(!JSON.stringify(seen).includes(SECRET), JSON.stringify(seen));
+    const request = seen.find((message) => message.method === 'Network.requestWillBeSentExtraInfo');
+    const response = seen.find((message) => message.method === 'Network.responseReceivedExtraInfo');
+    for (const list of [
+      request?.params.associatedCookies,
+      response?.params.blockedCookies,
+      response?.params.exemptedCookies,
+    ])
+      assert.deepEqual(
+        list?.map((entry) => entry.cookieLine),
+        kept
+      );
+  });
+
   test(`a request the guard has forgotten keeps no cookie headers on the ${label} route`, async (t) => {
     const wire = wired(t, route);
     wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });
