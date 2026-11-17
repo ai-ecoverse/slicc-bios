@@ -38,7 +38,7 @@ function tar() {
   });
   return decoder;
 }
-const root = navigator.storage.getDirectory();
+let root = navigator.storage.getDirectory();
 let connections = 0;
 let handles = new Map();
 
@@ -717,6 +717,7 @@ function noted(value) {
 self.onconnect = ({ ports: [port] }) => {
   connections += 1;
   port.onmessage = async ({ data: { id, op, args } }) => {
+    root = navigator.storage.getDirectory();
     handles = new Map();
     const key = ++serial;
     const work = { key, port, id, op, since: Date.now(), at: Date.now(), note: '' };
