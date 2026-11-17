@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { flush, protocol } from './guard-ordering-fixture.mjs';
 
-const { CREDENTIAL, guardProtected, PROTECTED } = await import(
+const { CREDENTIAL, credentials, guardProtected, PROTECTED } = await import(
   process.env.GUARD_SOURCE ?? '../../src/seed/guard.js'
 );
 
@@ -138,6 +138,33 @@ test('the catalog names the credential origins and their refusal', () => {
   assert.notEqual(CREDENTIAL, PROTECTED);
   for (const origin of origins) {
     assert.ok(!(catalog.protectedOrigins.hosts ?? []).includes(new URL(origin).hostname));
+  }
+});
+
+test('the guard keeps the IMS hosts seven signs in with when the catalog lists none', () => {
+  for (const listed of [[], [STAGE]]) {
+    const credential = credentials(listed);
+    assert.equal(credential.url(`${IDP}/x`), true);
+    assert.equal(credential.url(`${STAGE}/x`), true);
+    assert.equal(credential.cookieDomain('.adobelogin.com'), true);
+    assert.equal(credential.url(`${ORDINARY}/`), false);
+    assert.equal(credential.url(`${LOGIN}/`), false);
+    assert.equal(credential.cookieDomain('.adobe.com'), false);
+    assert.equal(credential.cookie({ name: 'plain', domain: 'ordinary.example' }), false);
+    assert.equal(credential.nearby(`${ORDINARY}/`), false);
+  }
+});
+
+test('a credential list the guard cannot read makes every cookie and storage origin credential', () => {
+  for (const listed of ['https://ims-na1.adobelogin.com', ['not an origin'], [IDP, 7], {}, null]) {
+    const credential = credentials(listed);
+    assert.equal(credential.url(`${ORDINARY}/`), true, JSON.stringify(listed));
+    assert.equal(credential.named(`${ORDINARY}/`), true);
+    assert.equal(credential.site(ORDINARY), true);
+    assert.equal(credential.storageKey(`${ORDINARY}/`), true);
+    assert.equal(credential.cookieDomain('ordinary.example'), true);
+    assert.equal(credential.cookie({ name: 'plain', domain: 'ordinary.example' }), true);
+    assert.equal(credential.nearby(`${ORDINARY}/`), true);
   }
 });
 
@@ -556,9 +583,21 @@ for (const [label, route] of routes) {
       { rawCookieLine: `seven=${SECRET}; domain=.sliccy.ai; Path=/; SameSite=Lax` },
       { rawCookieLine: `nowhere=${SECRET}; Path=/` },
       { rawCookieLine: `${SECRET}`, cookieUrl: `${IDP}/x` },
+      { rawCookieLine: `host=${SECRET}; Domain="adobelogin.com"` },
+      { rawCookieLine: `host=${SECRET}; Domain=".adobelogin.com"; Path=/` },
+      { rawCookieLine: `host=${SECRET}; Domain='ims-na1.adobelogin.com'` },
+      { rawCookieLine: `host=${SECRET}; DOMAIN=ADOBELOGIN.COM` },
+      { rawCookieLine: `host=${SECRET}; domain = .AdobeLogin.Com.` },
+      { rawCookieLine: `host=${SECRET}; Domain=ordinary.example; Domain=adobelogin.com` },
+      { rawCookieLine: `host=${SECRET}; Domain="sliccy.ai"` },
+      { rawCookieLine: `host=${SECRET}; Domain=adobelogin.com%00` },
+      { rawCookieLine: `host=${SECRET}; Domain=` },
+      { rawCookieLine: `host=${SECRET}; Domain="adobelogin.com"`, cookieUrl: `${ORDINARY}/` },
     ];
     const kept = [
       { rawCookieLine: 'plain=visible; Domain=ordinary.example' },
+      { rawCookieLine: 'plain=visible; Domain="ordinary.example"' },
+      { rawCookieLine: 'plain=visible; Domain=.adobe.com' },
       { rawCookieLine: 'plain=visible', cookieUrl: `${ORDINARY}/api` },
       { cookie: { name: 'plain', domain: 'x.ims-na1.adobelogin.com', path: '/' } },
       { cookieUrl: 'https://ims-na1.adobelogin.com.evil.example/', rawCookieLine: 'plain=visible' },

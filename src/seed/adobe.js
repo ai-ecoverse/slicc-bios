@@ -5,6 +5,7 @@ const imsHosts = {
   prod: 'https://ims-na1.adobelogin.com',
   stg1: 'https://ims-na1-stg1.adobelogin.com',
 };
+export const IMS_ORIGINS = Object.values(imsHosts);
 export const RELAY = 'https://www.sliccy.ai/auth/callback';
 export const CLIENTS_KEY = 'slicc-os.sign-in-clients';
 

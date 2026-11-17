@@ -1,6 +1,6 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
-import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
+import { IMS_ORIGINS, RELAY, SIGN_IN_CLIENTS } from './adobe.js';
 import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
 import { crossOriginPage, emptyNoAccess, hold, isHeld } from './held.js';
 
@@ -305,7 +305,13 @@ const COOKIE_HEADERS = new Set(['cookie', 'set-cookie', 'cookie2', 'set-cookie2'
 const HEADER_MAPS = new Set(['headers', 'requestHeaders', 'responseHeaders']);
 const HEADER_TEXTS = new Set(['headersText', 'requestHeadersText']);
 const COOKIE_LISTS = new Set(['associatedCookies', 'blockedCookies', 'exemptedCookies']);
-const COOKIE_DOMAIN = /;\s*domain\s*=\s*([^;]*)/i;
+const COOKIE_DOMAIN = /(?:^|;)\s*domain\s*=([^;]*)/gi;
+const DOMAIN_VALUE = /^\.?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?$/i;
+const attributeDomain = (text) =>
+  text
+    .trim()
+    .replace(/^(["'])(.*)\1$/, '$2')
+    .trim();
 const COOKIE_LINE = /^(?:set-)?cookie2?\s*:/i;
 const credentialDomain = (method) => CREDENTIAL_DOMAINS.some((domain) => method.startsWith(domain));
 const cookieHeader = (name) => typeof name === 'string' && COOKIE_HEADERS.has(name.toLowerCase());
@@ -845,10 +851,13 @@ export function protection(own, { cut = false } = {}) {
 
 const registrable = (host) => host.split('.').slice(-2).join('.');
 
-export function credentials(origins = CREDENTIALS?.origins ?? []) {
-  const hosts = origins
-    .filter((origin) => typeof origin === 'string' && URL.canParse(origin))
-    .map((origin) => new URL(origin).hostname.toLowerCase().replace(/\.$/, ''));
+export function credentials(listed = CREDENTIALS?.origins ?? []) {
+  const sound =
+    Array.isArray(listed) &&
+    listed.every((origin) => typeof origin === 'string' && URL.canParse(origin));
+  const hosts = (sound ? [...listed, ...IMS_ORIGINS] : []).map((origin) =>
+    new URL(origin).hostname.toLowerCase().replace(/\.$/, '')
+  );
   const matcher = protectedOrigins(
     {
       ...catalog.protectedOrigins,
@@ -887,6 +896,18 @@ export function credentials(origins = CREDENTIALS?.origins ?? []) {
     const host = hostOf(text);
     return host !== '' && hosts.some((entry) => registrable(entry) === registrable(host));
   };
+  if (!sound) {
+    const every = () => true;
+    return {
+      url: every,
+      named: every,
+      site: every,
+      storageKey: every,
+      cookieDomain: every,
+      cookie: every,
+      nearby: every,
+    };
+  }
   return { url, named, site, storageKey, cookieDomain: matcher.cookieDomain, cookie, nearby };
 }
 
@@ -5987,9 +6008,11 @@ class Guard {
     if (request?.requestId !== undefined && this.cookieSites.get(request.requestId) === true)
       return true;
     if (typeof rawCookieLine !== 'string') return false;
-    const named = COOKIE_DOMAIN.exec(rawCookieLine)?.[1]?.trim();
-    if (named && domain(named)) return true;
-    return !named && [cookieUrl, request?.url].every((text) => typeof text !== 'string');
+    const named = [...rawCookieLine.matchAll(COOKIE_DOMAIN)].map(([, value]) =>
+      attributeDomain(value)
+    );
+    if (named.some((value) => !DOMAIN_VALUE.test(value) || domain(value))) return true;
+    return !named.length && [cookieUrl, request?.url].every((text) => typeof text !== 'string');
   }
 
   valued(params, depth = 0, readOnly = false) {
