@@ -667,23 +667,6 @@ for (const [label, route] of routes) {
       exemptedCookies: [
         ...lines.map((cookieLine) => ({ cookieLine, exemptionReason: 'None' })),
         { exemptionReason: 'None' },
-        {
-          cookie: { name: 'seven', value: SECRET, domain: '.sliccy.ai' },
-          exemptionReason: 'None',
-        },
-        {
-          cookie: { name: 'own', value: SECRET, domain: 'protected.invalid' },
-          exemptionReason: 'None',
-        },
-        {
-          cookie: {
-            name: 'under-seven',
-            value: SECRET,
-            domain: 'ordinary.example',
-            partitionKey: { topLevelSite: 'https://sliccy.ai' },
-          },
-          exemptionReason: 'None',
-        },
       ],
     });
     for (let turn = 0; turn < 40; turn += 1) await flush();
@@ -699,6 +682,108 @@ for (const [label, route] of routes) {
       assert.deepEqual(
         list?.map((entry) => entry.cookieLine),
         kept
+      );
+  });
+
+  test(`cookie objects of protected and credential cookies are left out of ExtraInfo lists on the ${label} route`, async (t) => {
+    const wire = wired(t, route);
+    wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });
+    const session = await wire.attach('plain');
+    await wire.send('Network.enable', {}, session);
+    const hidden = (name, more) => ({ name, value: SECRET, path: '/', ...more });
+    const plain = { name: 'plain', value: 'visible', domain: 'ordinary.example', path: '/' };
+    const withheld = [
+      { cookie: hidden('seven', { domain: '.sliccy.ai' }) },
+      { cookie: hidden('own', { domain: 'protected.invalid' }) },
+      { cookie: hidden('vault', { domain: 'vault.sliccy.ai' }), cookieLine: `v=${SECRET}` },
+      { cookie: hidden('idp', { domain: '.adobelogin.com' }) },
+      {
+        cookie: hidden('stage', { domain: 'ims-na1-stg1.adobelogin.com' }),
+        cookieLine: `s=${SECRET}; Domain=ims-na1-stg1.adobelogin.com`,
+      },
+      {
+        cookie: hidden('under-seven', {
+          domain: 'ordinary.example',
+          partitionKey: { topLevelSite: 'https://sliccy.ai', hasCrossSiteAncestor: true },
+        }),
+      },
+      {
+        cookie: hidden('under-idp', {
+          domain: 'ordinary.example',
+          partitionKey: { topLevelSite: 'https://adobelogin.com', hasCrossSiteAncestor: true },
+        }),
+      },
+      {
+        cookie: hidden('under-idp-text', {
+          domain: 'ordinary.example',
+          partitionKey: 'https://adobelogin.com',
+        }),
+      },
+      {
+        cookie: hidden('object-seven', { domain: '.sliccy.ai' }),
+        cookieLine: `x=${SECRET}; Domain=ordinary.example`,
+      },
+      {
+        cookie: hidden('object-idp', { domain: 'adobelogin.com' }),
+        cookieLine: `x=${SECRET}; Domain=ordinary.example`,
+      },
+      {
+        cookie: { ...plain, value: SECRET },
+        cookieLine: `x=${SECRET}; Domain=.adobelogin.com`,
+      },
+      {
+        cookie: { ...plain, value: SECRET },
+        cookieLine: `x=${SECRET}; Domain="sliccy.ai"`,
+      },
+    ];
+    const kept = [
+      { cookie: plain },
+      { cookie: plain, cookieLine: 'plain=visible; Domain=ordinary.example' },
+      { cookie: { ...plain, name: 'adobe', domain: '.adobe.com' } },
+      {
+        cookie: {
+          ...plain,
+          name: 'under-plain',
+          partitionKey: { topLevelSite: ORDINARY, hasCrossSiteAncestor: false },
+        },
+      },
+    ];
+    const entries = [...withheld, ...kept];
+    const mark = wire.delivered.length;
+    const emit = (method, params) => wire.emit({ method, sessionId: session, params });
+    emit('Network.requestWillBeSent', {
+      requestId: 'objects-1',
+      loaderId: 'loader',
+      documentURL: `${ORDINARY}/`,
+      frameId: 'plain',
+      type: 'XHR',
+      request: { url: `${ORDINARY}/api`, method: 'GET', headers: {} },
+    });
+    emit('Network.requestWillBeSentExtraInfo', {
+      requestId: 'objects-1',
+      associatedCookies: entries.map((entry) => ({ ...entry, blockedReasons: [] })),
+      headers: {},
+    });
+    emit('Network.responseReceivedExtraInfo', {
+      requestId: 'objects-1',
+      statusCode: 200,
+      headers: {},
+      blockedCookies: entries.map((entry) => ({ ...entry, blockedReasons: ['DomainMismatch'] })),
+      exemptedCookies: entries.map((entry) => ({ ...entry, exemptionReason: 'None' })),
+    });
+    for (let turn = 0; turn < 40; turn += 1) await flush();
+    const seen = wire.delivered.slice(mark);
+    assert.ok(!JSON.stringify(seen).includes(SECRET), JSON.stringify(seen));
+    const request = seen.find((message) => message.method === 'Network.requestWillBeSentExtraInfo');
+    const response = seen.find((message) => message.method === 'Network.responseReceivedExtraInfo');
+    for (const list of [
+      request?.params.associatedCookies,
+      response?.params.blockedCookies,
+      response?.params.exemptedCookies,
+    ])
+      assert.deepEqual(
+        list?.map((entry) => entry.cookie.name),
+        kept.map((entry) => entry.cookie.name)
       );
   });
 
