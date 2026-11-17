@@ -250,6 +250,10 @@ test('a hanging start notice does not delay stopRun kill', async () => {
   const ended = new Promise((resolve) => {
     releaseEnd = resolve;
   });
+  let releaseStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
   const notices = [];
   const approvals = createApprovals({
     channel: lone(),
@@ -268,7 +272,7 @@ test('a hanging start notice does not delay stopRun kill', async () => {
     }),
     lick: async (notice) => {
       notices.push(notice);
-      if (notice.phase === 'start') await new Promise(() => {});
+      if (notice.phase === 'start') await startGate;
     },
   });
   approvals.own();
@@ -281,7 +285,48 @@ test('a hanging start notice does not delay stopRun kill', async () => {
   assert.deepEqual(killed, [-70]);
   assert.equal(record().run.state, 'stopped');
   assert.equal(notices.filter((notice) => notice.phase === 'start').length, 1);
+  assert.equal(notices.filter((notice) => notice.phase === 'end').length, 0);
+  releaseStart();
+  for (let i = 0; i < 50 && notices.filter((notice) => notice.phase === 'end').length < 1; i += 1)
+    await turn();
   assert.equal(notices.filter((notice) => notice.phase === 'end').length, 1);
+  assert.deepEqual(
+    notices.map((notice) => notice.phase),
+    ['start', 'end']
+  );
+  await running.catch(() => undefined);
+});
+
+test('a fast exit still delivers start before end', async () => {
+  const notices = [];
+  let releaseStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => ({ pid: 72, pgid: 72, ended: Promise.resolve({ status: 0 }) }),
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    lick: async (notice) => {
+      if (notice.phase === 'start') await startGate;
+      notices.push(notice);
+    },
+  });
+  approvals.own();
+  const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-order' }));
+  const running = approvals.port.run(id);
+  for (let i = 0; i < 50 && record()?.run?.state !== 'done'; i += 1) await turn();
+  assert.equal(record()?.run?.state, 'done');
+  assert.equal(notices.length, 0);
+  releaseStart();
+  for (let i = 0; i < 50 && notices.length < 2; i += 1) await turn();
+  assert.deepEqual(
+    notices.map((notice) => notice.phase),
+    ['start', 'end']
+  );
   await running.catch(() => undefined);
 });
 
@@ -625,6 +670,7 @@ test('approvalRunNotice facts fire on start and end with the exact shape', async
   const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-lick' }));
   await approvals.port.run(id);
   for (let i = 0; i < 50 && record()?.run?.state !== 'done'; i += 1) await turn();
+  for (let i = 0; i < 50 && notices.length < 2; i += 1) await turn();
   assert.equal(notices.length, 2);
   assert.match(id, /^bios:/);
   assert.equal(notices[0].phase, 'start');
@@ -726,6 +772,7 @@ test('hostApprovals delivers through approvalRunNotice and warns once when missi
   const ok = await timedOut(withMethod, agentReq({ id: 'sudo-deliver' }));
   await withMethod.port.run(ok.id);
   for (let i = 0; i < 50 && ok.record()?.run?.state !== 'done'; i += 1) await turn();
+  for (let i = 0; i < 200 && seen.length < 2; i += 1) await turn();
   assert.equal(seen.length, 2);
   assert.equal(seen[0].phase, 'start');
   assert.equal(seen[1].phase, 'end');
@@ -751,6 +798,7 @@ test('hostApprovals delivers through approvalRunNotice and warns once when missi
   const late = await timedOut(falseDeliver, agentReq({ id: 'sudo-undelivered' }));
   await falseDeliver.port.run(late.id);
   for (let i = 0; i < 50 && late.record()?.run?.state !== 'done'; i += 1) await turn();
+  for (let i = 0; i < 200 && undelivered.length < 2; i += 1) await turn();
   assert.equal(undelivered.length, 2);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /target gone/);
@@ -775,6 +823,7 @@ test('hostApprovals delivers through approvalRunNotice and warns once when missi
   const old = await timedOut(noMethod, agentReq({ id: 'sudo-old-agent' }));
   await noMethod.port.run(old.id);
   for (let i = 0; i < 50 && old.record()?.run?.state !== 'done'; i += 1) await turn();
+  for (let i = 0; i < 200 && missing.length < 2; i += 1) await turn();
   assert.equal(missing.length, 2);
   assert.equal(missingWarn.length, 1);
   assert.match(missingWarn[0], /no approvalRunNotice/);

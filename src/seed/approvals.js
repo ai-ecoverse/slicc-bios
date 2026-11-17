@@ -514,11 +514,20 @@ export function createApprovals({
     channel.postMessage({ list: shown });
   };
   const offers = (id, decision) => decision !== 'always' || waiting.get(id)?.item.always === true;
-  const tell = async (event) => {
-    if (typeof lick === 'function')
-      try {
-        await lick(event);
-      } catch {}
+  const noticeChain = new Map();
+  const tell = (event) => {
+    const run = async () => {
+      if (typeof lick === 'function')
+        try {
+          await lick(event);
+        } catch {}
+    };
+    const id = event?.id;
+    if (typeof id !== 'string' || !id) return run();
+    const prior = noticeChain.get(id) ?? Promise.resolve();
+    const next = prior.catch(() => {}).then(run);
+    noticeChain.set(id, next);
+    return next;
   };
   const ctx = { listed, held, gatesOf, remember, kernel, runner, runs, tell, now };
   const settle = (id, decision, reason) => {

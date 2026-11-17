@@ -237,10 +237,5 @@ export function endNotice(record, paths, exit = {}, { replay, stopped } = {}) {
 
 export function quietUndelivered(reason) {
   if (typeof reason !== 'string' || !reason) return false;
-  return (
-    reason === 'This notice was already delivered.' ||
-    /already (delivered|ended)/i.test(reason) ||
-    /start .* after .*end/i.test(reason) ||
-    /end was already/i.test(reason)
-  );
+  return reason === 'This notice was already delivered.';
 }
