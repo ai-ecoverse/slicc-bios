@@ -80,6 +80,14 @@ export async function present(root, entries) {
   return found;
 }
 
+export async function missing(root, entries) {
+  const have = await present(root, entries);
+  return entries.some((entry) => {
+    const { tools, old } = have.get(entry.package);
+    return !tools && !old;
+  });
+}
+
 export function shim(name) {
   return `#!/bin/sh\necho '${name}: seven is still installing it; Install / Update shows its progress' >&2\nexit 127\n`;
 }
@@ -427,8 +435,9 @@ export function createTools({
     return running;
   }
 
-  function settled(ms = cap) {
+  async function settled(ms = cap) {
     const pending = first ?? settle();
+    if (!(await missing(root, entries))) return 'present';
     let timer;
     const late = new Promise((resolve) => {
       timer = setTimeout(() => resolve('late'), ms);
