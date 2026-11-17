@@ -8,5 +8,11 @@
       "js": ["inject.js"],
       "run_at": "document_end"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["frame.html"],
+      "matches": ["http://localhost/*", "https://localhost/*"]
+    }
   ]
 }

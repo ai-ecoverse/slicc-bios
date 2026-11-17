@@ -22,6 +22,10 @@ export const CURRENT_EXTENSION = release(
   '7.12.2',
   'b83a46adb21239ed7887fc4ca19b881f30720a920c4ffeae292aafa07159deeb'
 );
+export const FRAME_EXTENSION = release(
+  '7.14.2',
+  '74a71afd8982c32407074ecf8e4b5a1685600d6490e0b63bc89ca4cfa7e8e20b'
+);
 export const UNSUPPORTED_EXTENSION = release(
   '7.9.16',
   '65efcc22918b32adda99bc4ff85e5856bead6530f43a3c6a558a2ddd8227bb2b'
@@ -130,6 +134,7 @@ export async function realExtension({
   rules = [],
   args = [],
   extension = EXTENSION,
+  extensions = [],
   realistic = false,
 } = {}) {
   const root = await unpacked(extension);
@@ -141,7 +146,7 @@ export async function realExtension({
     tls = await front(upstream);
     chrome = await launch({
       realistic,
-      extensions: [root],
+      extensions: [root, ...extensions],
       args: [
         ...args,
         '--ignore-certificate-errors',

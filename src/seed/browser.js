@@ -67,6 +67,11 @@ export const ERRORS = new Set([
   'failed',
 ]);
 const OPENABLE = /^(https?:\/\/|about:blank$)/i;
+export const INTENT_CAP = 120;
+const LINE_BREAKS = /[\n\r\v\f\u0085\u2028\u2029]/u;
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Variation_Selector}]/gu;
+const TAINT = 'slicc-taint:';
+const TAGGING = new Set(['report', 'enforce']);
 
 function parse(text) {
   try {
@@ -127,6 +132,35 @@ export function agentOf(value) {
   return null;
 }
 
+function visible(line) {
+  return line
+    .replace(HIDDEN, (char) => (char === '\t' ? ' ' : ''))
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+export function intentOf(value) {
+  if (typeof value !== 'string') return undefined;
+  const line = value.split(LINE_BREAKS).map(visible).find(Boolean);
+  if (!line) return undefined;
+  const chars = [...line];
+  return chars.length > INTENT_CAP ? chars.slice(0, INTENT_CAP).join('').trimEnd() : line;
+}
+
+function tagsOf(stamp) {
+  const { tag, tags } = stamp;
+  if (tags === undefined) return tag === undefined ? [] : [tag];
+  return Array.isArray(tags) && (tag === undefined || tags[0] === tag) ? tags : null;
+}
+
+export function trusted(caller) {
+  if (caller?.kind !== 'kernel') return false;
+  const stamp = caller.stamp;
+  if (!stamp || typeof stamp !== 'object' || !TAGGING.has(stamp.users)) return false;
+  const tags = tagsOf(stamp);
+  return Boolean(tags) && tags.every((tag) => typeof tag === 'string' && !tag.startsWith(TAINT));
+}
+
 export function sanitize(params) {
   const kind = KINDS.has(params?.kind) ? params.kind : null;
   if (!kind) return null;
@@ -138,6 +172,8 @@ export function sanitize(params) {
   if ((kind === 'fill' || kind === 'type') && Number.isSafeInteger(params.length)) {
     action.length = Math.max(0, params.length);
   }
+  const intent = intentOf(params.intent);
+  if (intent) action.intent = intent;
   return action;
 }
 
@@ -212,27 +248,39 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
   const maxWidth = Math.min(1280, Math.round((size?.width ?? 960) * dpr));
   const maxHeight = Math.min(800, Math.round((size?.height ?? 600) * dpr));
   let stopped = false;
+  let paused = false;
+  let accepting = false;
+  let epoch = 0;
+  let stopping = Promise.resolve();
   let level = 0;
   let small = 0;
   let last = -Infinity;
   let sampler;
   let off;
   let sessionId;
-  const start = (id) =>
-    client
+  const invalidate = () => {
+    epoch += 1;
+    accepting = false;
+  };
+  const start = async (id) => {
+    invalidate();
+    await client
       .call(
         'Page.startScreencast',
         { format: 'jpeg', quality: QUALITIES[level], maxWidth, maxHeight, everyNthFrame: 1 },
         id
       )
       .catch(() => undefined);
+    if (!stopped && !paused) accepting = true;
+  };
   let restarting = false;
   const restart = (id) => {
     restarting = true;
+    invalidate();
     return client
       .call('Page.stopScreencast', {}, id)
       .catch(() => undefined)
-      .then(() => !stopped && start(id))
+      .then(() => !stopped && !paused && start(id))
       .finally(() => {
         restarting = false;
       });
@@ -249,9 +297,18 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
       void restart(id);
     }
   };
+  const pause = (id) => {
+    if (paused || stopped) return stopping;
+    paused = true;
+    invalidate();
+    stopping = client.call('Page.stopScreencast', {}, id).catch(() => undefined);
+    return stopping;
+  };
   const halt = () => {
     if (stopped) return;
     stopped = true;
+    paused = false;
+    invalidate();
     off?.();
     clock.clearTimeout(sampler);
     if (sessionId) void client.call('Page.stopScreencast', {}, sessionId).catch(() => undefined);
@@ -261,30 +318,56 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
       );
   };
   const received = (id) => (event) => {
-    if (stopped || event.sessionId !== id || event.method !== 'Page.screencastFrame') return;
+    if (
+      stopped ||
+      paused ||
+      !accepting ||
+      event.sessionId !== id ||
+      event.method !== 'Page.screencastFrame'
+    )
+      return;
+    const at = epoch;
     const data = event.params.data;
     const ack = event.params.sessionId;
     void (async () => {
       const allowed = check ? await check().catch(() => false) : true;
       if (stopped) return;
       if (!allowed) {
-        halt();
+        void pause(id);
         return;
       }
+      if (paused || !accepting || at !== epoch) return;
       last = now();
       frame(`data:image/jpeg;base64,${data}`);
       adapt(data.length * 0.75, id);
       clock.setTimeout(() => {
-        if (stopped) return;
+        if (stopped || paused || !accepting || at !== epoch) return;
         void client.call('Page.screencastFrameAck', { sessionId: ack }, id).catch(() => undefined);
       }, FRAME_GAP);
     })();
   };
+  const resume = async () => {
+    if (stopped || !paused || !sessionId) return;
+    await stopping;
+    if (stopped) return;
+    paused = false;
+    await start(sessionId);
+  };
   const tick = () => {
-    sampler = clock.setTimeout(async () => {
-      if (stopped) return;
-      if (visible() && now() - last >= SAMPLE_GAP) await sample().catch(() => undefined);
-      tick();
+    sampler = clock.setTimeout(() => {
+      void (async () => {
+        try {
+          if (stopped) return;
+          if (visible() && now() - last >= SAMPLE_GAP) {
+            const ok = await sample()
+              .then(() => true)
+              .catch(() => false);
+            if (ok) await resume();
+          }
+        } finally {
+          if (!stopped) tick();
+        }
+      })();
     }, SAMPLE_GAP);
   };
   void session.then(async (id) => {
@@ -540,6 +623,7 @@ class Browser {
   begin(link, params) {
     const sanitized = sanitize(params);
     if (!sanitized) return;
+    if (!link.trusted) delete sanitized.intent;
     const agentId = agentOf(params.agent);
     if (agentId) link.agent = agentId;
     const action = {
@@ -960,7 +1044,7 @@ function annotate(browser, link, message) {
   if (params.phase === 'end') browser.finish(link, params);
 }
 
-function observeConnection(browser, connection) {
+function observeConnection(browser, connection, { caller } = {}) {
   const sessions = new Map();
   const touched = new Set();
   const calls = new Map();
@@ -970,6 +1054,7 @@ function observeConnection(browser, connection) {
   const link = {
     agent: null,
     action: null,
+    trusted: trusted(caller),
     tab(id) {
       if (typeof id !== 'string') return null;
       if (touched.has(id) || browser.owns(id)) return id;
@@ -1109,7 +1194,7 @@ export function createBrowser(network, options = {}) {
   };
   return {
     port,
-    observe: (connection) => observeConnection(browser, connection),
+    observe: (connection, options) => observeConnection(browser, connection, options),
     stopping: (agent) => withStop(agent, browser),
   };
 }

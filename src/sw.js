@@ -110,6 +110,9 @@ const healed = new Map();
 
 function integrity() {
   ledger ??= openIntegrity();
+  ledger.catch(() => {
+    ledger = null;
+  });
   return ledger;
 }
 
