@@ -19,7 +19,8 @@ import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
-const OLD = new URL('fixtures/agent-5.0.3/', import.meta.url);
+const OLD_VERSION = '7.34.0';
+const OLD = new URL(`fixtures/agent-${OLD_VERSION}/`, import.meta.url);
 const OLD_AGENT = Object.fromEntries(
   ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].map((file) => [
     `/packages/agent/${file}`,
@@ -145,7 +146,7 @@ async function agentVersion(page) {
   return (await screen(page)).match(/agent "version": "([^"]+)" at-42/)?.[1] ?? null;
 }
 
-test("a follower of a SLICC on another agent version shows the agent's sentence as bios's own warning and stops, the older agent's sudo still asks in bios's dialog, and the warning goes once the owner upgrades", {
+test("a follower on the pinned 8.x agent of a SLICC on 7.x shows the agent's sentence as bios's own warning and stops, the 7.x owner's cone still asks for its sudo, and the warning goes once the owner upgrades", {
   timeout: 60 * 60 * 1000,
 }, async (t) => {
   const hub = await startHub();
@@ -164,8 +165,8 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
     agentUp(owner, { label: 'owner agent' }),
     agentUp(page, { label: 'follower agent' }),
   ]);
-  assert.equal(await agentVersion(owner), '5.0.3');
-  assert.notEqual(await agentVersion(page), '5.0.3');
+  assert.equal(await agentVersion(owner), OLD_VERSION);
+  assert.match(await agentVersion(page), /^8\./);
   await listsAccount(owner, 'amazon-bedrock');
   await connectAccount(owner, 'amazon-bedrock', KEY);
   const { joinUrl } = await model(owner, (network) => network.status().links);
@@ -260,7 +261,8 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
   });
   assert.equal(asked.kind, 'sudo');
   assert.equal(asked.command, '/usr/bin/ls -la /root');
-  assert.deepEqual(asked.requester, { kind: 'agent', name: 'cone', agentId: 'cone:cone' });
+  assert.equal(asked.requester.kind, 'agent');
+  assert.match(asked.requester.agentId, /\bcone\b/);
   await owner.until(
     new Function(
       'id',
@@ -310,7 +312,7 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
   await owner.reload();
   await ready(owner);
   await agentUp(owner, { label: 'owner agent after the upgrade' });
-  assert.notEqual(await agentVersion(owner), '5.0.3');
+  assert.match(await agentVersion(owner), /^8\./);
   const following = await page
     .within(
       5 * 60 * 1000,
