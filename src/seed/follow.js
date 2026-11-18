@@ -108,6 +108,7 @@ const prints = (cert) =>
     .map((print) => print.value.replaceAll(':', '').toLowerCase());
 
 function trim(list, carried, at) {
+  if (!carried) return list;
   const kept = list.filter(([print, until]) => until > at || carried.has(print));
   let spare = kept.length - RETIRED_CAP;
   return kept.filter(([print]) => carried.has(print) || spare-- <= 0);
@@ -130,7 +131,7 @@ async function exchange(key, next, { idb, at, live }) {
           ...(Array.isArray(kept.result) ? kept.result : []),
           ...prints(old.result).map((print) => [print, at + RETAIN_MS]),
         ],
-        new Set(live()),
+        live && new Set(live()),
         at
       );
       if (all.length) store.put(all, `${RETIRED}${key}`);
@@ -150,7 +151,7 @@ export async function certificate(
     idb = indexedDB,
     generate = (options) => RTCPeerConnection.generateCertificate(options),
     now = Date.now,
-    live = () => [],
+    live,
   } = {}
 ) {
   const kept = await certificates('readonly', (store) => store.get(hub), idb);
@@ -179,7 +180,7 @@ export async function keptFingerprints(prefix, { idb = indexedDB } = {}) {
   ];
 }
 
-export function dropCertificate(hub, { idb = indexedDB, now = Date.now, live = () => [] } = {}) {
+export function dropCertificate(hub, { idb = indexedDB, now = Date.now, live } = {}) {
   return exchange(hub, null, { idb, at: now(), live });
 }
 
