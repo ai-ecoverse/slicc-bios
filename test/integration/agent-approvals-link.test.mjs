@@ -274,9 +274,15 @@ test("a refused decide resets with the agent's sentence, exactly", async () => {
     await refusal(open({ id: 'bare', answer: 'once' })),
     'EOPNOTSUPP: this agent has no approvals'
   );
-  assert.equal(await refusal(open({ id: 'a1', answer: 'maybe' })), 'EINVAL');
-  assert.equal(await refusal(open({ answer: 'once' })), 'EINVAL');
-  assert.equal(await refusal(open({ id: 'a1', answer: 'once', reason: 7 })), 'EINVAL');
+  assert.equal(
+    await refusal(open({ id: 'a1', answer: 'maybe' })),
+    'EINVAL: the answer is once, always, deny or stop'
+  );
+  assert.equal(await refusal(open({ answer: 'once' })), 'EINVAL: decide needs an approval id');
+  assert.equal(
+    await refusal(open({ id: 'a1', answer: 'once', reason: 7 })),
+    'EINVAL: a reason is text'
+  );
   assert.deepEqual(agent.calls, [
     ['decide', { id: 'a1', answer: 'always', device: OTHER }],
     ['decide', { id: 'gone', answer: 'deny', device: OTHER }],

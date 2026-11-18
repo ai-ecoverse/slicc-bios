@@ -138,8 +138,11 @@ export function createRemote({
     async decide(api, meta, stream, link) {
       if (typeof api.decide !== 'function') return stream.reset(NO_APPROVALS);
       const { id, answer, reason } = meta;
-      if (typeof id !== 'string' || !id || !ANSWERS.includes(answer)) return stream.reset('EINVAL');
-      if (reason !== undefined && typeof reason !== 'string') return stream.reset('EINVAL');
+      if (typeof id !== 'string' || !id) return stream.reset('EINVAL: decide needs an approval id');
+      if (!ANSWERS.includes(answer))
+        return stream.reset('EINVAL: the answer is once, always, deny or stop');
+      if (reason !== undefined && typeof reason !== 'string')
+        return stream.reset('EINVAL: a reason is text');
       const device = link.id ?? link.key;
       await api.decide({ id, answer, ...(reason === undefined ? {} : { reason }), device });
       stream.accepted({ ok: true });
