@@ -9,7 +9,8 @@ export const NOT_ENFORCED =
   "EACCES: this seven links to other sevens only when its kernel users are 'enforce'";
 export const NOT_SUDO = 'EACCES: only root and members of sudo may reach another seven';
 const NOT_AGENT =
-  'EOPNOTSUPP: the link facade opens only agent prompt, watch and abort streams and tray requests';
+  'EOPNOTSUPP: the link facade opens only agent prompt, watch, abort and approvals streams and tray requests';
+export const NO_DECIDE = "EACCES: a program in seven's kernel can't decide approvals";
 export const NO_TRAY = 'EOPNOTSUPP: this seven has no tray';
 const TRAY_OPS = ['status', 'url', 'rotate', 'unlink', 'retry'];
 const DEVICE = [
@@ -72,6 +73,7 @@ const flag = (open, name) => (open[name] === true ? { [name]: true } : {});
 export function outbound(open) {
   if (open?.kind !== 'agent') return null;
   if (open.op === 'abort') return { kind: 'agent', op: 'abort' };
+  if (open.op === 'approvals') return { kind: 'agent', op: 'approvals', ...flag(open, 'watch') };
   if (open.op === 'watch')
     return {
       kind: 'agent',
@@ -242,7 +244,10 @@ export function linkFacade({ check, leaders, scrub, trays = null, refused = () =
     async function agent(hello) {
       if (typeof hello.join !== 'string') return reset('EPROTO');
       const open = outbound(hello.open);
-      if (!open) return reset(hello.open?.kind === 'agent' ? 'EINVAL' : NOT_AGENT);
+      if (!open) {
+        if (hello.open?.kind !== 'agent') return reset(NOT_AGENT);
+        return reset(hello.open.op === 'decide' ? NO_DECIDE : 'EINVAL');
+      }
       join = hello.join;
       if (open.length !== undefined) {
         long = { open, chunks: [], total: 0 };
