@@ -16,21 +16,57 @@ const EVERY = 200;
 
 const held = new Set();
 export const FLIGHT_KEY = 'slicc-os.sign-in-flight';
+const memory = new Map();
+const kept = {
+  getItem: (key) => memory.get(key) ?? null,
+  setItem: (key, value) => memory.set(key, String(value)),
+  removeItem: (key) => memory.delete(key),
+};
+const where = (storage) => (typeof storage?.getItem === 'function' ? storage : kept);
 
-export function flying(now = Date.now, storage = globalThis.localStorage) {
+function flights(storage, now) {
+  let value;
   try {
-    storage?.setItem(FLIGHT_KEY, String(now() + FLIGHT));
+    value = JSON.parse(where(storage).getItem(FLIGHT_KEY) ?? '{}');
+  } catch {
+    return {};
+  }
+  if (typeof value === 'number') value = { '': { until: value, linked: false } };
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([marker, entry]) => [
+        marker,
+        typeof entry === 'number' ? { until: entry, linked: true } : entry,
+      ])
+      .filter(([, entry]) => typeof entry?.until === 'number' && entry.until > now())
+      .map(([marker, { until, linked }]) => [marker, { until, linked: linked !== false }])
+  );
+}
+
+export function flying(
+  now = Date.now,
+  storage = globalThis.localStorage,
+  marker = '',
+  linked = false
+) {
+  const next = { ...flights(storage, now), [marker]: { until: now() + FLIGHT, linked } };
+  try {
+    where(storage).setItem(FLIGHT_KEY, JSON.stringify(next));
   } catch {}
 }
 
-export function landed(storage = globalThis.localStorage) {
+export function landed(marker = '', storage = globalThis.localStorage, now = Date.now) {
+  const rest = flights(storage, now);
+  delete rest[marker];
   try {
-    storage?.removeItem(FLIGHT_KEY);
+    if (Object.keys(rest).length) where(storage).setItem(FLIGHT_KEY, JSON.stringify(rest));
+    else where(storage).removeItem(FLIGHT_KEY);
   } catch {}
 }
 
-export function inFlight(now = Date.now, storage = globalThis.localStorage) {
-  return Number(storage?.getItem(FLIGHT_KEY) ?? 0) > now();
+export function inFlight(now = Date.now, storage = globalThis.localStorage, linked = false) {
+  return Object.values(flights(storage, now)).some((entry) => linked || !entry.linked);
 }
 
 export const guardOf = (own) => protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
@@ -110,13 +146,41 @@ function redactedPopup(info, infos, is) {
   return opener?.type === 'page' && is.url(opener.url ?? '');
 }
 
-async function find(open, url, { deadline, now, sleep, storage, redacted }) {
+async function listing(open) {
+  let connection;
+  try {
+    connection = await open();
+  } catch {
+    return null;
+  }
+  try {
+    const result = await ask(connection, 'Target.getTargets');
+    if (!Array.isArray(result?.targetInfos)) return null;
+    return new Set(result.targetInfos.map((info) => info?.targetId));
+  } finally {
+    connection.close();
+  }
+}
+
+const same = (a, b) => a.size === b.size && [...a].every((id) => b.has(id));
+
+function counted(fresh, seen, last, expect) {
+  for (const id of fresh) seen.add(id);
+  if (seen.size > expect) return 'missing';
+  if (last && seen.size === expect && same(fresh, seen) && same(fresh, last)) return 'held';
+  return 'waiting';
+}
+
+async function find(open, url, { deadline, now, sleep, storage, redacted, before, expect }) {
+  if (before === null) return 'missing';
   let connection;
   try {
     connection = await open();
   } catch {
     return 'missing';
   }
+  const seen = new Set();
+  let last = null;
   try {
     for (;;) {
       const result = await ask(connection, 'Target.getTargets');
@@ -125,11 +189,16 @@ async function find(open, url, { deadline, now, sleep, storage, redacted }) {
         (info) =>
           info?.type === 'page' &&
           typeof info.targetId === 'string' &&
-          (info.url === url || (redacted && redactedPopup(info, infos, redacted)))
+          (info.url === url ||
+            (redacted && !before?.has(info.targetId) && redactedPopup(info, infos, redacted)))
       );
-      if (found.length) {
-        for (const info of found) hold(info.targetId, storage);
-        return 'held';
+      for (const info of found) hold(info.targetId, storage);
+      if (!before && found.length) return 'held';
+      if (before) {
+        const fresh = new Set(found.map((info) => info.targetId));
+        const state = counted(fresh, seen, last, expect);
+        if (state === 'missing' || (result && state === 'held')) return state;
+        last = fresh;
       }
       if (!result || now() >= deadline) return 'missing';
       await sleep(EVERY);
@@ -151,35 +220,107 @@ export function watchSignIns({
   asked = () => {},
 }) {
   const channel = listen(CHANNEL);
+  const bases = new Map();
+  const queued = new Set();
+  let turn = Promise.resolve();
+  const openers = () =>
+    Object.entries(hosts() ?? {}).filter(([, open]) => typeof open === 'function');
+  const base = async (marker) => {
+    const linked = openers().filter(([name]) => name.startsWith(LINKED));
+    const lists = await Promise.all(
+      linked.map(async ([name, open]) => [name, await listing(open)])
+    );
+    const entry = { lists: new Map(lists) };
+    const done = new Promise((resolve) => {
+      entry.release = resolve;
+    });
+    bases.set(marker, entry);
+    channel.postMessage({ type: 'based', marker });
+    void sleep(wait).then(() => {
+      if (bases.get(marker) !== entry) return;
+      bases.delete(marker);
+      entry.release();
+    });
+    await done;
+  };
+  const claim = (marker) => {
+    const entry = bases.get(marker) ?? { lists: new Map(), release() {} };
+    bases.delete(marker);
+    return entry;
+  };
   channel.onmessage = async ({ data }) => {
-    if (data?.type !== 'hold' || typeof data.marker !== 'string' || !data.marker) return;
+    if (typeof data?.marker !== 'string' || !data.marker) return;
+    if (data.type === 'base') {
+      if (queued.has(data.marker)) return;
+      queued.add(data.marker);
+      turn = turn
+        .then(() => base(data.marker))
+        .catch(() => {})
+        .then(() => queued.delete(data.marker));
+      return;
+    }
+    if (data.type !== 'hold') return;
     asked();
     const url = markerUrl(data.marker);
     const deadline = now() + wait;
-    const opens = Object.entries(hosts() ?? {}).filter(([, open]) => typeof open === 'function');
+    const entry = data.based === true ? claim(data.marker) : undefined;
+    const asking = openers();
     const found = await Promise.all(
-      opens.map(([name, open]) =>
-        find(open, url, {
+      asking.map(([name, open]) => {
+        const linked = name.startsWith(LINKED);
+        return find(open, url, {
           deadline,
           now,
           sleep,
           storage,
-          redacted: name.startsWith(LINKED) && is,
-        })
-      )
+          redacted: linked && is,
+          before: linked && entry ? (entry.lists.get(name) ?? null) : undefined,
+          expect: Number.isInteger(data.expect) && data.expect > 0 ? data.expect : 1,
+        });
+      })
     );
+    entry?.release();
     const type = !found.length
       ? 'none'
       : found.every((state) => state === 'held')
         ? 'held'
         : 'unheld';
-    if (type === 'none') flying(now, storage);
+    if (type === 'none') flying(now, storage, data.marker);
+    if (type === 'held' && asking.some(([name]) => name.startsWith(LINKED)))
+      flying(now, storage, data.marker, true);
     channel.postMessage({ type, marker: data.marker });
   };
   return () => channel.close();
 }
 
 const ANSWERS = new Set(['held', 'none', 'unheld']);
+
+export function askBase(
+  marker,
+  {
+    listen = (name) => new BroadcastChannel(name),
+    wait = WAIT + 1000,
+    signal,
+    present = () => false,
+  } = {}
+) {
+  return new Promise((resolve) => {
+    const channel = listen(CHANNEL);
+    const finish = (answer) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+      channel.close();
+      resolve(answer);
+    };
+    const stop = () => finish('aborted');
+    const timer = setTimeout(() => finish(present() ? 'unheld' : 'none'), wait);
+    signal?.addEventListener('abort', stop, { once: true });
+    channel.onmessage = ({ data }) => {
+      if (data?.marker === marker && data.type === 'based') finish('based');
+    };
+    channel.postMessage({ type: 'base', marker });
+  });
+}
 
 export function askHold(
   marker,
@@ -189,6 +330,7 @@ export function askHold(
     signal,
     present = () => false,
     now = Date.now,
+    based = false,
   } = {}
 ) {
   return new Promise((resolve) => {
@@ -198,7 +340,7 @@ export function askHold(
       signal?.removeEventListener('abort', stop);
       channel.close();
       const sure = answer === 'none' && present() ? 'unheld' : answer;
-      if (sure === 'none') flying(now);
+      if (sure === 'none') flying(now, undefined, marker);
       resolve(sure);
     };
     const stop = () => finish('aborted');
@@ -207,7 +349,7 @@ export function askHold(
     channel.onmessage = ({ data }) => {
       if (data?.marker === marker && ANSWERS.has(data.type)) finish(data.type);
     };
-    channel.postMessage({ type: 'hold', marker });
+    channel.postMessage({ type: 'hold', marker, ...(based ? { based, expect: 1 } : {}) });
   });
 }
 
@@ -229,12 +371,12 @@ function considering({ is, storage, now }) {
     if (!all && cross) return false;
     return opener !== undefined && is.url(opener.url);
   };
-  return (infos) => {
+  return (infos, linked = false) => {
     const known = infos.filter((info) => info?.targetId);
     const fresh = new Map(known.map((info) => [info.targetId, info]));
     for (const info of known)
       targets.set(info.targetId, { ...targets.get(info.targetId), ...info });
-    const all = inFlight(now, storage);
+    const all = inFlight(now, storage, linked);
     for (let added = true; added; ) {
       added = false;
       for (const info of known) {
@@ -248,7 +390,7 @@ function considering({ is, storage, now }) {
 
 export async function sweep({ hosts, own, is = guardOf(own), storage, now = Date.now }) {
   const consider = considering({ is, storage, now });
-  for (const open of Object.values(hosts() ?? {})) {
+  for (const [name, open] of Object.entries(hosts() ?? {})) {
     if (typeof open !== 'function') continue;
     let connection;
     try {
@@ -259,14 +401,14 @@ export async function sweep({ hosts, own, is = guardOf(own), storage, now = Date
     try {
       const listed = await ask(connection, 'Target.getTargets');
       if (!Array.isArray(listed?.targetInfos)) throw new Error(UNSWEPT);
-      consider(listed.targetInfos);
+      consider(listed.targetInfos, name.startsWith(LINKED));
     } finally {
       connection.close();
     }
   }
 }
 
-function opened(connection, { is, storage, now }) {
+function opened(connection, { is, storage, now, linked }) {
   const consider = considering({ is, storage, now });
   let next = 0;
   connection.onmessage = (text) => {
@@ -276,7 +418,7 @@ function opened(connection, { is, storage, now }) {
     } catch {
       return;
     }
-    consider(message.result?.targetInfos ?? [message.params?.targetInfo]);
+    consider(message.result?.targetInfos ?? [message.params?.targetInfo], linked);
   };
   const send = (method, params = {}) => {
     next += 1;
@@ -311,7 +453,7 @@ export function watchOpened({
       live.set(name, null);
       try {
         const connection = await open();
-        const poll = opened(connection, { is, storage, now });
+        const poll = opened(connection, { is, storage, now, linked: name.startsWith(LINKED) });
         live.set(name, { connection, poll });
         connection.onclose = () => {
           live.delete(name);

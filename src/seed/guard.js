@@ -2,7 +2,7 @@ import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'jso
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
 import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
-import { crossOriginPage, emptyNoAccess, hold, isHeld } from './held.js';
+import { crossOriginPage, emptyNoAccess, hold, inFlight, isHeld } from './held.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -18,6 +18,8 @@ export const SCRIPTS =
   'slicc: refused: scripts and bindings for later documents could run in seven’s pages or the vault, so the guard doesn’t allow them; run a script in the page you see with Runtime.evaluate instead';
 export const INHERITED =
   'slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser, so the guard doesn’t send it; open a new tab on about:blank instead';
+export const INTERCEPTION =
+  'slicc: refused: the deprecated Network interception commands skip the guard’s request checks, so the guard doesn’t allow them; intercept requests through Fetch instead';
 export const UNFLAT =
   'slicc: refused: the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
 export const UNGUARDED =
@@ -84,6 +86,7 @@ const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
 const LISTED_CHECKS = 8;
 const LISTED_FRESH_MS = 100;
+const CREATOR_FRESH_MS = 1000;
 const SHARE_MS = 100;
 const QUIET = new Set([
   'DOM.describeNode',
@@ -182,6 +185,12 @@ const STICKY = new Set([
   'Network.emulateNetworkConditionsByRule',
   'Network.overrideNetworkState',
   'Network.setBlockedURLs',
+]);
+const INTERCEPTS = new Set([
+  'Network.setRequestInterception',
+  'Network.continueInterceptedRequest',
+  'Network.getResponseBodyForInterception',
+  'Network.takeResponseBodyForInterceptionAsStream',
 ]);
 const DEBUGGERS = ['Debugger.', 'DOMDebugger.', 'EventBreakpoints.'];
 const EMULATION = /^Emulation\.(set|add|update|remove)[A-Z]/;
@@ -284,6 +293,59 @@ const COOKIES = new Set([
   'Storage.getCookies',
   'Page.getCookies',
 ]);
+const WRITES = new Set(['Fetch.fulfillRequest', 'Fetch.continueResponse']);
+const SETS_COOKIE = new Set(['set-cookie', 'set-cookie2']);
+const COOKIE_DOMAIN = /(?:^|;)\s*domain\s*=([^;]*)/gi;
+const DOMAIN_VALUE = /^\.?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?$/i;
+const attributeDomain = (text) =>
+  text
+    .trim()
+    .replace(/^(["'])(.*)\1$/, '$2')
+    .trim();
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-z-]+$/i;
+const BASE64 = /^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$/i;
+const LINES = /\r\n|[\r\n\0]/;
+const headerLines = (name, value) => {
+  if (typeof name !== 'string' || typeof value !== 'string' || !HEADER_NAME.test(name)) return null;
+  const lines = value.split(LINES);
+  if (SETS_COOKIE.has(name.toLowerCase())) return lines;
+  return lines.length === 1 ? [] : null;
+};
+const responseLines = (headers) => {
+  if (headers === undefined) return [];
+  if (!headers || typeof headers !== 'object') return null;
+  const entries = Array.isArray(headers)
+    ? headers.map((entry) => [entry?.name, entry?.value])
+    : Object.entries(headers);
+  const lines = entries.map(([name, value]) => headerLines(name, value));
+  return lines.includes(null) ? null : lines.flat();
+};
+const binaryLines = (text) => {
+  if (text === undefined) return [];
+  if (typeof text !== 'string' || !BASE64.test(text)) return null;
+  const lines = atob(text)
+    .split(LINES)
+    .filter(Boolean)
+    .map((line) => {
+      const at = line.indexOf(':');
+      return at < 0 ? null : headerLines(line.slice(0, at), line.slice(at + 1));
+    });
+  return lines.includes(null) ? null : lines.flat();
+};
+const phraseLines = (text) => {
+  if (text === undefined) return [];
+  if (typeof text !== 'string' || /[\r\n\0]/.test(text)) return null;
+  return text.includes(':') ? [text] : [];
+};
+const cookieLines = ({ responseCode, responsePhrase, responseHeaders, binaryResponseHeaders }) => {
+  if (responseCode !== undefined && !Number.isInteger(responseCode)) return null;
+  const parts = [
+    phraseLines(responsePhrase),
+    responseLines(responseHeaders),
+    binaryLines(binaryResponseHeaders),
+  ];
+  return parts.includes(null) ? null : parts.flat();
+};
 const ORIGINS = new Set([
   'origin',
   'securityOrigin',
@@ -817,6 +879,7 @@ class Guard {
     this.closing = false;
     this.closed = false;
     this.is = protection(own, { cut: this.route === 'link' });
+    this.covers = [(domain) => this.is.cookieDomain(domain)];
     this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
     this.redact = redacting(this.is);
     this.redirected = new Set();
@@ -856,6 +919,7 @@ class Guard {
     this.errorFrames = new Set();
     this.errorUrls = new Map();
     this.frameRoots = new Map();
+    this.estimated = new Set();
     this.unsafe = new WeakSet();
     this.blankReads = new Set();
     this.pendingContent = new Set();
@@ -870,6 +934,8 @@ class Guard {
     this.tabTargets = new Map();
     this.pausedSessions = new Set();
     this.workerCreators = new Map();
+    this.creatorReads = new Map();
+    this.creatorFailed = new Map();
     this.workerVerdicts = new Map();
     this.workerStates = new Map();
     this.workerTargetsCut = new Set();
@@ -1178,6 +1244,7 @@ class Guard {
       real: known?.real || false,
       context: info.browserContextId ?? known?.context,
       reported: info.url ?? known?.reported,
+      at: Date.now(),
       info,
     });
   }
@@ -1312,7 +1379,11 @@ class Guard {
       return true;
     }
     const cross = await this.crossOpener(targetId, found);
-    if (cross === null || isHeld(found.openerId)) {
+    if (
+      cross === null ||
+      isHeld(found.openerId) ||
+      (cross && inFlight(Date.now, globalThis.localStorage, this.route === 'link'))
+    ) {
       hold(targetId);
       found.guarded = true;
       return true;
@@ -2712,6 +2783,7 @@ class Guard {
       const known = this.targets.get(id);
       if (
         isHeld(id) ||
+        this.creatorFailed.has(id) ||
         known?.guarded === true ||
         this.is.url(known?.url) ||
         this.createdPending(known?.info, id)
@@ -2760,10 +2832,58 @@ class Guard {
 
   async creatorTurned(sessionId) {
     if (!this.workerCreators.has(sessionId)) return false;
+    await this.freshCreators(sessionId);
     if ((await this.settledWorker(sessionId)) === 'safe' && !this.workerTurnedNow(sessionId))
       return false;
     this.closeWorker(sessionId);
     return true;
+  }
+
+  async freshCreators(worker) {
+    const creator = this.workerCreators.get(worker);
+    const chain = creator && this.workerChain(creator);
+    if (!chain) return;
+    const { failed, moved } = await this.freshChain(chain);
+    if (failed) {
+      this.workerVerdicts.set(worker, Promise.resolve(true));
+      this.workerStates.set(worker, 'failed');
+      return;
+    }
+    for (const id of moved) this.rejudgeWorkers(id);
+  }
+
+  async freshChain(chain) {
+    const now = Date.now();
+    const stale = [...chain].filter(
+      (id) =>
+        this.creatorFailed.has(id) ||
+        (this.targets.has(id) && now - this.targets.get(id).at >= CREATOR_FRESH_MS)
+    );
+    const reads = await Promise.all(stale.map((id) => this.creatorRead(id)));
+    return {
+      failed: reads.includes(null),
+      moved: stale.filter((_, index) => reads[index]),
+    };
+  }
+
+  creatorRead(targetId) {
+    if (this.creatorReads.has(targetId)) return this.creatorReads.get(targetId);
+    const failed = this.creatorFailed.get(targetId);
+    if (failed !== undefined && Date.now() - failed < CREATOR_FRESH_MS)
+      return Promise.resolve(null);
+    const before = this.targets.get(targetId)?.info;
+    const read = this.openerInfo(targetId).then((info) => {
+      this.creatorReads.delete(targetId);
+      if (!info) {
+        this.creatorFailed.set(targetId, Date.now());
+        return null;
+      }
+      this.creatorFailed.delete(targetId);
+      this.learn(info);
+      return failed !== undefined || !this.sameTarget(before, info);
+    });
+    this.creatorReads.set(targetId, read);
+    return read;
   }
 
   createdUnset(info) {
@@ -3477,13 +3597,41 @@ class Guard {
     return this.target(targetId);
   }
 
+  async treeEstimate(info, sessionId) {
+    const owners = this.frameParents(info.targetId);
+    if (
+      info.type !== 'iframe' ||
+      owners.size !== 1 ||
+      !owners.has(this.sessionTarget(sessionId)) ||
+      [...this.frameRoots.values()].includes(info.targetId)
+    )
+      return '';
+    const answer = await this.answered(this.call('Page.getFrameTree', {}, sessionId));
+    const frames = framed(answer?.result?.frameTree);
+    const found = frames.filter((frame) => frame.id === info.targetId);
+    const url = found.length === 1 ? this.framed(found[0]) : '';
+    return ORDINARY.test(url) ? url : '';
+  }
+
+  receiveEstimate({ method, params = {}, sessionId }) {
+    const targetId =
+      method === 'Target.targetInfoChanged'
+        ? params.targetInfo?.targetId
+        : method === 'Page.frameNavigated' && this.sessionTarget(sessionId);
+    if (this.estimated.delete(targetId)) this.uncertainProof(targetId);
+  }
+
+  async proofInfo(raw, targetId, parent) {
+    if (raw?.url !== '' || !NAV_TYPES.has(raw.type)) return { info: raw };
+    const estimate = !this.frameRoots.has(targetId) && (await this.treeEstimate(raw, parent));
+    const url = estimate || this.frames.get(this.frameRoots.get(targetId)) || '';
+    return { info: { ...raw, url }, estimate };
+  }
+
   async inspect(sessionId, targetId, parent, recoverable = false) {
     if (this.privateSessions.has(sessionId) || this.retiredTargets.has(targetId)) return false;
     const { answer, raw } = await this.createdTargetInfo(targetId);
-    const info =
-      raw?.url === '' && NAV_TYPES.has(raw.type)
-        ? { ...raw, url: this.frames.get(this.frameRoots.get(targetId)) ?? '' }
-        : raw;
+    const { info, estimate } = await this.proofInfo(raw, targetId, parent);
     if (
       !answer ||
       answer.error ||
@@ -3516,6 +3664,7 @@ class Guard {
         return this.uncertainProof(targetId);
     }
     this.failedProof.delete(targetId);
+    if (estimate) this.estimated.add(targetId);
     this.blocked.delete(sessionId);
     this.shown.add(sessionId);
     const nav = this.navs.get(targetId);
@@ -3687,6 +3836,23 @@ class Guard {
     if (params.networkId !== undefined && marked) this.settle(params.networkId, true);
     if (!marked) return false;
     this.release(message);
+    return true;
+  }
+
+  async intercepted(message) {
+    const { params = {}, sessionId } = message;
+    const marked =
+      this.requests.get(params.requestId) === true ||
+      (await this.request({ ...params, url: params.redirectUrl }));
+    if (!marked) return params.requestId !== undefined && this.network(message);
+    const { interceptionId } = params;
+    let answer = {};
+    if (params.authChallenge) answer = { authChallengeResponse: { response: 'Default' } };
+    else if (params.resourceType === 'Document' && this.is.url(params.request?.url)) {
+      answer = { errorReason: 'BlockedByClient' };
+      this.failed(this.sessions.get(sessionId)?.targetId, params);
+    }
+    void this.call('Network.continueInterceptedRequest', { interceptionId, ...answer }, sessionId);
     return true;
   }
 
@@ -5104,6 +5270,8 @@ class Guard {
     const info = params.targetInfo ?? {};
     this.workerCreators.set(params.sessionId, message);
     if (this.workerCutHonored(info, parent)) return true;
+    const chain = this.workerChain(message);
+    if (!chain || (await this.freshChain(chain)).failed) return true;
     if (
       !this.creatorSessionAlive(info, parent) &&
       this.priorWorkerPoisoned(params.sessionId, info.targetId)
@@ -5310,6 +5478,7 @@ class Guard {
     if (method === 'Fetch.requestPaused' || method === 'Fetch.authRequired') {
       return this.paused(message);
     }
+    if (method === 'Network.requestIntercepted') return this.intercepted(message);
     if (method.startsWith('Network.') && params.requestId !== undefined) {
       return this.network(message);
     }
@@ -5720,6 +5889,7 @@ class Guard {
 
   async answer(message, was) {
     await this.finishRecovery(was);
+    await this.freshCreators(was?.sessionId);
     await this.settledWorker(was?.sessionId);
     this.pendingContent.delete(was);
     if (this.endedAnswer(was) || !this.owns(was)) return;
@@ -5795,6 +5965,18 @@ class Guard {
       (typeof item?.domain === 'string' && this.is.cookieDomain(item.domain)) ||
       this.is.url(item?.url) ||
       this.is.url(item?.partitionKey?.topLevelSite)
+    );
+  }
+
+  planted(method, params) {
+    if (!WRITES.has(method)) return false;
+    const lines = cookieLines(params);
+    if (!lines) return true;
+    return lines.some((line) =>
+      [...line.matchAll(COOKIE_DOMAIN)].some(([, value]) => {
+        const domain = attributeDomain(value);
+        return !DOMAIN_VALUE.test(domain) || this.covers.some((covered) => covered(domain));
+      })
     );
   }
 
@@ -5878,6 +6060,7 @@ class Guard {
     return (
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
+      this.planted(method, params) ||
       (REQUESTS.has(method) &&
         typeof params.url === 'string' &&
         this.hops.has(hopKey(params.url))) ||
@@ -6100,6 +6283,7 @@ class Guard {
   }
 
   async precheck(message) {
+    if (INTERCEPTS.has(message.method)) return INTERCEPTION;
     const targetId = this.scopeTarget(message.sessionId);
     const target = this.targets.get(targetId);
     if (target?.type === 'page' && this.prelude(message.sessionId, message.method) !== null) {
@@ -6723,6 +6907,7 @@ class Guard {
     this.receiveContext(message);
     this.receiveAttachment(message);
     this.receiveFrame(message);
+    this.receiveEstimate(message);
     this.receiveNavigation(message);
     if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged')
       this.receiveHint(message);
