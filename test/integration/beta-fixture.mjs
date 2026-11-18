@@ -11,6 +11,15 @@ export const PINNED = JSON.parse(
 ).dependencies[AGENT];
 export const MAJOR = Number(PINNED.split('.')[0]);
 export const BETA = `${MAJOR}.99.0`;
+const MAJORS = {
+  7: { sameSchema: '8.0.0', beyond: '9.0.0' },
+  8: { sameSchema: null, beyond: '9.0.0' },
+};
+if (!MAJORS[MAJOR])
+  throw new Error(
+    `beta-fixture knows no profile schemas for slicc-agent ${MAJOR}.x: add it to MAJORS`
+  );
+export const { sameSchema: SAME_SCHEMA, beyond: BEYOND } = MAJORS[MAJOR];
 export const ELSEWHERE = 'Only the tab running SLICC can install a beta or leave one.';
 
 export const release = await fakeRelease({
@@ -82,9 +91,17 @@ export const pinned = await fakeRelease({
 export const major = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: `${MAJOR + 1}.0.0`,
+  version: BEYOND,
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
 });
+export const sameSchema = SAME_SCHEMA
+  ? await fakeRelease({
+      name: AGENT,
+      from: PINNED,
+      version: SAME_SCHEMA,
+      repository: 'https://github.com/ai-ecoverse/slicc-agent',
+    })
+  : null;
 export const releases = [release, clipboard, mcpcat];
 export const registry = await fakeRegistry(chrome.cdp, releases);
 export const fakeExtension = extensionOver(await debuggerUrl(port));

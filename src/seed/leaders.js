@@ -1,4 +1,13 @@
-import { certificate, dial, dropCertificate, hubOrigin, hubs, joinUrl, sleep } from './follow.js';
+import {
+  certificate,
+  dial,
+  dropCertificate,
+  hubOrigin,
+  hubs,
+  joinUrl,
+  keptFingerprints,
+  sleep,
+} from './follow.js';
 import { failure } from './link.js';
 import { displayName, FOLLOWER } from './tray.js';
 
@@ -22,6 +31,10 @@ const REFUSED = {
 };
 
 export const certificateKey = (hub) => `link:${hub}`;
+
+export async function fromThisKernel(link, fingerprints = () => keptFingerprints('link:')) {
+  return typeof link?.id === 'string' && (await fingerprints()).includes(link.id);
+}
 
 export const proxyOf = (hub, page) => (hub === page ? hub : null);
 

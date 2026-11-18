@@ -36,8 +36,9 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "The agent is bumped by hand with the pins it needs (spectrum, vault, the genai override), so Renovate opens its PR but never merges it.",
+      "description": "A new agent major is bumped by hand with the pins it needs (spectrum, vault, the genai override, a durable schema seven knows), so Renovate opens its PR but never merges it. Minors and patches automerge like every other pin, so a fix reaches seven once CI passes: pins.test.mjs fails a release whose kernel or spectrum peer the base set doesn't meet, and agent-downgrade.test.mjs one whose profile schema seven doesn't know.",
       "matchPackageNames": ["@ai-ecoverse/slicc-agent"],
+      "matchUpdateTypes": ["major"],
       "automerge": false
     },
     {
