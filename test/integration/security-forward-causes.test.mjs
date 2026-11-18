@@ -358,6 +358,39 @@ test('the policy sync says why it is not ready: syncing, a missing file, not acc
   );
 });
 
+test('a dropped [secrets] entry is refused as config-entry, naming the placeholder entry to add; a rule-less secret stays no-rule', async (t) => {
+  const reason = `GITHUB_TOKEN's [secrets] entry in /etc/fnox/config.toml needs value = "${PLACEHOLDER}"`;
+  const vaultSays = (cause) => ({ answer: () => ({ refused: { status: 403, reason, cause } }) });
+  const dropped = await refusal(t, vaultSays('config-entry'));
+  assert.equal(dropped.cause, 'config-entry');
+  assert.match(FORWARD_CAUSES['config-entry'], /\[secrets\] entry in \/etc\/fnox\/config\.toml/);
+  assert.match(FORWARD_CAUSES['config-entry'], /value = "<placeholder>"/);
+  assert.match(FORWARD_CAUSES['config-entry'], /dropped the entry and its rules/);
+  assert.equal(FORWARD_CAUSES['config-entry'].includes('GITHUB_TOKEN'), false);
+  assert.equal((await refusal(t, vaultSays('no-rule'))).cause, 'no-rule');
+  assert.match(FORWARD_CAUSES['no-rule'], /no \[\[proxy\.rules\]\] entry/);
+  assert.equal((await refusal(t, vaultSays('config-entries'))).cause, 'vault-refused');
+  const thrown = forwarder({
+    vault: {
+      forward: async () => {
+        throw { code: 'EACCES', message: reason, cause: 'config-entry' };
+      },
+    },
+  });
+  t.after(thrown.close);
+  await assert.rejects(thrown.run(), {
+    cause: 'config-entry',
+    message: `the credentialed request was refused (config-entry): ${FORWARD_CAUSES['config-entry']}`,
+  });
+  const kept = failure({ code: 'EACCES', message: reason, cause: 'config-entry' });
+  assert.equal(kept.cause, 'config-entry');
+  assert.equal(
+    kept.message,
+    reason,
+    "a vault call keeps the vault's own message, which names the secret"
+  );
+});
+
 test('a vault call failure keeps only allowed causes', () => {
   assert.equal(
     failure({ code: 'EACCES', message: 'x', cause: 'policy-paused' }).cause,

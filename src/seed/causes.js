@@ -29,6 +29,8 @@ export const VAULT_CAUSES = {
   'vault-locked': "seven's vault is locked; unlock it in the vault window",
   'no-rule':
     'no [[proxy.rules]] entry in /etc/fnox/config.toml lets this secret be used; add one for this domain, method, path and header',
+  'config-entry':
+    'this secret has no [secrets] entry in /etc/fnox/config.toml with value = "<placeholder>" (the entry is missing, has no value, or a value that isn\'t its placeholder), so the vault dropped the entry and its rules; add the entry with its placeholder (the vault\'s own message and its warning on that file name the secret)',
   'rule-domain':
     "this secret's rules in /etc/fnox/config.toml are for other domains; add a rule for this one",
   'rule-request':
