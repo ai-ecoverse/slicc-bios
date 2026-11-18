@@ -19,10 +19,8 @@ function refusal(error) {
   return message ? `${code}: ${message}` : code;
 }
 
-const listed = (snapshot) => (Array.isArray(snapshot) ? snapshot : (snapshot?.approvals ?? []));
-
 async function* lines(events) {
-  for await (const snapshot of events) yield { t: 'approvals', approvals: listed(snapshot) };
+  for await (const approvals of events) yield { t: 'approvals', approvals };
 }
 
 async function readText(stream, length) {
@@ -131,7 +129,7 @@ export function createRemote({
       if (typeof api.approvals !== 'function') return stream.reset(NO_APPROVALS);
       const watch = meta.watch === true;
       const opened = await api.approvals({ watch });
-      stream.accepted({ approvals: listed(opened) });
+      stream.accepted({ approvals: opened.approvals });
       if (!watch || !opened.events) return stream.closeWrite();
       await pump(stream, lines(opened.events));
     },
