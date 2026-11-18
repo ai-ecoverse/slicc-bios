@@ -910,6 +910,7 @@ class Guard {
     this.errorFrames = new Set();
     this.errorUrls = new Map();
     this.frameRoots = new Map();
+    this.estimated = new Set();
     this.unsafe = new WeakSet();
     this.blankReads = new Set();
     this.pendingContent = new Set();
@@ -3531,13 +3532,41 @@ class Guard {
     return this.target(targetId);
   }
 
+  async treeEstimate(info, sessionId) {
+    const owners = this.frameParents(info.targetId);
+    if (
+      info.type !== 'iframe' ||
+      owners.size !== 1 ||
+      !owners.has(this.sessionTarget(sessionId)) ||
+      [...this.frameRoots.values()].includes(info.targetId)
+    )
+      return '';
+    const answer = await this.answered(this.call('Page.getFrameTree', {}, sessionId));
+    const frames = framed(answer?.result?.frameTree);
+    const found = frames.filter((frame) => frame.id === info.targetId);
+    const url = found.length === 1 ? this.framed(found[0]) : '';
+    return ORDINARY.test(url) ? url : '';
+  }
+
+  receiveEstimate({ method, params = {}, sessionId }) {
+    const targetId =
+      method === 'Target.targetInfoChanged'
+        ? params.targetInfo?.targetId
+        : method === 'Page.frameNavigated' && this.sessionTarget(sessionId);
+    if (this.estimated.delete(targetId)) this.uncertainProof(targetId);
+  }
+
+  async proofInfo(raw, targetId, parent) {
+    if (raw?.url !== '' || !NAV_TYPES.has(raw.type)) return { info: raw };
+    const estimate = !this.frameRoots.has(targetId) && (await this.treeEstimate(raw, parent));
+    const url = estimate || this.frames.get(this.frameRoots.get(targetId)) || '';
+    return { info: { ...raw, url }, estimate };
+  }
+
   async inspect(sessionId, targetId, parent, recoverable = false) {
     if (this.privateSessions.has(sessionId) || this.retiredTargets.has(targetId)) return false;
     const { answer, raw } = await this.createdTargetInfo(targetId);
-    const info =
-      raw?.url === '' && NAV_TYPES.has(raw.type)
-        ? { ...raw, url: this.frames.get(this.frameRoots.get(targetId)) ?? '' }
-        : raw;
+    const { info, estimate } = await this.proofInfo(raw, targetId, parent);
     if (
       !answer ||
       answer.error ||
@@ -3570,6 +3599,7 @@ class Guard {
         return this.uncertainProof(targetId);
     }
     this.failedProof.delete(targetId);
+    if (estimate) this.estimated.add(targetId);
     this.blocked.delete(sessionId);
     this.shown.add(sessionId);
     const nav = this.navs.get(targetId);
@@ -6790,6 +6820,7 @@ class Guard {
     this.receiveContext(message);
     this.receiveAttachment(message);
     this.receiveFrame(message);
+    this.receiveEstimate(message);
     this.receiveNavigation(message);
     if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged')
       this.receiveHint(message);
