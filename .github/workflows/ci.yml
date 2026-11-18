@@ -27,7 +27,7 @@ jobs:
       node-version: "26"
       test-glob: test/integration/{guard-set-link-rest,guard-set-link-rest-lagging,remote-cdp-stock-link}.test.mjs
       shards: 3
-      test: GUARD_IDS=C9.frame-nested GUARD_TARGETS=ordinary npm test
+      test: GUARD_IDS=C9.frame-nested GUARD_TARGETS=ordinary node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/guard-set-link-rest.test.mjs test/integration/guard-set-link-rest-lagging.test.mjs test/integration/remote-cdp-stock-link.test.mjs
       timeout-minutes: 90
       flaky-retry: 0
       strict-tests: |
