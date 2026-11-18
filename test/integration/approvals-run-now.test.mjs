@@ -1024,23 +1024,52 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     return !!walk(document);
   }, 'slicc-approvals-panel');
 
-  const ran = await page.evaluate(async (okId) => {
-    const allSudoRun = () => {
-      const { agent } = document.querySelector('slicc-app').model;
-      return agent
-        .messages(agent.active())
-        .filter((message) => message.role === 'lick' && message.channel === 'sudo-run')
-        .map((message) => ({
-          approval: message.approval,
-          channel: message.channel,
-          title: message.title ?? '',
-          text: message.text ?? '',
-          body: message.body ?? '',
-        }));
-    };
-    const licksOf = (id) => allSudoRun().filter((message) => message.approval === id);
-    const before = licksOf(okId).length;
-    const startedAt = Date.now();
+  const sudoRunDump = (okId, before) =>
+    page.evaluate(
+      (id, prior) => {
+        const allSudoRun = () => {
+          const { agent } = document.querySelector('slicc-app').model;
+          return agent
+            .messages(agent.active())
+            .filter((message) => message.role === 'lick' && message.channel === 'sudo-run')
+            .map((message) => ({
+              approval: message.approval,
+              channel: message.channel,
+              title: message.title ?? '',
+              text: message.text ?? '',
+              body: message.body ?? '',
+            }));
+        };
+        const licks = allSudoRun()
+          .filter((message) => message.approval === id)
+          .slice(prior);
+        const record = document
+          .querySelector('slicc-app')
+          .model.approvals.history()
+          .find((entry) => entry.approval.id === id);
+        return {
+          run: record?.run,
+          licks,
+          allSudoRun: allSudoRun(),
+          notices: globalThis.sliccApprovalRunNotices ?? null,
+        };
+      },
+      okId,
+      before
+    );
+
+  const before = await page.evaluate((okId) => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return agent
+      .messages(agent.active())
+      .filter(
+        (message) =>
+          message.role === 'lick' && message.channel === 'sudo-run' && message.approval === okId
+      ).length;
+  }, late.okId);
+
+  const startedAt = Date.now();
+  const afterDone = await page.evaluate(async (okId) => {
     await document.querySelector('slicc-app').model.approvals.run(okId);
     const history = () => document.querySelector('slicc-app').model.approvals.history();
     for (
@@ -1049,24 +1078,27 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       i += 1
     )
       await new Promise((resolve) => setTimeout(resolve, 20));
-    const doneAt = Date.now();
-    const deadline = Date.now() + 120_000;
-    while (licksOf(okId).length < before + 2 && Date.now() < deadline)
-      await new Promise((resolve) => setTimeout(resolve, 50));
     const record = history().find((entry) => entry.approval.id === okId);
-    return {
-      run: record?.run,
-      licks: licksOf(okId).slice(before),
-      allSudoRun: allSudoRun(),
-      notices: globalThis.sliccApprovalRunNotices ?? null,
-      doneMs: doneAt - startedAt,
-      lickWaitMs: Date.now() - doneAt,
-    };
+    return { run: record?.run };
   }, late.okId);
+  const doneAt = Date.now();
+  assert.equal(afterDone.run?.state, 'done');
+  assert.equal(afterDone.run?.status, 0);
+  assert.equal(typeof afterDone.run?.pid, 'number');
 
-  assert.equal(ran.run?.state, 'done');
-  assert.equal(ran.run?.status, 0);
-  assert.equal(typeof ran.run?.pid, 'number');
+  const lickDeadline = Date.now() + 90_000;
+  let ran = await sudoRunDump(late.okId, before);
+  while (ran.licks.length < 2 && Date.now() < lickDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    ran = await sudoRunDump(late.okId, before);
+  }
+  ran = {
+    ...ran,
+    run: ran.run ?? afterDone.run,
+    doneMs: doneAt - startedAt,
+    lickWaitMs: Date.now() - doneAt,
+  };
+
   assert.equal(
     ran.licks.length,
     2,
