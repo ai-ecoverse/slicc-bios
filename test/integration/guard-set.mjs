@@ -39,9 +39,11 @@ const PATHS = {
     chromeUrlsAttach: true,
     extensionWorld: true,
     extensionFrame: false,
+    iframeAutoAttach: true,
     inboundDelay: true,
     forwardAudit: true,
     clientExit: true,
+    signInHold: true,
     stockSetup: true,
   },
   extension: {
@@ -52,9 +54,11 @@ const PATHS = {
     discovery: false,
     extensionWorld: true,
     extensionFrame: false,
+    iframeAutoAttach: false,
     inboundDelay: true,
     forwardAudit: true,
     clientExit: true,
+    signInHold: true,
     stockSetup: true,
     syntheticAutoAttach: true,
   },
@@ -65,7 +69,9 @@ const PATHS = {
     chromeUrlsAttach: true,
     extensionWorld: true,
     extensionFrame: true,
+    iframeAutoAttach: true,
     clientExit: true,
+    signInHold: true,
     stockSetup: true,
     forwardAudit: true,
   },
@@ -226,6 +232,11 @@ async function unguardedClient(browser) {
       return seen;
     },
     releaseGate,
+    async jsonList() {
+      const response = await fetch(new URL('/json/list', browser.replace(/^ws/, 'http')));
+      if (!response.ok) throw new Error(`/json/list answered ${response.status}`);
+      return response.json();
+    },
     send: (method, params = {}, sessionId) =>
       new Promise((resolve, reject) => {
         next += 1;
@@ -307,7 +318,11 @@ export async function guardHost(t, path) {
   });
   await boot(seven);
   const tabs = await tabsBrowser(t, path);
-  if (path === 'link') trace('link', (await linkNode(t, seven, tabs.port)).join(' '));
+  if (path === 'link')
+    trace(
+      'link',
+      (await linkNode(t, seven, tabs.port, 'guard-fixture', { seven: true })).join(' ')
+    );
   const setup = async (sources) => {
     const auditForwards = new Function(`return (${sources.audit})`)();
     const attachRecorder = new Function(`return (${sources.attach})`)();
@@ -558,6 +573,37 @@ export async function guardHost(t, path) {
         guards.get(row)?.connection.close();
         guards.delete(row);
       },
+      async list(own, path, wait) {
+        const connection = guardProtected(await hosts[path](), [location.origin, own].flat());
+        try {
+          return await new Promise((resolve) => {
+            const timer = setTimeout(
+              () =>
+                resolve({
+                  error: { message: 'Target.getTargets got no answer through the guard' },
+                }),
+              wait
+            );
+            connection.onmessage = (text) => {
+              const message = JSON.parse(text);
+              if (message.id !== 1) return;
+              clearTimeout(timer);
+              resolve(message);
+            };
+            connection.onclose = () => {
+              clearTimeout(timer);
+              resolve({ error: { message: 'the guard closed before it listed the targets' } });
+            };
+            connection.send(JSON.stringify({ id: 1, method: 'Target.getTargets' }));
+          });
+        } finally {
+          connection.close();
+        }
+      },
+      async ask(marker) {
+        const { askHold } = await import(new URL('held.js', location.href).href);
+        return askHold(marker);
+      },
     };
   };
   const ensure = async () => {
@@ -601,6 +647,28 @@ export async function guardHost(t, path) {
         close,
         transport: path,
         transportEvents,
+        signInHold: {
+          ask: ({ marker }) => seven.evaluate((marker) => window.guards.ask(marker), marker),
+        },
+        async jsonList() {
+          const answer = await seven.evaluate(
+            ([own, path, wait]) => window.guards.list(own, path, wait),
+            [own, path, COMMAND_MS]
+          );
+          const text = JSON.stringify(answer);
+          if (!exposure.listed && listedWrong(text)) {
+            exposure.listed = true;
+            exposure.sample = text.slice(0, 400);
+          }
+          if (answer.error) throw cdpError(answer.error);
+          return (answer.result?.targetInfos ?? []).map((info) => ({
+            description: '',
+            id: info.targetId,
+            title: info.title,
+            type: info.type,
+            url: info.url,
+          }));
+        },
         events,
         messages,
         waitEvent,
