@@ -21,8 +21,8 @@ importers:
         specifier: 1.4.0
         version: 1.4.0
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.190.0
-        version: 1.190.0
+        specifier: 1.191.2
+        version: 1.191.2
       '@ai-ecoverse/slicc-spectrum':
         specifier: 2.16.1
         version: 2.16.1
@@ -65,8 +65,8 @@ packages:
     resolution: {integrity: sha512-mWv2dtKV7pHRTqcFpd1E52eEwI3xypp2WoEZTgIns3X/QREBp2/PMXKgM6yKBcgSAPzkwlksnkFWEL4iCG7MuA==}
     engines: {node: '>=24', slicc-kernel: '>=1.183.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.190.0':
-    resolution: {integrity: sha512-WwF3XhWcBG3uzuxRFmvFSw7IPPyeK51mfmnqyxbEVsau4CWYOFglbpQXMFloxFkAOUgFElpGsRhpGzRpBDrjhQ==}
+  '@ai-ecoverse/slicc-kernel@1.191.2':
+    resolution: {integrity: sha512-tfkiq2qjdcvXFEDtVUhmwseNCTsKU/mSwp9IAkHBVSIjT5fCTJ5/97RKiGzh2jlY0+I8GrTrxX4L+q/Z/OlTfA==}
     engines: {node: '>=26'}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
@@ -272,7 +272,7 @@ snapshots:
     dependencies:
       esptool-js: 0.7.1
 
-  '@ai-ecoverse/slicc-kernel@1.190.0': {}
+  '@ai-ecoverse/slicc-kernel@1.191.2': {}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
     dependencies:
