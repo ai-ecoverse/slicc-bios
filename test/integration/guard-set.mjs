@@ -315,7 +315,11 @@ export async function guardHost(t, path) {
   });
   await boot(seven);
   const tabs = await tabsBrowser(t, path);
-  if (path === 'link') trace('link', (await linkNode(t, seven, tabs.port)).join(' '));
+  if (path === 'link')
+    trace(
+      'link',
+      (await linkNode(t, seven, tabs.port, 'guard-fixture', { seven: true })).join(' ')
+    );
   const setup = async (sources) => {
     const auditForwards = new Function(`return (${sources.audit})`)();
     const attachRecorder = new Function(`return (${sources.attach})`)();
