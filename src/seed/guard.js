@@ -826,6 +826,13 @@ const ORDINARY = /^(?:https?|data):/i;
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 const CALLBACK_NAMED = RELAY.replace(/^https?:\/\//, '').toLowerCase();
+const CALLBACK_ORIGIN = new URL(RELAY).origin;
+const callbackOrigin = (uri) => {
+  const parsed = URL.parse(uri);
+  if (!parsed) return false;
+  parsed.hostname = parsed.hostname.replace(/\.$/, '');
+  return parsed.origin === CALLBACK_ORIGIN;
+};
 const CALLBACK_CUT = new RegExp(
   `(?:^|[^a-z0-9.-])${new URL(RELAY).host.toLowerCase().replaceAll('.', '\\.')}(?::443)?/?(?:[?&#;\\s]|$)`
 );
@@ -837,6 +844,9 @@ export function signsIn(url, { cut = false } = {}) {
     const lower = text.toLowerCase();
     if (lower.includes(CALLBACK_NAMED)) return true;
     if (cut && CALLBACK_CUT.test(lower)) return true;
+    for (const [, uri] of lower.matchAll(/[?&#]redirect_uri=([^&#\s]*)/g)) {
+      if (callbackOrigin(uri)) return true;
+    }
     for (const [, id] of lower.matchAll(/[?&#]client_id=([^&#\s]*)/g)) {
       if ([...SIGN_IN_CLIENTS].some((client) => client.toLowerCase() === id)) return true;
     }
@@ -3597,20 +3607,55 @@ class Guard {
     return this.target(targetId);
   }
 
+  ownerSession(owner, sessionId) {
+    const nav = this.navs.get(owner);
+    const settled = nav?.done && !nav.failed && !nav.retired && !nav.held ? nav.session : undefined;
+    return [sessionId, ...this.sessions.keys(), settled].find(
+      (id) =>
+        id &&
+        this.sessionTarget(id) === owner &&
+        !this.blocked.has(id) &&
+        !this.gone.has(id) &&
+        (this.shown.has(id) || id === settled)
+    );
+  }
+
   async treeEstimate(info, sessionId) {
     const owners = this.frameParents(info.targetId);
+    const [owner] = owners;
     if (
       info.type !== 'iframe' ||
       owners.size !== 1 ||
-      !owners.has(this.sessionTarget(sessionId)) ||
+      (sessionId !== undefined && this.sessionTarget(sessionId) !== owner) ||
       [...this.frameRoots.values()].includes(info.targetId)
     )
       return '';
-    const answer = await this.answered(this.call('Page.getFrameTree', {}, sessionId));
+    if (await this.target(owner)) return '';
+    const session = this.ownerSession(owner, sessionId);
+    if (!session) return '';
+    const stamp = () =>
+      [info.targetId, owner].flatMap((id) => [this.revisions.get(id), this.proofEpoch.get(id)]);
+    const before = stamp();
+    const answer = await this.answered(this.call('Page.getFrameTree', {}, session));
+    const parents = this.frameParents(info.targetId);
+    if (
+      stamp().some((value, index) => value !== before[index]) ||
+      parents.size !== 1 ||
+      !parents.has(owner)
+    )
+      return '';
     const frames = framed(answer?.result?.frameTree);
     const found = frames.filter((frame) => frame.id === info.targetId);
-    const url = found.length === 1 ? this.framed(found[0]) : '';
-    return ORDINARY.test(url) ? url : '';
+    const placed = found.length === 1 && frames.some((frame) => frame.id === found[0].parentId);
+    const url = placed ? this.framed(found[0]) : '';
+    return this.estimable(url) ? url : '';
+  }
+
+  estimable(url) {
+    const parsed = URL.parse(url);
+    return Boolean(
+      parsed && ORDINARY.test(url) && !parsed.username && !parsed.password && !this.is.url(url)
+    );
   }
 
   receiveEstimate({ method, params = {}, sessionId }) {
@@ -3703,6 +3748,20 @@ class Guard {
     return null;
   }
 
+  async blankEstimate(message, nav) {
+    const { params, sessionId: parent } = message;
+    const { sessionId, targetInfo } = params;
+    const { targetId } = targetInfo;
+    const proven =
+      this.route === 'link' &&
+      !nav?.taken &&
+      !nav?.failed &&
+      (await this.treeEstimate(targetInfo, parent)) &&
+      (await this.watch(sessionId, targetId, parent)) &&
+      this.estimated.has(targetId);
+    return proven ? targetInfo : null;
+  }
+
   async blank(message) {
     const { params, sessionId: parent } = message;
     const { sessionId, targetInfo } = params;
@@ -3712,10 +3771,13 @@ class Guard {
     this.touch(targetId, true);
     const nav = this.navs.get(targetId);
     await nav?.ready;
-    const info = await this.named(targetId);
+    const estimated = await this.blankEstimate(message, nav);
+    const info = estimated ?? (await this.named(targetId));
     if (!info || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
-    this.targets.delete(info.targetId);
-    this.learn(info);
+    if (!estimated) {
+      this.targets.delete(info.targetId);
+      this.learn(info);
+    }
     if (await this.watch(sessionId, info.targetId, parent)) {
       const guarded = await this.target(info.targetId);
       if (guarded || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
