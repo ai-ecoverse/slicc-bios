@@ -323,10 +323,19 @@ const binaryLines = (text) => {
     });
   return lines.includes(null) ? null : lines.flat();
 };
-const cookieLines = ({ responseHeaders, binaryResponseHeaders }) => {
-  const lines = responseLines(responseHeaders);
-  const binary = binaryLines(binaryResponseHeaders);
-  return lines && binary ? [...lines, ...binary] : null;
+const phraseLines = (text) => {
+  if (text === undefined) return [];
+  if (typeof text !== 'string' || /[\r\n\0]/.test(text)) return null;
+  return text.includes(':') ? [text] : [];
+};
+const cookieLines = ({ responseCode, responsePhrase, responseHeaders, binaryResponseHeaders }) => {
+  if (responseCode !== undefined && !Number.isInteger(responseCode)) return null;
+  const parts = [
+    phraseLines(responsePhrase),
+    responseLines(responseHeaders),
+    binaryLines(binaryResponseHeaders),
+  ];
+  return parts.includes(null) ? null : parts.flat();
 };
 const ORIGINS = new Set([
   'origin',

@@ -75,6 +75,28 @@ const planted = [
   ],
 ];
 
+const phrased = [
+  [
+    'a phrase with CRLF and a protected cookie',
+    { responsePhrase: `OK\r\n${'Set-Cookie: '}${PLANTED}` },
+  ],
+  [
+    'a phrase with CRLF and an ordinary cookie',
+    { responsePhrase: 'OK\r\nSet-Cookie: sid=1; Domain=ordinary.example' },
+  ],
+  [
+    'a phrase with CRLF and a credential cookie',
+    { responsePhrase: 'OK\r\nSet-Cookie: sid=1; Domain=.adobelogin.com; HttpOnly' },
+  ],
+  ['a phrase with a lone LF', { responsePhrase: 'OK\nX-A: b' }],
+  ['a phrase with a lone CR', { responsePhrase: 'OK\rX-A: b' }],
+  ['a phrase with a NUL', { responsePhrase: 'OK\0' }],
+  ['a phrase that names a protected Domain', { responsePhrase: `OK Set-Cookie: ${PLANTED}` }],
+  ['a phrase whose Domain is not a host', { responsePhrase: 'OK x: a; Domain="sliccy.ai' }],
+  ['a phrase that is not a string', { responsePhrase: 7 }],
+  ['a status code that is not an integer', { responseCode: '200 OK' }],
+];
+
 const unparsed = [
   ['responseHeaders as a string', { responseHeaders: `Set-Cookie: ${PLANTED}` }],
   ['responseHeaders as null', { responseHeaders: null }],
@@ -117,6 +139,11 @@ const ordinary = [
     { binaryResponseHeaders: binary('Set-Cookie: a=1\r\nX-A: b\r\n\r\n') },
   ],
   ['an empty header list', { responseHeaders: [] }],
+  ['the phrase OK', { responsePhrase: 'OK' }],
+  ['the phrase Not Found', { responseCode: 404, responsePhrase: 'Not Found' }],
+  ['an empty phrase', { responsePhrase: '' }],
+  ['a long phrase', { responsePhrase: 'Ordinary '.repeat(500).trim() }],
+  ['a phrase with an ordinary colon', { responsePhrase: 'Moved: see Location' }],
 ];
 
 async function setup(t, route, caller) {
@@ -165,7 +192,7 @@ async function refused(setup, method, params, url) {
   );
   assert.equal(answer.result, undefined);
   assert.deepEqual(sent, [], `${method} ${JSON.stringify(params)} reached the browser`);
-  return offered;
+  return { requestId, offered };
 }
 
 async function passed(setup, method, params) {
@@ -187,6 +214,19 @@ for (const [label, route, caller] of routes) {
       });
     }
 
+    for (const [shape, params] of phrased) {
+      test(`${method} refuses ${shape} on the ${label} route`, async (t) => {
+        const wire = await setup(t, route, caller);
+        const { requestId } = await refused(wire, method, { ...base, ...params });
+        const clean = await wire.write(method, { requestId, ...base });
+        assert.equal(clean.answer.error, undefined, 'the pause stays offered');
+        assert.deepEqual(
+          clean.sent.map((message) => message.params),
+          [{ requestId, ...base }]
+        );
+      });
+    }
+
     for (const [shape, params] of unparsed) {
       test(`${method} refuses ${shape} on the ${label} route`, async (t) => {
         await refused(await setup(t, route, caller), method, { ...base, ...params });
@@ -197,7 +237,7 @@ for (const [label, route, caller] of routes) {
       test(`${method} refuses a pause for ${url} on the ${label} route`, async (t) => {
         const wire = await setup(t, route, caller);
         for (const params of [{}, cookie('sid=1; Path=/'), cookie(PLANTED)]) {
-          const offered = await refused(wire, method, { ...base, ...params }, url);
+          const { offered } = await refused(wire, method, { ...base, ...params }, url);
           assert.equal(offered, false, `${url} was offered`);
         }
       });
@@ -251,7 +291,7 @@ for (const [label, route, caller] of routes) {
 }
 
 test('every row names its shape', () => {
-  for (const rows of [planted, unparsed, ordinary]) {
+  for (const rows of [planted, phrased, unparsed, ordinary]) {
     const names = rows.map(([name]) => name);
     assert.equal(new Set(names).size, names.length);
   }
