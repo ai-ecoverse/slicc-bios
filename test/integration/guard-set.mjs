@@ -11,6 +11,7 @@ import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
+import { extensionFrames } from './guard-set-frames.mjs';
 
 const exposure = { listed: false, sample: null };
 const known = (row) => knownRow(row, exposure);
@@ -241,7 +242,7 @@ async function unguardedClient(browser) {
   };
 }
 
-export async function guardHost(t, path) {
+export async function guardHost(t, path, { frames = true } = {}) {
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
   await new Promise((resolve, reject) => {
@@ -266,6 +267,8 @@ export async function guardHost(t, path) {
     }
     rows.get(row)?.messages.push(text);
   });
+  await seven.expose('extensionFrames', ([tabId, own]) => extensionFrames(browser, tabId, own));
+  await seven.init(`() => { globalThis.sliccFakeFrames = ${frames === true}; }`);
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
     const every = window.setInterval;
@@ -287,8 +290,17 @@ export async function guardHost(t, path) {
     };
     Object.defineProperty(globalThis, 'sliccExtension', {
       value: Object.freeze({
-        version: '7.10.0',
+        version: globalThis.sliccFakeFrames ? '7.12.0' : '7.10.0',
         fetch: (input, init) => fetch(input, init),
+        ...(globalThis.sliccFakeFrames
+          ? {
+              async frames(tabId) {
+                const answer = await window.extensionFrames([tabId, location.origin]);
+                if (answer.error) throw new Error(answer.error);
+                return answer.result;
+              },
+            }
+          : {}),
         cdp: Object.freeze({
           send(method, params, sessionId) {
             const id = ++next;
@@ -341,7 +353,7 @@ export async function guardHost(t, path) {
           route: { kind: 'extension', version: extension.version },
           frames:
             typeof extension.frames === 'function'
-              ? (targetId) => extension.frames(Number(targetId))
+              ? (targetId) => extension.frames(targetId)
               : undefined,
         };
       },
@@ -721,6 +733,11 @@ export async function guardHost(t, path) {
         close,
       };
     };
+  const probe = await clientFactory(path)({});
+  const version = await probe.client.send('Browser.getVersion');
+  await probe.close();
+  process.stdout.write(`GUARD-ROUTE ${path} ${JSON.stringify(version?.slicc ?? null)}\n`);
+  assert.equal(version?.slicc?.route, path, `the ${path} path runs under the ${path} guard route`);
   return Object.assign(clientFactory, { vault: chrome.vault.origin });
 }
 

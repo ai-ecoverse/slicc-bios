@@ -343,7 +343,7 @@ async function ordinaryFrames(unguarded, raw, client, session, n) {
   return { added: inserted, removed };
 }
 
-async function measure(factory, unguarded, own, route, layout) {
+async function measure(factory, unguarded, own, route, layout, { gone = false } = {}) {
   const n = randomBytes(6).toString('hex');
   const row = { route, layout };
   const { targetId } = await unguarded.send('Target.createTarget', { url: LAYOUTS[layout](n) });
@@ -376,7 +376,40 @@ async function measure(factory, unguarded, own, route, layout) {
       row.input = await click(client, session, n);
       if (layout === 'ordinary') {
         row.state = driveState(row);
+        row.runtime = verdict(
+          await outcome(
+            client.send(
+              'Runtime.evaluate',
+              { expression: 'document.title', returnByValue: true },
+              session
+            )
+          ),
+          (result) => typeof result?.result?.value === 'string'
+        );
         Object.assign(row, await ordinaryFrames(unguarded, raw, client, session, n));
+        if (gone) {
+          await evaluate(
+            unguarded,
+            raw,
+            "document.querySelectorAll('iframe').forEach((frame) => frame.remove())"
+          );
+          await until(async () => (await shot(unguarded, raw)) === 0, 10000);
+          const input = await outcome(
+            client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 300, y: 200 }, session)
+          );
+          row.gone = {
+            shot: await shot(client, session),
+            dom: verdict(
+              await outcome(client.send('DOM.getDocument', { depth: 1 }, session)),
+              (result) => result.root?.nodeName === '#document'
+            ),
+            input: input.ok
+              ? 'reached'
+              : REFUSED.test(input.error)
+                ? 'refused'
+                : `error: ${input.error}`,
+          };
+        }
       }
       if (layout === 'remote' || layout === 'nested') {
         await evaluate(unguarded, raw, "document.querySelector('iframe').remove()");
@@ -673,5 +706,26 @@ export function paint(route) {
     if (plain.state === 'drivable')
       assert.equal(plain.reads.dom, 'none', 'an ordinary page’s DOM reads');
     if (route !== 'link') assert.equal(by.seven.vaultFramed, true, 'seven frames the vault');
+  });
+}
+
+export function paintWithoutFrames() {
+  test('the documented limit: through an extension without frames(), an ordinary page with a cross-site iframe stays locked for paint, DOM and input, Runtime reads still work', {
+    timeout: 10 * 60 * 1000,
+  }, async (t) => {
+    const clientFactory = await guardHost(t, 'extension', { frames: false });
+    const factory = clientFactory('extension');
+    const own = [OWN, clientFactory.vault];
+    const { unguarded } = await factory({ own });
+    const row = await measure(factory, unguarded, own, 'extension-frameless', 'ordinary', {
+      gone: true,
+    });
+    process.stdout.write(`${table([row])}\n`);
+    assert.equal(row.attach, 'ok', 'the ordinary page attaches');
+    assert.equal(row.placement.remote, true, 'the ordinary frame is cross-process');
+    assert.ok(row.control.shot >= MARKED, 'the marker paints without the guard');
+    assert.equal(row.state, 'closed', 'paint, screencast and input are refused');
+    assert.equal(row.reads.dom, 'refused', 'DOM reads are refused');
+    assert.equal(row.runtime, 'shown', 'Runtime reads still work');
   });
 }
