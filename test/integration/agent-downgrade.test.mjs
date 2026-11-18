@@ -75,16 +75,16 @@ const profile = (page) =>
 
 const record = (page) => page.evaluate(() => localStorage.getItem('slicc-os.agent-schema'));
 
-test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way, and seven then never starts a 6.x agent on it, by the agent’s marker or by its own record', {
+test('a profile a 6.x agent last opened upgrades to the pinned agent one way, and seven then never starts a 6.x agent on it, by the agent’s marker or by its own record, while a 7.x agent still starts after an 8.x one', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await agentUp(page);
-  assert.match(pinned, /^7\./);
+  assert.match(pinned, /^8\./);
 
   await t.test(
-    'a profile a 6.x agent opened starts the 7.x agent, which marks it, and seven records it',
+    'a profile a 6.x agent opened starts the pinned agent, which marks it, and seven records it',
     async () => {
       await marker(page, null);
       await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '1'));
@@ -116,10 +116,10 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
       await ready(page);
       await agentUp(page, { label: 'the agent labelled 8.0.0' });
       assert.equal(await record(page), '2');
-      await relabel(page, pinned);
+      await relabel(page, '7.34.0');
       await page.goto('/');
       await ready(page);
-      await agentUp(page, { label: `the ${pinned} agent after 8.0.0` });
+      await agentUp(page, { label: 'the agent labelled 7.34.0 after 8.0.0' });
       assert.equal(await record(page), '2');
       assert.equal(
         await page.evaluate(() =>
@@ -133,7 +133,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     }
   );
 
-  await t.test('the 7.x agent’s own marker refuses a 6.x agent', async (t) => {
+  await t.test('the pinned agent’s own marker refuses a 6.x agent', async (t) => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
     await relabel(page, '6.19.15');
     t.after(() => relabel(page, pinned).catch(() => {}));
@@ -188,7 +188,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     }
   );
 
-  await t.test('a marker above 2 refuses the 7.x agent', async () => {
+  await t.test('a marker above 2 refuses the pinned agent', async () => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
     await marker(page, JSON.stringify({ durableSchema: 3, agent: '9.0.0' }));
     const seen = await refused(page);
@@ -331,7 +331,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
   );
 
   await t.test(
-    'a 7.x first start whose profile version can’t be recorded is refused',
+    'a first start of the pinned agent whose profile version can’t be recorded is refused',
     async (t) => {
       await page.evaluate(() => {
         localStorage.removeItem('slicc-os.agent-schema');
@@ -411,7 +411,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
   );
 
   await t.test(
-    'with no marker and no record, the 7.x agent starts and seven records it',
+    'with no marker and no record, the pinned agent starts and seven records it',
     async () => {
       await marker(page, null);
       await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
