@@ -787,6 +787,95 @@ for (const [label, route] of routes) {
       );
   });
 
+  for (const method of ['Fetch.fulfillRequest', 'Fetch.continueResponse'])
+    test(`${method} refuses a reply that sets a credential cookie on the ${label} route`, async (t) => {
+      const wire = wired(t, route);
+      wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });
+      const session = await wire.attach('plain');
+      let next = 0;
+      const pause = async (url) => {
+        const requestId = `credential-pause-${++next}`;
+        wire.emit({
+          method: 'Fetch.requestPaused',
+          sessionId: session,
+          params: {
+            requestId,
+            networkId: `credential-net-${next}`,
+            request: { url, method: 'GET', headers: {} },
+            resourceType: 'XHR',
+            responseStatusCode: 200,
+            responseHeaders: [],
+          },
+        });
+        for (let turn = 0; turn < 20; turn += 1) await flush();
+        return requestId;
+      };
+      const reply = async (params, url = `${ORDINARY}/api`) => {
+        const requestId = await pause(url);
+        const mark = wire.sent.length;
+        const answer = await wire.send(
+          method,
+          { requestId, responseCode: 200, ...params },
+          session
+        );
+        return { answer, sent: forwarded(wire, mark, method) };
+      };
+      const binary = (text) => Buffer.from(text, 'latin1').toString('base64');
+      const line = 'sid=x; Domain=.adobelogin.com; Path=/; HttpOnly';
+      const one = (value, name = 'Set-Cookie') => ({ responseHeaders: [{ name, value }] });
+      const refusedReplies = [
+        one(line),
+        one(line, 'set-cookie'),
+        one(line, 'SET-COOKIE2'),
+        one('sid=x; Domain="adobelogin.com"'),
+        one("sid=x; Domain='ims-na1.adobelogin.com'"),
+        one('sid=x; DOMAIN = IMS-NA1-STG1.ADOBELOGIN.COM.'),
+        one('sid=x; Domain=ordinary.example; domain=adobelogin.com'),
+        one(`plain=1; Domain=ordinary.example\n${line}`),
+        one(`plain=1\r\n${line}`),
+        {
+          responseHeaders: [
+            { name: 'Set-Cookie', value: 'plain=1; Domain=ordinary.example' },
+            { name: 'Set-Cookie', value: line },
+          ],
+        },
+        { responseHeaders: { 'Content-Type': 'text/html', 'sEt-CoOkIe': line } },
+        { binaryResponseHeaders: binary(`Set-Cookie: ${line}\r\n`) },
+        { binaryResponseHeaders: binary(`Content-Type: text/html\0set-cookie2: ${line}`) },
+        {
+          responseHeaders: [{ name: 'Content-Type', value: 'text/html' }],
+          binaryResponseHeaders: binary(`Set-Cookie: ${line}\n`),
+        },
+        { responsePhrase: `OK Set-Cookie: ${line}` },
+      ];
+      for (const params of refusedReplies) {
+        const { answer, sent } = await reply(params);
+        assert.equal(answer.error?.message, PROTECTED, JSON.stringify(params));
+        assert.deepEqual(sent, [], `${JSON.stringify(params)} reached the browser`);
+      }
+      for (const url of [`${IDP}/ims/check`, `http://IMS-NA1-STG1.adobelogin.com.:8443/x`]) {
+        const { answer, sent } = await reply(one('sid=x; Path=/; HttpOnly'), url);
+        assert.equal(answer.error?.message, PROTECTED, url);
+        assert.deepEqual(sent, []);
+      }
+      const allowed = [
+        [one('sid=1; Domain=.adobe.com; Secure')],
+        [one('sid=1; Domain=services.adobe.com')],
+        [one('sid=1; Domain=x.ims-na1.adobelogin.com')],
+        [one('sid=1; Domain=ordinary.example; Path=/')],
+        [one('sid=1; Path=/; HttpOnly'), 'https://other.adobelogin.com/x'],
+        [one('sid=1; Path=/; HttpOnly'), `${LOGIN}/signin/v2`],
+        [one('sid=1; Path=/'), 'https://x.ims-na1.adobelogin.com/'],
+        [{}, `${IDP}/ims/check`],
+        [{ responseHeaders: [{ name: 'Content-Type', value: 'text/html' }] }, `${IDP}/ims/check`],
+      ];
+      for (const [params, url] of allowed) {
+        const { answer, sent } = await reply(params, url);
+        assert.equal(answer.error, undefined, `${JSON.stringify(params)} ${url}`);
+        assert.equal(sent.length, 1);
+      }
+    });
+
   test(`a request the guard has forgotten keeps no cookie headers on the ${label} route`, async (t) => {
     const wire = wired(t, route);
     wire.target('plain', 'page', { id: 'plain', url: `${ORDINARY}/`, securityOrigin: ORDINARY });

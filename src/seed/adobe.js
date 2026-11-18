@@ -1,4 +1,4 @@
-import { askHold, landed, markerUrl, UNHELD } from './held.js';
+import { askBase, askHold, landed, markerUrl, UNHELD } from './held.js';
 import { IMS_TOKEN } from './vault.js';
 
 const imsHosts = {
@@ -133,9 +133,11 @@ function waiting({ popup, signal, timeout, start, abandon = () => {} }) {
   });
 }
 
-async function prepare(open, options, address, signal, hold) {
+async function prepare(open, options, address, signal, hold, base) {
   if (signal?.aborted) throw cancelled();
   const marker = nonce();
+  if ((await abortable(Promise.resolve(base(marker, signal)), signal)) === 'unheld')
+    throw new Error(UNHELD);
   const popup = open(markerUrl(marker));
   if (!popup) throw new Error('the browser blocked the sign-in window');
   try {
@@ -147,14 +149,16 @@ async function prepare(open, options, address, signal, hold) {
     popup.location.href = await abortable(Promise.resolve(address(config)), signal);
   } catch (error) {
     popup.close();
+    landed(marker);
     throw error;
   }
-  return popup;
+  return { popup, marker };
 }
 
 function viaRelay({
   open,
   hold,
+  base,
   origin,
   listen,
   timeout,
@@ -163,7 +167,14 @@ function viaRelay({
 }) {
   return async (_providerId, options, signal) => {
     const value = nonce();
-    const popup = await prepare(open, options, (config) => address(config, value), signal, hold);
+    const { popup, marker } = await prepare(
+      open,
+      options,
+      (config) => address(config, value),
+      signal,
+      hold,
+      base
+    );
     return waiting({
       popup,
       signal,
@@ -183,7 +194,7 @@ function viaRelay({
         };
         return () => channel.close();
       },
-    });
+    }).finally(() => landed(marker));
   };
 }
 
@@ -197,11 +208,13 @@ export function signIn({
   listen = (name) => new BroadcastChannel(name),
   holdWait,
   hosted = () => true,
-  hold = (marker, signal) => askHold(marker, { listen, signal, wait: holdWait, present: hosted }),
+  hold = (marker, signal) =>
+    askHold(marker, { listen, signal, wait: holdWait, present: hosted, based: true }),
+  base = (marker, signal) => askBase(marker, { listen, signal, wait: holdWait, present: hosted }),
 }) {
   const relay = shared
-    ? viaRelay({ open, hold, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })
-    : viaRelay({ open, hold, origin, listen, timeout });
+    ? viaRelay({ open, hold, base, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })
+    : viaRelay({ open, hold, base, origin, listen, timeout });
   const direct = extension?.signIn
     ? async (_providerId, options, signal) => {
         if (signal?.aborted) throw cancelled();
@@ -216,10 +229,9 @@ export function signIn({
       };
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
   const grant = (providerId, options, { signal } = {}) =>
-    (shared || relayed(origin) || forced()
+    shared || relayed(origin) || forced()
       ? relay(providerId, options, signal)
-      : direct(providerId, options, signal)
-    ).finally(() => landed());
+      : direct(providerId, options, signal);
   const login = (providerId, options, context) =>
     grant(providerId, options, context).then((got) => got.token);
   login.grant = grant;
