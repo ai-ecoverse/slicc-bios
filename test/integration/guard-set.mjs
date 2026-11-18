@@ -270,12 +270,17 @@ export async function guardHost(t, path, { frames = true } = {}) {
     rows.get(row)?.messages.push(text);
   });
   let handed = false;
-  await seven.expose('guardDiag', (text) => {
+  await seven.expose('guardDiag', ([path, hook]) => {
     if (handed) return;
     handed = true;
-    process.stdout.write(`${text}\n`);
+    process.stdout.write(`DIAG-FRAMES hook ${path} ${JSON.stringify(hook)}\n`);
   });
-  await seven.expose('extensionFrames', ([tabId, own]) => extensionFrames(browser, tabId, own));
+  await seven.expose('extensionFrames', async ([id, tabId, own]) => {
+    const answer = await extensionFrames(browser, tabId, own);
+    await seven
+      .evaluate(([id, answer]) => window.extensionFramesAnswer(id, answer), [id, answer])
+      .catch(() => false);
+  });
   await seven.init(
     `() => { globalThis.sliccFakeFrames = ${frames === true}; globalThis.sliccFakeVersion = ${JSON.stringify(frames === true ? CURRENT_EXTENSION.version : MIN_EXTENSION_VERSION)}; }`
   );
@@ -298,16 +303,26 @@ export async function guardHost(t, path, { frames = true } = {}) {
         for (const listener of listeners) listener(message);
       }
     };
+    const framesPending = new Map();
+    window.extensionFramesAnswer = (id, answer) => {
+      framesPending.get(id)?.(answer);
+      framesPending.delete(id);
+    };
     Object.defineProperty(globalThis, 'sliccExtension', {
       value: Object.freeze({
         version: globalThis.sliccFakeVersion,
         fetch: (input, init) => fetch(input, init),
         ...(globalThis.sliccFakeFrames
           ? {
-              async frames(tabId) {
-                const answer = await window.extensionFrames([tabId, location.origin]);
-                if (answer.error) throw new Error(answer.error);
-                return answer.result;
+              frames(tabId) {
+                const id = ++next;
+                return new Promise((resolve, reject) => {
+                  framesPending.set(id, (answer) => {
+                    if (answer?.error) reject(new Error(answer.error));
+                    else resolve(answer?.result);
+                  });
+                  window.extensionFrames(JSON.stringify([id, tabId, location.origin]));
+                });
               },
             }
           : {}),
@@ -542,7 +557,10 @@ export async function guardHost(t, path, { frames = true } = {}) {
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
         const { tabs, route, frames } = routes[path]();
         void window.guardDiag(
-          `DIAG-FRAMES hook ${path} ${JSON.stringify({ route, frames: typeof frames, version: globalThis.sliccExtension?.version })}`
+          JSON.stringify([
+            path,
+            { route, frames: typeof frames, version: globalThis.sliccExtension?.version ?? null },
+          ])
         );
         const connection = guardProtected(
           gated,
