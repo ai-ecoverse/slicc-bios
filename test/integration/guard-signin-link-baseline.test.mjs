@@ -3,7 +3,7 @@ import test from 'node:test';
 import { signIn } from '../../src/seed/adobe.js';
 import { browserHook, browserHosts } from '../../src/seed/cdp.js';
 import { guardProtected } from '../../src/seed/guard.js';
-import { isHeld, watchSignIns } from '../../src/seed/held.js';
+import { isHeld, sweep, watchOpened, watchSignIns } from '../../src/seed/held.js';
 
 const SEVEN = 'https://seven.invalid';
 const MARK = 'BASELINE-IDP-BODY';
@@ -116,6 +116,7 @@ function browser(infos, { redacted }) {
     return Promise.resolve(connection);
   };
   open.after = (count, run) => later.push({ at: listings + count, run });
+  open.count = () => listings;
   return open;
 }
 
@@ -507,5 +508,224 @@ for (const route of ['devtools', 'extension'])
     } finally {
       controller.abort();
       stop();
+    }
+  });
+
+const LATER = [
+  'https://auth.services.adobe.com/en_US/index.html#/',
+  'https://auth.services.adobe.com/en_US/index.html#/mfa',
+  'https://auth.services.adobe.com/en_US/index.html#/consent',
+];
+const FORMS = {
+  'its authorize URL': (url) => url,
+  'only seven’s client id': (url) => {
+    const next = new URL(url);
+    next.searchParams.delete('redirect_uri');
+    return next.href;
+  },
+  'only seven’s callback': (url) => {
+    const next = new URL(url);
+    next.searchParams.delete('client_id');
+    return next.href;
+  },
+  'seven’s callback cut down to its origin': (url) => {
+    const next = new URL(url);
+    return `${next.origin}${next.pathname}?response_type=token&redirect_uri=https://www.sliccy.ai`;
+  },
+};
+
+function idpPage(url) {
+  return { type: 'page', url, title: `${MARK}-idp`, openerId: 'seven', canAccessOpener: false };
+}
+
+async function listedOnce(open) {
+  const from = open.count();
+  for (let n = 0; n < 1200 && open.count() < from + 2; n++) await pause(5);
+  await pause(20);
+}
+
+async function lagging({ id, other, form, watch, before, flicker = false }) {
+  const infos = { seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' } };
+  const open = browser(infos, { redacted: true });
+  const hosts = () => browserHosts(undefined, undefined, linked(open));
+  const { listen } = bus();
+  const watcher = watch
+    ? watchOpened({ hosts, own: SEVEN, storage: undefined, every: 50 })
+    : undefined;
+  const stop = watchSignIns({
+    hosts,
+    own: SEVEN,
+    storage: undefined,
+    listen,
+    asked: () => watcher?.poke(),
+  });
+  const controller = new AbortController();
+  const idps = [];
+  try {
+    start({
+      open: () => {
+        infos[other] = blank(other);
+        if (flicker) {
+          open.after(2, () => {
+            delete infos[other];
+          });
+          open.after(3, () => {
+            infos[other] = blank(other);
+          });
+        }
+        return {
+          location: {
+            set href(url) {
+              idps.push({ id, held: isHeld(id, undefined), listed: Boolean(infos[id]) });
+              infos[id] = idpPage(form(url));
+            },
+          },
+          close() {},
+        };
+      },
+      listen,
+      controller,
+    });
+    const [first] = await navigated(idps);
+    assert.deepEqual(first, { id, held: false, listed: false }, 'the read’s [X],[X] shape');
+    await before({ open, hosts });
+    for (const url of LATER) {
+      infos[id] = idpPage(url);
+      await unreachable('link', open, [id]);
+    }
+    assert.equal(isHeld(id, undefined), true, `${id} is not held`);
+    assert.equal(isHeld(other, undefined), true, `${other} was released`);
+  } finally {
+    controller.abort();
+    stop();
+    watcher?.stop();
+  }
+}
+
+for (const [index, [form, shape]] of Object.entries(FORMS).entries()) {
+  test(`on the link route, a sign-in popup the owner never listed before it navigates is adopted by the watcher from ${form}, and its login, MFA and consent pages stay hidden`, {
+    timeout: 30000,
+  }, async () => {
+    await lagging({
+      id: `AW${index}`,
+      other: `XW${index}`,
+      form: shape,
+      watch: true,
+      before: ({ open }) => listedOnce(open),
+    });
+  });
+
+  test(`on the link route, a sign-in popup first seen by a client’s own guard on ${form} is adopted there, and its later pages stay hidden`, {
+    timeout: 30000,
+  }, async () => {
+    const id = `AG${index}`;
+    await lagging({
+      id,
+      other: `XG${index}`,
+      form: shape,
+      watch: false,
+      before: async ({ open }) => {
+        const agent = await client(guardFor('link', open));
+        try {
+          const listed = (await agent.send('Target.getTargets')).result?.targetInfos ?? [];
+          assert.equal(
+            listed.some((info) => info.targetId === id),
+            false
+          );
+        } finally {
+          agent.close();
+        }
+      },
+    });
+  });
+}
+
+test('on the link route, the sweep before a client’s connection adopts a sign-in popup it finds on its authorize URL', {
+  timeout: 30000,
+}, async () => {
+  await lagging({
+    id: 'AS',
+    other: 'XS',
+    form: FORMS['seven’s callback cut down to its origin'],
+    watch: false,
+    before: ({ hosts }) => sweep({ hosts, own: SEVEN, storage: undefined }),
+  });
+});
+
+test('on the link route, a foreign blank listed alone, gone for one listing, then alone for two more still leaves the sign-in popup adopted and its later pages hidden', {
+  timeout: 30000,
+}, async () => {
+  await lagging({
+    id: 'AF',
+    other: 'XF',
+    form: FORMS['its authorize URL'],
+    watch: false,
+    flicker: true,
+    before: async ({ open }) => {
+      const agent = await client(guardFor('link', open));
+      try {
+        const listed = (await agent.send('Target.getTargets')).result?.targetInfos ?? [];
+        assert.equal(
+          listed.some((info) => info.targetId === 'AF'),
+          false
+        );
+      } finally {
+        agent.close();
+      }
+    },
+  });
+});
+
+const ORDINARY_TABS = {
+  'a tab with no opener': { opener: undefined, kept: false },
+  'a tab an ordinary page opened': { opener: 'home', kept: false },
+  'a cross-origin tab seven opened': { opener: 'seven', kept: true },
+};
+
+for (const [index, [name, { opener: by, kept }]] of Object.entries(ORDINARY_TABS).entries())
+  test(`on the link route, ${name} that goes to a URL naming seven’s client id is hidden only while there unless seven opened it`, {
+    timeout: 30000,
+  }, async () => {
+    const id = `T${index}`;
+    const infos = {
+      seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' },
+      home: { type: 'page', url: 'https://ordinary.invalid/home', title: 'Home' },
+      [id]: {
+        type: 'page',
+        url: 'https://ordinary.invalid/page',
+        title: 'Ordinary',
+        ...(by ? { openerId: by, canAccessOpener: false } : {}),
+      },
+    };
+    const open = browser(infos, { redacted: true });
+    const hosts = () => browserHosts(undefined, undefined, linked(open));
+    const watcher = watchOpened({ hosts, own: SEVEN, storage: undefined, every: 50 });
+    watcher.poke();
+    try {
+      await listedOnce(open);
+      infos[id] = {
+        ...infos[id],
+        url: 'https://ordinary.invalid/search?client_id=experience-catalyst-prod',
+      };
+      await listedOnce(open);
+      await unreachable('link', open, [id]);
+      infos[id] = { ...infos[id], url: 'https://ordinary.invalid/next' };
+      await listedOnce(open);
+      if (kept) {
+        await unreachable('link', open, [id]);
+        assert.equal(isHeld(id, undefined), true);
+        return;
+      }
+      const agent = await client(guardFor('link', open));
+      try {
+        const seen = await reach(agent, id);
+        assert.equal(seen.listed, true, JSON.stringify(seen));
+        assert.equal(seen.attach, 'attached', JSON.stringify(seen));
+      } finally {
+        agent.close();
+      }
+      assert.equal(isHeld(id, undefined), false);
+    } finally {
+      watcher.stop();
     }
   });

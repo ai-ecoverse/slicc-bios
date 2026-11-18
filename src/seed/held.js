@@ -15,6 +15,11 @@ export const UNHELD =
 const EVERY = 200;
 
 const held = new Set();
+let signs = () => false;
+
+export function adopting(signature) {
+  signs = signature;
+}
 export const FLIGHT_KEY = 'slicc-os.sign-in-flight';
 
 export function flying(now = Date.now, storage = globalThis.localStorage) {
@@ -320,9 +325,10 @@ function considering({ is, storage, now }) {
     if (isHeld(info.targetId, storage)) return false;
     if (isHeld(info.parentId, storage) || isHeld(info.openerId, storage)) return true;
     if (info.type !== 'page' || !info.openerId) return false;
+    const opener = targets.get(info.openerId);
+    if (opener !== undefined && is.url(opener.url) && signs(info.url)) return true;
     if (!all && !info.canAccessOpener && !/^about:(?:blank|srcdoc)(?:#|$)/.test(info.url ?? ''))
       return false;
-    const opener = targets.get(info.openerId);
     const current = fresh.get(info.openerId);
     const cross =
       current?.type === 'page' &&
