@@ -472,6 +472,68 @@ test('a token refresh the vault asks seven to send never follows a redirect, so 
   assert.deepEqual(page.errors, []);
 });
 
+test('a token exchange the vault asks seven to send as a GET goes out without a body', async (t) => {
+  const seen = [];
+  const endpoint = createServer((req, res) => {
+    const cors = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-headers': '*',
+      'access-control-allow-methods': 'GET',
+    };
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, cors);
+      res.end();
+      return;
+    }
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      seen.push({ method: req.method, body, editor: req.headers['editor-version'] });
+      res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+      res.end('{"token":"dummy-copilot-token-1234","expires_at":2000000000}');
+    });
+  });
+  await new Promise((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    endpoint.close();
+    fake.set({ egress: null });
+  });
+  fake.set({ locked: false, secrets: ['HARBOR_API_KEY'] });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
+  );
+  fake.set({
+    egress: {
+      id: 'exchange-1',
+      request: {
+        method: 'GET',
+        url: `http://localhost:${endpoint.address().port}/copilot_internal/v2/token`,
+        headers: [
+          ['authorization', 'Bearer dummy-github-token-1234'],
+          ['editor-version', 'vscode/1.107.0'],
+        ],
+        body: '',
+      },
+    },
+  });
+  assert.ok(
+    await logged(() =>
+      fake.log.some((entry) => entry.role === 'egress' && entry.id === 'exchange-1')
+    )
+  );
+  assert.deepEqual(
+    fake.log.find((entry) => entry.role === 'egress' && entry.id === 'exchange-1'),
+    { role: 'egress', id: 'exchange-1', status: 200, error: null }
+  );
+  assert.deepEqual(seen, [{ method: 'GET', body: '', editor: 'vscode/1.107.0' }]);
+  assert.deepEqual(page.errors, []);
+});
+
 test('a /dev/sealed request made while the vault hasn’t answered yet fails with ENOTCONN once seven stops waiting, not at the kernel’s timeout', async (t) => {
   t.after(() => fake.set({ mute: false }));
   fake.set({ mute: false, locked: false });
