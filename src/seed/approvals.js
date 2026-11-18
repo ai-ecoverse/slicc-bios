@@ -527,6 +527,9 @@ export function createApprovals({
     const prior = noticeChain.get(id) ?? Promise.resolve();
     const next = prior.catch(() => {}).then(run);
     noticeChain.set(id, next);
+    void next.finally(() => {
+      if (noticeChain.get(id) === next) noticeChain.delete(id);
+    });
     return next;
   };
   const ctx = { listed, held, gatesOf, remember, kernel, runner, runs, tell, now };
