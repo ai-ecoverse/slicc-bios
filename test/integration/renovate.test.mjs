@@ -24,12 +24,13 @@ const glob = (pattern) =>
       .replace(/\0/g, '.*')}$`
   );
 
-function effective(name, file) {
+function effective(name, file, update = 'patch') {
   const result = {};
   for (const rule of config.packageRules) {
     if (rule.matchFileNames && !rule.matchFileNames.includes(file)) continue;
     if (rule.matchPackageNames && !rule.matchPackageNames.some((p) => glob(p).test(name))) continue;
-    const { description, matchFileNames, matchPackageNames, ...rest } = rule;
+    if (rule.matchUpdateTypes && !rule.matchUpdateTypes.includes(update)) continue;
+    const { description, matchFileNames, matchPackageNames, matchUpdateTypes, ...rest } = rule;
     Object.assign(result, rest);
   }
   return result;
@@ -53,7 +54,7 @@ test('renovate.json parses, extends the shared preset and names the two pinned p
     assert.ok(rule.description?.length > 20, JSON.stringify(rule));
 });
 
-test('every @ai-ecoverse pin in the base set and /opt/agent but slicc-agent bumps by itself and automerges; slicc-agent waits for its coordinated pins', async () => {
+test('every @ai-ecoverse pin in the base set and /opt/agent bumps by itself and automerges its patches and minors; only a new slicc-agent major waits for its coordinated pins', async () => {
   const found = await pins();
   assert.ok(found.length >= 9, `${found.length} pins`);
   for (const file of PINNED)
@@ -62,11 +63,15 @@ test('every @ai-ecoverse pin in the base set and /opt/agent but slicc-agent bump
       file
     );
   for (const [name, file] of found.filter(([name]) => name !== PYTHON)) {
-    const rule = effective(name, file);
-    assert.equal(rule.automerge, name !== '@ai-ecoverse/slicc-agent', `${name} in ${file}`);
-    assert.equal(rule.dependencyDashboardApproval, false, `${name} in ${file}`);
-    assert.notEqual(rule.enabled, false, `${name} in ${file}`);
+    for (const update of ['patch', 'minor', 'major']) {
+      const rule = effective(name, file, update);
+      const held = name === '@ai-ecoverse/slicc-agent' && update === 'major';
+      assert.equal(rule.automerge, !held, `${name} ${update} in ${file}`);
+      assert.equal(rule.dependencyDashboardApproval, false, `${name} ${update} in ${file}`);
+      assert.notEqual(rule.enabled, false, `${name} ${update} in ${file}`);
+    }
   }
+  assert.ok(found.some(([name]) => name === '@ai-ecoverse/slicc-agent'));
 });
 
 test('homescoop packages but Python are one daily PR; the kernel, slicc-agent and spectrum each get their own', async () => {

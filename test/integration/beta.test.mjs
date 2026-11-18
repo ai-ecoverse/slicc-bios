@@ -19,6 +19,7 @@ import {
   release,
   releases,
   runsAgent,
+  sameSchema,
   tainted,
 } from './beta-fixture.mjs';
 import { agentUp, boot, ready, rowSettled } from './bios.mjs';
@@ -252,10 +253,26 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
       assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '2');
       await marker(JSON.stringify({ durableSchema: 3, agent: major.version }));
       t.after(() => marker(null).catch(() => {}));
+      if (sameSchema) {
+        assert.equal(sameSchema.version, '8.0.0');
+        releases.unshift(sameSchema);
+        t.after(() => {
+          if (releases.includes(sameSchema)) releases.splice(releases.indexOf(sameSchema), 1);
+        });
+        await developer(page, false);
+        await developer(page, true);
+        await npmSays(page, 'not-offered');
+        const same = await agentRow(page);
+        assert.equal(same.npm.latest, '8.0.0');
+        assert.equal(same.npm.reason, `a new major version; seven ships ${MAJOR}.x`);
+        assert.ok(!same.actions.includes('install-beta'));
+        releases.splice(releases.indexOf(sameSchema), 1);
+      }
+      assert.equal(major.version, '9.0.0');
       await developer(page, false);
       await developer(page, true);
       await npmSays(page, 'offered');
-      assert.equal((await agentRow(page)).npm.latest, major.version);
+      assert.equal((await agentRow(page)).npm.latest, '9.0.0');
       const acting = act(page, 'install-beta');
       await confirmWith(page, 'Install beta');
       await acting;
