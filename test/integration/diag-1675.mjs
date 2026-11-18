@@ -405,6 +405,59 @@ const text = (value) => {
   }
 };
 
+export function firstRefused(frames, limit = 5) {
+  const roles = new Map();
+  for (const frame of frames)
+    if (frame.dir === 'in' && frame.method === 'Target.attachedToTarget' && frame.session)
+      roles.set(`${frame.conn}:${frame.session}`, {
+        type: frame.targetInfo?.type,
+        targetId: frame.targetInfo?.targetId,
+        url: frame.targetInfo?.url,
+        parent: frame.sessionId ?? null,
+      });
+  const role = (conn, sessionId) => {
+    if (!sessionId) return { role: 'browser' };
+    const known = roles.get(`${conn}:${sessionId}`);
+    const kind =
+      known?.type === 'tab'
+        ? 'tab session'
+        : known?.type === 'page'
+          ? 'page session'
+          : known
+            ? `child session (${known.type})`
+            : 'unknown session';
+    const parent = known?.parent ? roles.get(`${conn}:${known.parent}`) : undefined;
+    return {
+      role: kind,
+      sessionId,
+      targetId: known?.targetId,
+      url: known?.url,
+      parentSession: known?.parent ?? null,
+      parentRole: known?.parent ? (parent?.type ?? 'unknown') : 'browser',
+    };
+  };
+  const out = [];
+  for (const frame of frames) {
+    if (frame.dir !== 'in' || frame.id === undefined || !frame.error) continue;
+    const asked = frames.find(
+      (one) => one.dir === 'out' && one.conn === frame.conn && one.id === frame.id
+    );
+    out.push({
+      at: frame.t,
+      conn: frame.conn,
+      id: frame.id,
+      method: asked?.method ?? frame.for,
+      params: asked?.params,
+      sender: frame.id >= 2 ** 30 ? 'guard probe' : 'client',
+      error: frame.error,
+      waited: frame.waited,
+      ...role(frame.conn, asked?.sessionId ?? frame.sessionId),
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export function frameTreeOrder(frames, pageIds) {
   const out = [];
   for (const pageId of pageIds) {
@@ -526,6 +579,8 @@ export async function diagBegin(page, label, pageIds) {
         .filter((frame) => frame.waited >= 500 || frame.for === 'Page.createIsolatedWorld')
         .map((frame) => [frame.conn, frame.id, frame.for, frame.sessionId, frame.waited]);
       process.stdout.write(`DIAG-NODE-WAITS ${tag} ${text(waits)}\n`);
+      for (const refused of firstRefused(frames))
+        process.stdout.write(`DIAG-NODE-FIRST-REFUSED ${tag} ${text(refused)}\n`);
       for (const gft of frameTreeOrder(frames, pageIds))
         process.stdout.write(`DIAG-NODE-GFT ${tag} ${text(gft)}\n`);
     } catch (error) {
