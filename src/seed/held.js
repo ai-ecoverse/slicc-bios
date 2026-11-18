@@ -31,15 +31,26 @@ function flights(storage, now) {
   } catch {
     return {};
   }
-  if (typeof value === 'number') value = { '': value };
+  if (typeof value === 'number') value = { '': { until: value, linked: false } };
   if (!value || typeof value !== 'object') return {};
   return Object.fromEntries(
-    Object.entries(value).filter(([, until]) => typeof until === 'number' && until > now())
+    Object.entries(value)
+      .map(([marker, entry]) => [
+        marker,
+        typeof entry === 'number' ? { until: entry, linked: true } : entry,
+      ])
+      .filter(([, entry]) => typeof entry?.until === 'number' && entry.until > now())
+      .map(([marker, { until, linked }]) => [marker, { until, linked: linked !== false }])
   );
 }
 
-export function flying(now = Date.now, storage = globalThis.localStorage, marker = '') {
-  const next = { ...flights(storage, now), [marker]: now() + FLIGHT };
+export function flying(
+  now = Date.now,
+  storage = globalThis.localStorage,
+  marker = '',
+  linked = false
+) {
+  const next = { ...flights(storage, now), [marker]: { until: now() + FLIGHT, linked } };
   try {
     where(storage).setItem(FLIGHT_KEY, JSON.stringify(next));
   } catch {}
@@ -54,8 +65,8 @@ export function landed(marker = '', storage = globalThis.localStorage, now = Dat
   } catch {}
 }
 
-export function inFlight(now = Date.now, storage = globalThis.localStorage) {
-  return Object.keys(flights(storage, now)).length > 0;
+export function inFlight(now = Date.now, storage = globalThis.localStorage, linked = false) {
+  return Object.values(flights(storage, now)).some((entry) => linked || !entry.linked);
 }
 
 export const guardOf = (own) => protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
@@ -274,8 +285,9 @@ export function watchSignIns({
       : found.every((state) => state === 'held')
         ? 'held'
         : 'unheld';
-    if (type === 'none' || (type === 'held' && asking.some(([name]) => name.startsWith(LINKED))))
-      flying(now, storage, data.marker);
+    if (type === 'none') flying(now, storage, data.marker);
+    if (type === 'held' && asking.some(([name]) => name.startsWith(LINKED)))
+      flying(now, storage, data.marker, true);
     channel.postMessage({ type, marker: data.marker });
   };
   return () => channel.close();
@@ -328,7 +340,7 @@ export function askHold(
       signal?.removeEventListener('abort', stop);
       channel.close();
       const sure = answer === 'none' && present() ? 'unheld' : answer;
-      if (sure === 'none' || (based && sure === 'held')) flying(now, undefined, marker);
+      if (sure === 'none') flying(now, undefined, marker);
       resolve(sure);
     };
     const stop = () => finish('aborted');
@@ -359,12 +371,12 @@ function considering({ is, storage, now }) {
     if (!all && cross) return false;
     return opener !== undefined && is.url(opener.url);
   };
-  return (infos) => {
+  return (infos, linked = false) => {
     const known = infos.filter((info) => info?.targetId);
     const fresh = new Map(known.map((info) => [info.targetId, info]));
     for (const info of known)
       targets.set(info.targetId, { ...targets.get(info.targetId), ...info });
-    const all = inFlight(now, storage);
+    const all = inFlight(now, storage, linked);
     for (let added = true; added; ) {
       added = false;
       for (const info of known) {
@@ -378,7 +390,7 @@ function considering({ is, storage, now }) {
 
 export async function sweep({ hosts, own, is = guardOf(own), storage, now = Date.now }) {
   const consider = considering({ is, storage, now });
-  for (const open of Object.values(hosts() ?? {})) {
+  for (const [name, open] of Object.entries(hosts() ?? {})) {
     if (typeof open !== 'function') continue;
     let connection;
     try {
@@ -389,14 +401,14 @@ export async function sweep({ hosts, own, is = guardOf(own), storage, now = Date
     try {
       const listed = await ask(connection, 'Target.getTargets');
       if (!Array.isArray(listed?.targetInfos)) throw new Error(UNSWEPT);
-      consider(listed.targetInfos);
+      consider(listed.targetInfos, name.startsWith(LINKED));
     } finally {
       connection.close();
     }
   }
 }
 
-function opened(connection, { is, storage, now }) {
+function opened(connection, { is, storage, now, linked }) {
   const consider = considering({ is, storage, now });
   let next = 0;
   connection.onmessage = (text) => {
@@ -406,7 +418,7 @@ function opened(connection, { is, storage, now }) {
     } catch {
       return;
     }
-    consider(message.result?.targetInfos ?? [message.params?.targetInfo]);
+    consider(message.result?.targetInfos ?? [message.params?.targetInfo], linked);
   };
   const send = (method, params = {}) => {
     next += 1;
@@ -441,7 +453,7 @@ export function watchOpened({
       live.set(name, null);
       try {
         const connection = await open();
-        const poll = opened(connection, { is, storage, now });
+        const poll = opened(connection, { is, storage, now, linked: name.startsWith(LINKED) });
         live.set(name, { connection, poll });
         connection.onclose = () => {
           live.delete(name);

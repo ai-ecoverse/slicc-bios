@@ -1312,7 +1312,11 @@ class Guard {
       return true;
     }
     const cross = await this.crossOpener(targetId, found);
-    if (cross === null || isHeld(found.openerId) || (cross && inFlight())) {
+    if (
+      cross === null ||
+      isHeld(found.openerId) ||
+      (cross && this.route === 'link' && inFlight(Date.now, globalThis.localStorage, true))
+    ) {
       hold(targetId);
       found.guarded = true;
       return true;

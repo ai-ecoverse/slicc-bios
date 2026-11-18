@@ -3,7 +3,15 @@ import test from 'node:test';
 import { signIn } from '../../src/seed/adobe.js';
 import { browserHook, browserHosts } from '../../src/seed/cdp.js';
 import { guardProtected } from '../../src/seed/guard.js';
-import { flying, isHeld, landed, sweep, watchOpened, watchSignIns } from '../../src/seed/held.js';
+import {
+  FLIGHT_KEY,
+  flying,
+  isHeld,
+  landed,
+  sweep,
+  watchOpened,
+  watchSignIns,
+} from '../../src/seed/held.js';
 
 const SEVEN = 'https://seven.invalid';
 const MARK = 'BASELINE-IDP-BODY';
@@ -696,7 +704,7 @@ for (const [index, [name, { opener: by, kept, flight }]] of Object.entries(ORDIN
   test(`on the link route, ${name}, that goes to a URL naming seven’s client id is hidden only while there unless a sign-in in flight holds it`, {
     timeout: 30000,
   }, async () => {
-    if (flight) flying(Date.now, undefined, `tab-${index}`);
+    if (flight) flying(Date.now, undefined, `tab-${index}`, true);
     const id = `T${index}`;
     const infos = {
       seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' },
@@ -886,3 +894,103 @@ test('on the link route, two overlapping sign-ins: the first ending does not end
     stop();
   }
 });
+
+function noopener(id) {
+  return {
+    type: 'page',
+    url: `https://ordinary.invalid/noopener-${id}`,
+    title: `plain ${id}`,
+    openerId: 'seven',
+    canAccessOpener: false,
+  };
+}
+
+for (const route of ['extension', 'devtools'])
+  test(`on the ${route} route, with a sign-in held by its marker and a flight active on a linked host, a tab seven opened noopener stays listed and drivable, and the sign-in tab stays held`, {
+    timeout: 30000,
+  }, async () => {
+    const id = `MF-${route}`;
+    const free = `NF-${route}`;
+    const infos = { seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' } };
+    const open = browser(infos, { redacted: false });
+    const hosts = () => ({ [route]: open });
+    const { listen } = bus();
+    const watcher = watchOpened({ hosts, own: SEVEN, storage: undefined, every: 50 });
+    const stop = watchSignIns({
+      hosts,
+      own: SEVEN,
+      storage: undefined,
+      listen,
+      asked: () => watcher.poke(),
+    });
+    const controller = new AbortController();
+    const idps = [];
+    flying(Date.now, undefined, `linked-${route}`, true);
+    try {
+      start({ open: opener(infos, open, { id, after: 2, idps }), listen, controller });
+      const [first] = await navigated(idps);
+      assert.deepEqual(first, { id, held: true, listed: true });
+      infos[free] = noopener(free);
+      await listedOnce(open);
+      await listedOnce(open);
+      await sweep({ hosts, own: SEVEN, storage: undefined });
+      assert.equal(isHeld(free, undefined), false, `the ${route} watcher or sweep held ${free}`);
+      const agent = await client(guardFor(route, open));
+      try {
+        const seen = await reach(agent, free);
+        assert.equal(seen.listed, true, JSON.stringify(seen));
+        assert.equal(seen.attach, 'attached', JSON.stringify(seen));
+      } finally {
+        agent.close();
+      }
+      assert.equal(isHeld(free, undefined), false, `the ${route} guard held ${free}`);
+      await unreachable(route, open, [id]);
+    } finally {
+      landed(`linked-${route}`);
+      controller.abort();
+      stop();
+      watcher.stop();
+    }
+  });
+
+function store(value) {
+  const map = new Map([[FLIGHT_KEY, value]]);
+  return {
+    getItem: (key) => map.get(key) ?? null,
+    setItem: (key, next) => map.set(key, String(next)),
+    removeItem: (key) => map.delete(key),
+  };
+}
+
+const FOREIGN = {
+  'an unkeyed entry': () => JSON.stringify({ old: Date.now() + 60000 }),
+  'a linked host’s flight': () =>
+    JSON.stringify({ other: { until: Date.now() + 60000, linked: true } }),
+};
+
+for (const [index, [name, value]] of Object.entries(FOREIGN).entries())
+  test(`${name} is a flight for a linked host’s watcher and sweep only, not for an extension or DevTools host’s`, {
+    timeout: 30000,
+  }, async () => {
+    for (const route of ['extension', 'devtools', 'link:node/chrome']) {
+      const free = `NS${index}-${route}`;
+      const infos = {
+        seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' },
+        [free]: noopener(free),
+      };
+      const open = browser(infos, { redacted: false });
+      const hosts = () => ({ [route]: open });
+      const storage = store(value());
+      await sweep({ hosts, own: SEVEN, storage });
+      const watcher = watchOpened({ hosts, own: SEVEN, storage, every: 50 });
+      watcher.poke();
+      await listedOnce(open);
+      await listedOnce(open);
+      watcher.stop();
+      assert.equal(
+        isHeld(free, storage),
+        route.startsWith('link:'),
+        `${name} on the ${route} host: ${free}`
+      );
+    }
+  });
