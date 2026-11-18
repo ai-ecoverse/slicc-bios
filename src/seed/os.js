@@ -12,6 +12,7 @@ import {
   startable as agentStartable,
   version as agentVersion,
   bridgeAgent,
+  deliverApprovalRunNotice,
   deliverWebhook,
   installAgent,
   loadChat,
@@ -22,7 +23,7 @@ import {
   useVault,
   whenIdle,
 } from './agent.js';
-import { createApprovals, routeSudo } from './approvals.js';
+import { APPROVALS_LAYOUT, hostApprovals, routeSudo } from './approvals.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
 import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
@@ -171,6 +172,7 @@ let unoffered = takePairing();
 
 export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
+  approvals: APPROVALS_LAYOUT,
   browser: { side: 'right', open: [] },
   changes: { side: 'left', open: [] },
   chat: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
@@ -404,7 +406,10 @@ reportRepairs(notices);
 reportStopped(notices);
 const registration = await navigator.serviceWorker?.getRegistration();
 if (registration) watchWaiting({ registration, board, notices, reload: () => location.reload() });
-const approvals = createApprovals();
+const approvals = hostApprovals({
+  kernel: () => kernel,
+  deliver: (notice) => deliverApprovalRunNotice(owner, notice),
+});
 const asking = withSecrets(approvals.port, vault.port);
 const clicks = createClicks();
 const approving = withClicks(asking.port, clicks.port);
