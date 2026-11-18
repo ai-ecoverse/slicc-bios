@@ -9,12 +9,15 @@ import { fileURLToPath } from 'node:url';
 import { fixtureServer } from '@ai-ecoverse/slicc-browsers/fixture';
 import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
+import { MIN_EXTENSION_VERSION } from '../../src/seed/extension.js';
 import { boot } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
+import { extensionFrames } from './fake-extension-frames.mjs';
 import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
+import { CURRENT_EXTENSION } from './real-extension.mjs';
 
 const exposure = { listed: false, sample: null };
 const known = (row) => knownRow(row, exposure);
@@ -290,7 +293,7 @@ async function unguardedClient(browser) {
   };
 }
 
-export async function guardHost(t, path) {
+export async function guardHost(t, path, { frames = true } = {}) {
   const { chrome, browser } = await launched();
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
@@ -316,6 +319,16 @@ export async function guardHost(t, path) {
     }
     rows.get(row)?.messages.push(text);
   });
+  let handed = false;
+  await seven.expose('guardDiag', (text) => {
+    if (handed) return;
+    handed = true;
+    process.stdout.write(`${text}\n`);
+  });
+  await seven.expose('extensionFrames', ([tabId, own]) => extensionFrames(browser, tabId, own));
+  await seven.init(
+    `() => { globalThis.sliccFakeFrames = ${frames === true}; globalThis.sliccFakeVersion = ${JSON.stringify(frames === true ? CURRENT_EXTENSION.version : MIN_EXTENSION_VERSION)}; }`
+  );
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
     const every = window.setInterval;
@@ -337,8 +350,17 @@ export async function guardHost(t, path) {
     };
     Object.defineProperty(globalThis, 'sliccExtension', {
       value: Object.freeze({
-        version: '7.10.0',
+        version: globalThis.sliccFakeVersion,
         fetch: (input, init) => fetch(input, init),
+        ...(globalThis.sliccFakeFrames
+          ? {
+              async frames(tabId) {
+                const answer = await window.extensionFrames([tabId, location.origin]);
+                if (answer.error) throw new Error(answer.error);
+                return answer.result;
+              },
+            }
+          : {}),
         cdp: Object.freeze({
           send(method, params, sessionId) {
             const id = ++next;
@@ -373,6 +395,29 @@ export async function guardHost(t, path) {
         if (!linked) throw new Error('no linked browser');
         return linked.open();
       },
+    };
+    let extensionTabs;
+    const routes = {
+      devtools: () => ({}),
+      extension: () => {
+        const extension = globalThis.sliccExtension;
+        if (!extensionTabs) {
+          extensionTabs = new Map();
+          extension.cdp.on((event) => {
+            if (event.method === 'Target.targetDestroyed')
+              extensionTabs.delete(event.params?.targetId);
+          });
+        }
+        return {
+          tabs: extensionTabs,
+          route: { kind: 'extension', version: extension.version },
+          frames:
+            typeof extension.frames === 'function'
+              ? (targetId) => extension.frames(targetId)
+              : undefined,
+        };
+      },
+      link: () => ({ route: globalThis.sliccLinkedBrowsers()[0]?.route }),
     };
     const lagged = (connection, lag, paintDelay, row) => {
       const send = connection.send.bind(connection);
@@ -545,7 +590,17 @@ export async function guardHost(t, path) {
     window.guards = {
       async open(row, own, path, lag, paintDelay, capture) {
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
-        const connection = guardProtected(gated, [location.origin, own].flat());
+        const { tabs, route, frames } = routes[path]();
+        void window.guardDiag(
+          `DIAG-FRAMES hook ${path} ${JSON.stringify({ route, frames: typeof frames, version: globalThis.sliccExtension?.version })}`
+        );
+        const connection = guardProtected(
+          gated,
+          [location.origin, own].flat(),
+          tabs,
+          route,
+          frames
+        );
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
@@ -741,6 +796,11 @@ export async function guardHost(t, path) {
         close,
       };
     };
+  const probe = await clientFactory(path)({});
+  const version = await probe.client.send('Browser.getVersion');
+  await probe.close();
+  process.stdout.write(`GUARD-ROUTE ${path} ${JSON.stringify(version?.slicc ?? null)}\n`);
+  assert.equal(version?.slicc?.route, path, `the ${path} path runs under the ${path} guard route`);
   return Object.assign(clientFactory, { vault: chrome.vault.origin });
 }
 
@@ -813,6 +873,31 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
+            if (current?.id === 'C3.tab-worker-leak' && data.step)
+              process.stdout.write(
+                `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} ${JSON.stringify(
+                  {
+                    as: data.step.as,
+                    session: data.step.session ?? 'page',
+                    cdp: data.step.cdp,
+                    ok: data.out?.ok,
+                    error: String(data.out?.error?.message ?? '').slice(0, 160),
+                  }
+                )}\n`
+              );
+            if (current?.id === 'C3.tab-worker-leak' && data.events)
+              process.stdout.write(
+                `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} attached ${JSON.stringify(
+                  data.events
+                    .filter((event) => event.method === 'Target.attachedToTarget')
+                    .map((event) => [
+                      event.params?.targetInfo?.type,
+                      URL.parse(event.params?.targetInfo?.url ?? '')?.origin ??
+                        event.params?.targetInfo?.url,
+                      Boolean(event.sessionId),
+                    ])
+                )}\n`
+              );
             if (
               data.side === 'guarded' &&
               data.calls &&
