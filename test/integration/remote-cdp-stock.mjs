@@ -9,7 +9,7 @@ import WebSocket from 'ws';
 import { boot, ready } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { CLI } from './cli.mjs';
-import { diagWindow } from './diag-1675.mjs';
+import { diagBegin } from './diag-1675.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { linkNode } from './linked-node.mjs';
@@ -598,24 +598,29 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     }
     const pageIds = seven ? await framedPages().catch(() => []) : [];
     const { body } = await httpJson(`${base}/json/version`);
+    const diag = seven ? await diagBegin(seven, `${label} ${mark}`, pageIds) : null;
     const recorded = await recordedTransport(body.webSocketDebuggerUrl);
-    const diagStart = Date.now();
-    try {
-      const driven = await diagWindow(seven, `${label} ${mark}`, pageIds, () =>
-        step('puppeteer', `connect beside ${mark}`, () =>
-          puppeteer.connect({ transport: recorded.transport, protocolTimeout: STEP_MS })
-        )
-      ).finally(() => {
-        if (!seven) return;
-        const tag = `${label} ${mark}`.replace(/\s+/g, '_');
-        for (const item of recorded.diag)
-          process.stdout.write(
-            `DIAG-PPTR ${tag} ${item.at - diagStart} ${item.waited === undefined ? '' : `waited=${item.waited} `}${item.line}\n`
-          );
+    const diagStart = diag?.started ?? Date.now();
+    const report = async () => {
+      if (!diag) return;
+      await diag.end();
+      for (const item of recorded.diag)
         process.stdout.write(
-          `DIAG-PPTR-UNANSWERED ${tag} ${JSON.stringify([...recorded.sentAt].map(([id, at]) => [id, at - diagStart]))}\n`
+          `DIAG-PPTR ${diag.tag} ${item.at - diagStart} ${item.waited === undefined ? '' : `waited=${item.waited} `}${item.line}\n`
         );
-      });
+      process.stdout.write(
+        `DIAG-PPTR-UNANSWERED ${diag.tag} ${JSON.stringify([...recorded.sentAt].map(([id, at]) => [id, at - diagStart]))}\n`
+      );
+    };
+    try {
+      let driven;
+      try {
+        driven = await step('puppeteer', `connect beside ${mark}`, () =>
+          puppeteer.connect({ transport: recorded.transport, protocolTimeout: STEP_MS })
+        );
+      } finally {
+        await report();
+      }
       try {
         out.puppeteerTargets = driven
           .targets()
