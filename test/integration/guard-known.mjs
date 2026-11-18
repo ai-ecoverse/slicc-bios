@@ -24,6 +24,11 @@ export const LINK = {
     ids: ['C2.redirect-secret', 'C2.redirect-secret-mix'],
     allowed: new Set(['extraLocation']),
   },
+  '#1663 over-blocks an ordinary iframe under a protected parent on link (#1642 follow-up, #1667)':
+    {
+      ids: ['C3.ordinary-parent-iframes.page'],
+      allowed: new Set(['contextEvaluate', 'incomplete']),
+    },
 };
 
 export function listedWrong(text) {

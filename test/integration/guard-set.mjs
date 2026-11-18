@@ -69,7 +69,7 @@ const PATHS = {
   devtools: {
     autoAttach: true,
     iframeAutoAttach: true,
-    signInHold: true,
+    signInHold: false,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: true,
@@ -83,7 +83,7 @@ const PATHS = {
   extension: {
     autoAttach: true,
     iframeAutoAttach: false,
-    signInHold: true,
+    signInHold: false,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: false,
@@ -99,7 +99,7 @@ const PATHS = {
   link: {
     autoAttach: true,
     iframeAutoAttach: true,
-    signInHold: true,
+    signInHold: false,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: true,
@@ -133,25 +133,32 @@ function noteMessage(flags, value) {
   for (const item of Object.values(value)) noteMessage(flags, item);
 }
 
+const MAPPED = ['*.sliccy.ai', 'sliccy.ai', '*.example.test', 'cross.test'];
+const SECURE_MAPPED = ['*.adobelogin.com', 'adobe.com', '*.adobe.com'];
+let secured = false;
 const browserAt = () =>
   launch({
     tools: false,
     extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
     args: [
       '--remote-allow-origins=*',
-      '--ignore-certificate-errors',
-      '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1, MAP cross.test 127.0.0.1, MAP *.adobelogin.com 127.0.0.1, MAP adobe.com 127.0.0.1, MAP *.adobe.com 127.0.0.1',
+      ...(secured ? ['--ignore-certificate-errors'] : []),
+      `--host-resolver-rules=${[...MAPPED, ...(secured ? SECURE_MAPPED : [])]
+        .map((host) => `MAP ${host} 127.0.0.1`)
+        .join(', ')}`,
     ],
   });
-const chrome = await browserAt();
+let started;
+const launched = () =>
+  (started ??= browserAt().then(async (chrome) => ({ chrome, ...(await devtools(chrome)) })));
 after(async () => {
-  chrome.close();
+  if (started) (await started).chrome.close();
   await fixture.close();
   await secure.close();
 });
-const { port, browser } = await devtools(chrome);
 
 async function tabsBrowser(t, path) {
+  const { port, browser } = await launched();
   if (path !== 'link') return { port, browser };
   const other = await browserAt();
   t.after(() => other.close());
@@ -284,6 +291,7 @@ async function unguardedClient(browser) {
 }
 
 export async function guardHost(t, path) {
+  const { chrome, browser } = await launched();
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
   await new Promise((resolve, reject) => {
@@ -746,6 +754,7 @@ export const ROW_MS = 3 * 60 * 1000;
 export const SCALE = { lagging: 3 };
 
 export function shared(path, { variants, except = [], group } = {}) {
+  if (group === 'idp') secured = true;
   const grouped = group ? groupTargets(group) : ALL_TARGETS;
   const chosen = {
     targets: only(process.env.GUARD_TARGETS) ?? grouped,
