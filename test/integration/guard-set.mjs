@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -369,6 +369,12 @@ export async function guardHost(t, path, { frames = true } = {}) {
   });
   await boot(seven);
   const tabs = await tabsBrowser(t, path);
+  if (path === 'link') {
+    const node = JSON.parse(
+      await readFile(new URL('../../node_modules/@ai-ecoverse/slicc/package.json', import.meta.url))
+    );
+    process.stdout.write(`GUARD-LINK-NODE @ai-ecoverse/slicc@${node.version}\n`);
+  }
   if (path === 'link') trace('link', (await linkNode(t, seven, tabs.port)).join(' '));
   const setup = async (sources) => {
     const auditForwards = new Function(`return (${sources.audit})`)();
