@@ -994,3 +994,54 @@ for (const [index, [name, value]] of Object.entries(FOREIGN).entries())
       );
     }
   });
+
+function borrowed() {
+  const map = new Map();
+  const before = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    writable: true,
+    value: {
+      getItem: (key) => map.get(key) ?? null,
+      setItem: (key, value) => map.set(key, String(value)),
+      removeItem: (key) => map.delete(key),
+    },
+  });
+  return () => {
+    if (before) Object.defineProperty(globalThis, 'localStorage', before);
+    else delete globalThis.localStorage;
+  };
+}
+
+const UNLINKED = {
+  devtools: {
+    name: 'a none flight',
+    write: () => flying(Date.now, undefined, 'none-devtools'),
+  },
+  extension: {
+    name: 'an old plain number',
+    write: () => globalThis.localStorage.setItem(FLIGHT_KEY, String(Date.now() + 60000)),
+  },
+};
+
+for (const [route, flight] of Object.entries(UNLINKED))
+  test(`on the ${route} route, with ${flight.name}, a client’s own guard holds a cross-origin page seven opened`, {
+    timeout: 30000,
+  }, async () => {
+    const id = `UG-${route}`;
+    const infos = {
+      seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' },
+      [id]: idpPage(LATER[0]),
+    };
+    const open = browser(infos, { redacted: false });
+    const restore = borrowed();
+    flight.write();
+    try {
+      await unreachable(route, open, [id]);
+      assert.equal(isHeld(id, undefined), true);
+    } finally {
+      landed('none-devtools');
+      landed('');
+      restore();
+    }
+  });

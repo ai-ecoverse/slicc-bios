@@ -1315,7 +1315,7 @@ class Guard {
     if (
       cross === null ||
       isHeld(found.openerId) ||
-      (cross && this.route === 'link' && inFlight(Date.now, globalThis.localStorage, true))
+      (cross && inFlight(Date.now, globalThis.localStorage, this.route === 'link'))
     ) {
       hold(targetId);
       found.guarded = true;
