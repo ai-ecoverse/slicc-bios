@@ -269,6 +269,12 @@ export async function guardHost(t, path, { frames = true } = {}) {
     }
     rows.get(row)?.messages.push(text);
   });
+  let handed = false;
+  await seven.expose('guardDiag', (text) => {
+    if (handed) return;
+    handed = true;
+    process.stdout.write(`${text}\n`);
+  });
   await seven.expose('extensionFrames', ([tabId, own]) => extensionFrames(browser, tabId, own));
   await seven.init(
     `() => { globalThis.sliccFakeFrames = ${frames === true}; globalThis.sliccFakeVersion = ${JSON.stringify(frames === true ? CURRENT_EXTENSION.version : MIN_EXTENSION_VERSION)}; }`
@@ -535,6 +541,9 @@ export async function guardHost(t, path, { frames = true } = {}) {
       async open(row, own, path, lag, paintDelay, capture) {
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
         const { tabs, route, frames } = routes[path]();
+        void window.guardDiag(
+          `DIAG-FRAMES hook ${path} ${JSON.stringify({ route, frames: typeof frames, version: globalThis.sliccExtension?.version })}`
+        );
         const connection = guardProtected(
           gated,
           [location.origin, own].flat(),

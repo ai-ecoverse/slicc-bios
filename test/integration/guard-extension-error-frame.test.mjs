@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
 import { test } from 'node:test';
 import { guardHost, targets } from './guard-set.mjs';
 
 const REFUSED = /^slicc: refused:/;
-const FAILED = 'http://nonexistent.invalid/';
+async function closedPort() {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
 
 const outcome = async (promise) => {
   try {
@@ -52,6 +59,7 @@ test('the documented limit: on the extension route an ordinary page with an erro
   const { client, unguarded, close } = await clientFactory('extension')({});
   t.after(() => close());
   const tag = `error-frame-${Date.now()}`;
+  const FAILED = `${new URL(targets.ordinary).protocol}//${new URL(targets.ordinary).hostname}:${await closedPort()}/`;
   const url = `${targets.ordinary}/framed?tag=${tag}&url=${encodeURIComponent(FAILED)}&log=${encodeURIComponent(targets.log)}`;
   const { targetId } = await unguarded.send('Target.createTarget', { url });
   t.after(() => outcome(unguarded.send('Target.closeTarget', { targetId })));
@@ -59,11 +67,20 @@ test('the documented limit: on the extension route an ordinary page with an erro
     targetId,
     flatten: true,
   });
+  const walk = (node) => [node.frame, ...(node.childFrames ?? []).flatMap(walk)];
   const errorFrame = async () => {
     const { frameTree } = await unguarded.send('Page.getFrameTree', {}, raw);
-    return (frameTree.childFrames ?? []).some(
-      (child) => child.frame.unreachableUrl || child.frame.url.startsWith('chrome-error:')
+    const local = walk(frameTree)
+      .slice(1)
+      .some((frame) => frame.unreachableUrl || frame.url.startsWith('chrome-error:'));
+    const { targetInfos } = await unguarded.send('Target.getTargets');
+    const remote = targetInfos.some(
+      (info) =>
+        info.type === 'iframe' &&
+        info.parentId === targetId &&
+        (info.url.startsWith('chrome-error:') || info.url === FAILED)
     );
+    return local || remote;
   };
   assert.ok(await until(errorFrame, 15000), 'the iframe failed to load without the guard');
   const attached = await client.send('Target.attachToTarget', { targetId, flatten: true });
