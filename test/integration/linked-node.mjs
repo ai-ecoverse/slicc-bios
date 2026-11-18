@@ -8,6 +8,8 @@ import { attach, cliEnv } from './cli.mjs';
 export const CLI =
   process.env.SLICC_CLI ?? fileURLToPath(new URL('../../node_modules/.bin/slicc', import.meta.url));
 
+export const NODE_STDERR = [];
+
 export async function linkNode(
   t,
   page,
@@ -22,22 +24,31 @@ export async function linkNode(
     HOME: home,
     XDG_CONFIG_HOME: join(home, 'config'),
     SLICC_CDP_PORTS: '9300-9309',
+    SLICC_DEBUG: '1',
   };
   delete env.SLICC_CDP_URL;
-  const node = attach(
-    CLI,
-    [
-      '--signal',
-      'stdio',
-      '--name',
-      name,
-      '--no-kernel',
-      seven ? '--cdp' : '--cdp-extra',
-      `http://127.0.0.1:${cdpPort}`,
-      ...origins.flatMap((origin) => ['--origin', origin]),
-    ],
-    { stdio: ['pipe', 'pipe', 'inherit'], env }
+  const args = [
+    '--signal',
+    'stdio',
+    '--name',
+    name,
+    '--no-kernel',
+    seven ? '--cdp' : '--cdp-extra',
+    `http://127.0.0.1:${cdpPort}`,
+    ...origins.flatMap((origin) => ['--origin', origin]),
+  ];
+  const added = Object.fromEntries(
+    Object.entries(cliEnv(env)).filter(([key, value]) => process.env[key] !== value)
   );
+  process.stdout.write(
+    `DIAG-NODE-ARGS ${name} ${JSON.stringify({ cli: CLI, argv: ['attach', ...args], env: added, origins, seven, cdpPort })}\n`
+  );
+  const node = attach(CLI, args, { stdio: ['pipe', 'pipe', 'pipe'], env });
+  createInterface({ input: node.stderr }).on('line', (line) => {
+    NODE_STDERR.push({ t: Date.now(), name, line });
+    if (NODE_STDERR.length > 50000) NODE_STDERR.splice(0, NODE_STDERR.length - 50000);
+    if (!/debug/i.test(line)) process.stderr.write(`${line}\n`);
+  });
   t.after(() => node.kill());
   await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
   createInterface({ input: node.stdout }).on('line', (line) =>
