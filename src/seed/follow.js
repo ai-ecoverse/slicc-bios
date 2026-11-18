@@ -113,6 +113,15 @@ export async function certificate(
   return made;
 }
 
+export async function keptFingerprints(prefix, { idb = indexedDB } = {}) {
+  const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
+  const kept = await certificates('readonly', (store) => store.getAll(range), idb);
+  return kept
+    .flatMap((cert) => cert?.getFingerprints?.() ?? [])
+    .filter((print) => print.algorithm === 'sha-256')
+    .map((print) => print.value.replaceAll(':', '').toLowerCase());
+}
+
 export function dropCertificate(hub, { idb = indexedDB } = {}) {
   return certificates('readwrite', (store) => store.delete(hub), idb);
 }
