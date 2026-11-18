@@ -324,6 +324,29 @@ export async function guardHost(t, path) {
         return linked.open();
       },
     };
+    let extensionTabs;
+    const routes = {
+      devtools: () => ({}),
+      extension: () => {
+        const extension = globalThis.sliccExtension;
+        if (!extensionTabs) {
+          extensionTabs = new Map();
+          extension.cdp.on((event) => {
+            if (event.method === 'Target.targetDestroyed')
+              extensionTabs.delete(event.params?.targetId);
+          });
+        }
+        return {
+          tabs: extensionTabs,
+          route: { kind: 'extension', version: extension.version },
+          frames:
+            typeof extension.frames === 'function'
+              ? (targetId) => extension.frames(Number(targetId))
+              : undefined,
+        };
+      },
+      link: () => ({ route: globalThis.sliccLinkedBrowsers()[0]?.route }),
+    };
     const lagged = (connection, lag, paintDelay, row) => {
       const send = connection.send.bind(connection);
       const shots = new Set();
@@ -495,7 +518,14 @@ export async function guardHost(t, path) {
     window.guards = {
       async open(row, own, path, lag, paintDelay, capture) {
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
-        const connection = guardProtected(gated, [location.origin, own].flat());
+        const { tabs, route, frames } = routes[path]();
+        const connection = guardProtected(
+          gated,
+          [location.origin, own].flat(),
+          tabs,
+          route,
+          frames
+        );
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
