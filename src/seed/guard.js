@@ -2,7 +2,7 @@ import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'jso
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
 import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
-import { adopting, crossOriginPage, emptyNoAccess, hold, isHeld } from './held.js';
+import { crossOriginPage, emptyNoAccess, hold, inFlight, isHeld } from './held.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -793,9 +793,6 @@ export function signsIn(url, { cut = false } = {}) {
   return true;
 }
 
-const signature = (url) => signsIn(url, { cut: true });
-adopting(signature);
-
 export function protection(own, { cut = false } = {}) {
   const matcher = protectedOrigins(catalog.protectedOrigins, owned(own));
   const web = (url, options) =>
@@ -1315,7 +1312,7 @@ class Guard {
       return true;
     }
     const cross = await this.crossOpener(targetId, found);
-    if (cross === null || isHeld(found.openerId) || (cross && signature(found.url))) {
+    if (cross === null || isHeld(found.openerId) || (cross && inFlight())) {
       hold(targetId);
       found.guarded = true;
       return true;

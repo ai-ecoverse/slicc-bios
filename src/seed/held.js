@@ -15,27 +15,47 @@ export const UNHELD =
 const EVERY = 200;
 
 const held = new Set();
-let signs = () => false;
-
-export function adopting(signature) {
-  signs = signature;
-}
 export const FLIGHT_KEY = 'slicc-os.sign-in-flight';
+const memory = new Map();
+const kept = {
+  getItem: (key) => memory.get(key) ?? null,
+  setItem: (key, value) => memory.set(key, String(value)),
+  removeItem: (key) => memory.delete(key),
+};
+const where = (storage) => (typeof storage?.getItem === 'function' ? storage : kept);
 
-export function flying(now = Date.now, storage = globalThis.localStorage) {
+function flights(storage, now) {
+  let value;
   try {
-    storage?.setItem(FLIGHT_KEY, String(now() + FLIGHT));
+    value = JSON.parse(where(storage).getItem(FLIGHT_KEY) ?? '{}');
+  } catch {
+    return {};
+  }
+  if (typeof value === 'number') value = { '': value };
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(([, until]) => typeof until === 'number' && until > now())
+  );
+}
+
+export function flying(now = Date.now, storage = globalThis.localStorage, marker = '') {
+  const next = { ...flights(storage, now), [marker]: now() + FLIGHT };
+  try {
+    where(storage).setItem(FLIGHT_KEY, JSON.stringify(next));
   } catch {}
 }
 
-export function landed(storage = globalThis.localStorage) {
+export function landed(marker = '', storage = globalThis.localStorage, now = Date.now) {
+  const rest = flights(storage, now);
+  delete rest[marker];
   try {
-    storage?.removeItem(FLIGHT_KEY);
+    if (Object.keys(rest).length) where(storage).setItem(FLIGHT_KEY, JSON.stringify(rest));
+    else where(storage).removeItem(FLIGHT_KEY);
   } catch {}
 }
 
 export function inFlight(now = Date.now, storage = globalThis.localStorage) {
-  return Number(storage?.getItem(FLIGHT_KEY) ?? 0) > now();
+  return Object.keys(flights(storage, now)).length > 0;
 }
 
 export const guardOf = (own) => protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
@@ -233,8 +253,9 @@ export function watchSignIns({
     const url = markerUrl(data.marker);
     const deadline = now() + wait;
     const entry = data.based === true ? claim(data.marker) : undefined;
+    const asking = openers();
     const found = await Promise.all(
-      openers().map(([name, open]) => {
+      asking.map(([name, open]) => {
         const linked = name.startsWith(LINKED);
         return find(open, url, {
           deadline,
@@ -253,7 +274,8 @@ export function watchSignIns({
       : found.every((state) => state === 'held')
         ? 'held'
         : 'unheld';
-    if (type === 'none') flying(now, storage);
+    if (type === 'none' || (type === 'held' && asking.some(([name]) => name.startsWith(LINKED))))
+      flying(now, storage, data.marker);
     channel.postMessage({ type, marker: data.marker });
   };
   return () => channel.close();
@@ -306,7 +328,7 @@ export function askHold(
       signal?.removeEventListener('abort', stop);
       channel.close();
       const sure = answer === 'none' && present() ? 'unheld' : answer;
-      if (sure === 'none') flying(now);
+      if (sure === 'none' || (based && sure === 'held')) flying(now, undefined, marker);
       resolve(sure);
     };
     const stop = () => finish('aborted');
@@ -325,10 +347,9 @@ function considering({ is, storage, now }) {
     if (isHeld(info.targetId, storage)) return false;
     if (isHeld(info.parentId, storage) || isHeld(info.openerId, storage)) return true;
     if (info.type !== 'page' || !info.openerId) return false;
-    const opener = targets.get(info.openerId);
-    if (opener !== undefined && is.url(opener.url) && signs(info.url)) return true;
     if (!all && !info.canAccessOpener && !/^about:(?:blank|srcdoc)(?:#|$)/.test(info.url ?? ''))
       return false;
+    const opener = targets.get(info.openerId);
     const current = fresh.get(info.openerId);
     const cross =
       current?.type === 'page' &&

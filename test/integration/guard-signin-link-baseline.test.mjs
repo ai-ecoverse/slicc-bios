@@ -3,7 +3,7 @@ import test from 'node:test';
 import { signIn } from '../../src/seed/adobe.js';
 import { browserHook, browserHosts } from '../../src/seed/cdp.js';
 import { guardProtected } from '../../src/seed/guard.js';
-import { isHeld, sweep, watchOpened, watchSignIns } from '../../src/seed/held.js';
+import { flying, isHeld, landed, sweep, watchOpened, watchSignIns } from '../../src/seed/held.js';
 
 const SEVEN = 'https://seven.invalid';
 const MARK = 'BASELINE-IDP-BODY';
@@ -544,7 +544,7 @@ async function listedOnce(open) {
   await pause(20);
 }
 
-async function lagging({ id, other, form, watch, before, flicker = false }) {
+async function lagging({ id, other, form, watch, before, flicker = false, late = 0, after }) {
   const infos = { seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' } };
   const open = browser(infos, { redacted: true });
   const hosts = () => browserHosts(undefined, undefined, linked(open));
@@ -577,7 +577,11 @@ async function lagging({ id, other, form, watch, before, flicker = false }) {
           location: {
             set href(url) {
               idps.push({ id, held: isHeld(id, undefined), listed: Boolean(infos[id]) });
-              infos[id] = idpPage(form(url));
+              const land = () => {
+                infos[id] = idpPage(form(url));
+              };
+              if (late) open.after(late, land);
+              else land();
             },
           },
           close() {},
@@ -593,6 +597,7 @@ async function lagging({ id, other, form, watch, before, flicker = false }) {
       infos[id] = idpPage(url);
       await unreachable('link', open, [id]);
     }
+    await after?.({ open, infos });
     assert.equal(isHeld(id, undefined), true, `${id} is not held`);
     assert.equal(isHeld(other, undefined), true, `${other} was released`);
   } finally {
@@ -603,7 +608,7 @@ async function lagging({ id, other, form, watch, before, flicker = false }) {
 }
 
 for (const [index, [form, shape]] of Object.entries(FORMS).entries()) {
-  test(`on the link route, a sign-in popup the owner never listed before it navigates is adopted by the watcher from ${form}, and its login, MFA and consent pages stay hidden`, {
+  test(`on the link route, a sign-in popup the owner never listed before it navigates is held by the watcher on ${form}, and its login, MFA and consent pages stay hidden`, {
     timeout: 30000,
   }, async () => {
     await lagging({
@@ -615,7 +620,7 @@ for (const [index, [form, shape]] of Object.entries(FORMS).entries()) {
     });
   });
 
-  test(`on the link route, a sign-in popup first seen by a client’s own guard on ${form} is adopted there, and its later pages stay hidden`, {
+  test(`on the link route, a sign-in popup first seen by a client’s own guard on ${form} is held there, and its later pages stay hidden`, {
     timeout: 30000,
   }, async () => {
     const id = `AG${index}`;
@@ -640,7 +645,7 @@ for (const [index, [form, shape]] of Object.entries(FORMS).entries()) {
   });
 }
 
-test('on the link route, the sweep before a client’s connection adopts a sign-in popup it finds on its authorize URL', {
+test('on the link route, the sweep before a client’s connection holds a sign-in popup it finds on its authorize URL', {
   timeout: 30000,
 }, async () => {
   await lagging({
@@ -652,7 +657,7 @@ test('on the link route, the sweep before a client’s connection adopts a sign-
   });
 });
 
-test('on the link route, a foreign blank listed alone, gone for one listing, then alone for two more still leaves the sign-in popup adopted and its later pages hidden', {
+test('on the link route, a foreign blank listed alone, gone for one listing, then alone for two more still leaves the sign-in popup held and its later pages hidden', {
   timeout: 30000,
 }, async () => {
   await lagging({
@@ -679,13 +684,19 @@ test('on the link route, a foreign blank listed alone, gone for one listing, the
 const ORDINARY_TABS = {
   'a tab with no opener': { opener: undefined, kept: false },
   'a tab an ordinary page opened': { opener: 'home', kept: false },
-  'a cross-origin tab seven opened': { opener: 'seven', kept: true },
+  'a cross-origin tab seven opened, outside a sign-in': { opener: 'seven', kept: false },
+  'a cross-origin tab seven opened, while a sign-in is in flight': {
+    opener: 'seven',
+    kept: true,
+    flight: true,
+  },
 };
 
-for (const [index, [name, { opener: by, kept }]] of Object.entries(ORDINARY_TABS).entries())
-  test(`on the link route, ${name} that goes to a URL naming seven’s client id is hidden only while there unless seven opened it`, {
+for (const [index, [name, { opener: by, kept, flight }]] of Object.entries(ORDINARY_TABS).entries())
+  test(`on the link route, ${name}, that goes to a URL naming seven’s client id is hidden only while there unless a sign-in in flight holds it`, {
     timeout: 30000,
   }, async () => {
+    if (flight) flying(Date.now, undefined, `tab-${index}`);
     const id = `T${index}`;
     const infos = {
       seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' },
@@ -726,6 +737,152 @@ for (const [index, [name, { opener: by, kept }]] of Object.entries(ORDINARY_TABS
       }
       assert.equal(isHeld(id, undefined), false);
     } finally {
+      landed(`tab-${index}`);
       watcher.stop();
     }
   });
+
+const LANDING =
+  'https://ims-na1.adobelogin.com/landing?child=1#access_token=BASELINE-IDP-BODY-token';
+const landing = () => LANDING;
+const quiet = async ({ open }) => {
+  await listedOnce(open);
+  await listedOnce(open);
+};
+const asClient =
+  (id) =>
+  async ({ open }) => {
+    const agent = await client(guardFor('link', open));
+    try {
+      const listed = (await agent.send('Target.getTargets')).result?.targetInfos ?? [];
+      assert.equal(
+        listed.some((info) => info.targetId === id),
+        false
+      );
+    } finally {
+      agent.close();
+    }
+  };
+
+const REDIRECTED = {
+  'the watcher': { watch: true, before: quiet },
+  'a client’s own guard': { watch: false, before: (id) => asClient(id) },
+  'the sweep before a client’s connection': {
+    watch: false,
+    before:
+      () =>
+      ({ hosts }) =>
+        sweep({ hosts, own: SEVEN, storage: undefined }),
+  },
+};
+
+for (const [index, [who, how]] of Object.entries(REDIRECTED).entries()) {
+  test(`on the link route, a sign-in popup whose authorize URL redirected to a landing page before any listing is held by ${who} while the sign-in is in flight, with no client id or callback in any URL`, {
+    timeout: 30000,
+  }, async () => {
+    const id = `RL${index}`;
+    await lagging({
+      id,
+      other: `XL${index}`,
+      form: landing,
+      watch: how.watch,
+      before: how.watch ? how.before : how.before(id),
+    });
+  });
+
+  test(`on the link route, a sign-in popup first listed only on its login page is held by ${who} while the sign-in is in flight`, {
+    timeout: 30000,
+  }, async () => {
+    const id = `RN${index}`;
+    await lagging({
+      id,
+      other: `XN${index}`,
+      form: () => LATER[0],
+      late: 3,
+      watch: how.watch,
+      before: async (seen) => {
+        await listedOnce(seen.open);
+        await listedOnce(seen.open);
+        await (how.watch ? how.before : how.before(id))(seen);
+      },
+    });
+  });
+}
+
+test('on the link route, the fake IMS flow of the sign-in rows (authorize, then landing, then its child and grandchild) stays out of reach', {
+  timeout: 30000,
+}, async () => {
+  await lagging({
+    id: 'RI',
+    other: 'XI',
+    form: landing,
+    watch: true,
+    before: quiet,
+    after: async ({ open, infos }) => {
+      infos.RIc = {
+        type: 'page',
+        url: 'https://ims-na1.adobelogin.com/idp-child?grand=1#access_token=BASELINE-IDP-BODY-child',
+        title: `${MARK}-child`,
+        openerId: 'RI',
+        canAccessOpener: true,
+      };
+      infos.RIg = {
+        type: 'page',
+        url: 'https://ims-na1.adobelogin.com/idp-grandchild#access_token=BASELINE-IDP-BODY-grand',
+        title: `${MARK}-grand`,
+        openerId: 'RIc',
+        canAccessOpener: true,
+      };
+      await listedOnce(open);
+      await unreachable('link', open, ['RI', 'RIc', 'RIg']);
+    },
+  });
+});
+
+test('on the link route, two overlapping sign-ins: the first ending does not end the second’s flight, so the second popup, first seen on its login page, is held', {
+  timeout: 30000,
+}, async () => {
+  const infos = { seven: { type: 'page', url: `${SEVEN}/os/`, title: 'seven' } };
+  const open = browser(infos, { redacted: true });
+  const hosts = () => browserHosts(undefined, undefined, linked(open));
+  const { listen } = bus();
+  const stop = watchSignIns({ hosts, own: SEVEN, storage: undefined, listen });
+  const first = new AbortController();
+  const second = new AbortController();
+  const idps = [];
+  const popup = (id, other) => () => {
+    infos[other] = blank(other);
+    return {
+      location: {
+        set href(_) {
+          idps.push({ id, held: isHeld(id, undefined), listed: Boolean(infos[id]) });
+        },
+      },
+      close() {},
+    };
+  };
+  try {
+    const one = start({ open: popup('V1', 'W1'), listen, controller: first });
+    await navigated(idps, 1);
+    start({ open: popup('V2', 'W2'), listen, controller: second });
+    await navigated(idps, 2);
+    assert.deepEqual(idps, [
+      { id: 'V1', held: false, listed: false },
+      { id: 'V2', held: false, listed: false },
+    ]);
+    first.abort();
+    await one;
+    infos.V2 = idpPage(LATER[0]);
+    await unreachable('link', open, ['V2']);
+    for (const url of LATER.slice(1)) {
+      infos.V2 = idpPage(url);
+      await unreachable('link', open, ['V2']);
+    }
+    assert.equal(isHeld('V2', undefined), true);
+    assert.equal(isHeld('V1', undefined), false);
+  } finally {
+    first.abort();
+    second.abort();
+    stop();
+  }
+});

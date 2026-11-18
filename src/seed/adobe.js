@@ -148,9 +148,10 @@ async function prepare(open, options, address, signal, hold, base) {
     popup.location.href = await abortable(Promise.resolve(address(config)), signal);
   } catch (error) {
     popup.close();
+    landed(marker);
     throw error;
   }
-  return popup;
+  return { popup, marker };
 }
 
 function viaRelay({
@@ -165,7 +166,7 @@ function viaRelay({
 }) {
   return async (_providerId, options, signal) => {
     const value = nonce();
-    const popup = await prepare(
+    const { popup, marker } = await prepare(
       open,
       options,
       (config) => address(config, value),
@@ -192,7 +193,7 @@ function viaRelay({
         };
         return () => channel.close();
       },
-    });
+    }).finally(() => landed(marker));
   };
 }
 
@@ -227,10 +228,9 @@ export function signIn({
       };
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
   const grant = (providerId, options, { signal } = {}) =>
-    (shared || relayed(origin) || forced()
+    shared || relayed(origin) || forced()
       ? relay(providerId, options, signal)
-      : direct(providerId, options, signal)
-    ).finally(() => landed());
+      : direct(providerId, options, signal);
   const login = (providerId, options, context) =>
     grant(providerId, options, context).then((got) => got.token);
   login.grant = grant;
