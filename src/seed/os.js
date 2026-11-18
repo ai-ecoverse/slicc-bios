@@ -266,6 +266,7 @@ const links = createLinks({
   agent: {
     allowed: allowedRemotely,
     handle: (link, meta, s) => remote.handle(link, meta, s),
+    identified: (link) => remote.identified(link),
     refusal: (link) => (pairedOnly(link) ? PAIRED_CONTROL : null),
   },
   sevens: {

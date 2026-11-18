@@ -1136,6 +1136,7 @@ export function createLinks({
     identify(key, id, wanted) {
       const link = links.get(key);
       supersede(Object.assign(link, { id }));
+      agent?.identified?.(link);
       link.exit.id = `link:${id}`;
       if (wanted && free(wanted) === wanted) link.address = wanted;
       router.sync();

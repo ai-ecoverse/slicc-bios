@@ -171,6 +171,9 @@ export function createRemote({
     },
   };
   return {
+    identified(link) {
+      link.ownKernel = (async () => ownKernel(link))().then(Boolean, () => true);
+    },
     controlling(link) {
       const counts = active.get(link.key);
       if (counts?.prompt) return 'prompt';
@@ -181,7 +184,7 @@ export function createRemote({
       if (!op) return stream.reset('EINVAL');
       if (meta.op === 'decide') {
         try {
-          if (await ownKernel(link)) return stream.reset(OWN_KERNEL);
+          if ((await link.ownKernel) || (await ownKernel(link))) return stream.reset(OWN_KERNEL);
         } catch {
           return stream.reset(OWN_KERNEL);
         }
