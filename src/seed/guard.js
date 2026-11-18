@@ -18,6 +18,8 @@ export const SCRIPTS =
   'slicc: refused: scripts and bindings for later documents could run in seven’s pages or the vault, so the guard doesn’t allow them; run a script in the page you see with Runtime.evaluate instead';
 export const INHERITED =
   'slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser, so the guard doesn’t send it; open a new tab on about:blank instead';
+export const INTERCEPTION =
+  'slicc: refused: the deprecated Network interception commands skip the guard’s request checks, so the guard doesn’t allow them; intercept requests through Fetch instead';
 export const UNFLAT =
   'slicc: refused: the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
 export const UNGUARDED =
@@ -183,6 +185,12 @@ const STICKY = new Set([
   'Network.emulateNetworkConditionsByRule',
   'Network.overrideNetworkState',
   'Network.setBlockedURLs',
+]);
+const INTERCEPTS = new Set([
+  'Network.setRequestInterception',
+  'Network.continueInterceptedRequest',
+  'Network.getResponseBodyForInterception',
+  'Network.takeResponseBodyForInterceptionAsStream',
 ]);
 const DEBUGGERS = ['Debugger.', 'DOMDebugger.', 'EventBreakpoints.'];
 const EMULATION = /^Emulation\.(set|add|update|remove)[A-Z]/;
@@ -3831,6 +3839,23 @@ class Guard {
     return true;
   }
 
+  async intercepted(message) {
+    const { params = {}, sessionId } = message;
+    const marked =
+      this.requests.get(params.requestId) === true ||
+      (await this.request({ ...params, url: params.redirectUrl }));
+    if (!marked) return params.requestId !== undefined && this.network(message);
+    const { interceptionId } = params;
+    let answer = {};
+    if (params.authChallenge) answer = { authChallengeResponse: { response: 'Default' } };
+    else if (params.resourceType === 'Document' && this.is.url(params.request?.url)) {
+      answer = { errorReason: 'BlockedByClient' };
+      this.failed(this.sessions.get(sessionId)?.targetId, params);
+    }
+    void this.call('Network.continueInterceptedRequest', { interceptionId, ...answer }, sessionId);
+    return true;
+  }
+
   loadKey(targetId, requestId) {
     return JSON.stringify([targetId, requestId]);
   }
@@ -5453,6 +5478,7 @@ class Guard {
     if (method === 'Fetch.requestPaused' || method === 'Fetch.authRequired') {
       return this.paused(message);
     }
+    if (method === 'Network.requestIntercepted') return this.intercepted(message);
     if (method.startsWith('Network.') && params.requestId !== undefined) {
       return this.network(message);
     }
@@ -6257,6 +6283,7 @@ class Guard {
   }
 
   async precheck(message) {
+    if (INTERCEPTS.has(message.method)) return INTERCEPTION;
     const targetId = this.scopeTarget(message.sessionId);
     const target = this.targets.get(targetId);
     if (target?.type === 'page' && this.prelude(message.sessionId, message.method) !== null) {
