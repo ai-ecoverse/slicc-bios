@@ -19,8 +19,20 @@ function refusal(error) {
   return message ? `${code}: ${message}` : code;
 }
 
-async function* lines(events) {
-  for await (const approvals of events) yield { t: 'approvals', approvals };
+function lines(events) {
+  const iterator = events[Symbol.asyncIterator]();
+  return {
+    [Symbol.asyncIterator]: () => ({
+      async next() {
+        const next = await iterator.next();
+        return next.done ? next : { done: false, value: { t: 'approvals', approvals: next.value } };
+      },
+      async return() {
+        await iterator.return?.();
+        return { done: true, value: undefined };
+      },
+    }),
+  };
 }
 
 async function readText(stream, length) {
@@ -44,17 +56,23 @@ async function readText(stream, length) {
 async function pump(stream, events) {
   const iterator = events[Symbol.asyncIterator]();
   let gone = false;
+  let stop;
+  const stopped = new Promise((resolve) => {
+    stop = () => resolve({ done: true, value: undefined });
+  });
+  const next = () => Promise.race([iterator.next(), stopped]);
   const watching = (async () => {
     try {
       while ((await stream.read()) !== null);
       if (!(await stream.settled)) return;
     } catch {}
     gone = true;
+    stop();
     await iterator.return?.();
   })();
   try {
-    for (let next = await iterator.next(); !next.done && !gone; next = await iterator.next()) {
-      await stream.write(line(next.value));
+    for (let step = await next(); !step.done && !gone; step = await next()) {
+      await stream.write(line(step.value));
     }
   } catch {
     gone = true;

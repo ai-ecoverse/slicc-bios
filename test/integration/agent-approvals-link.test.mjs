@@ -266,3 +266,36 @@ test("seven's kernel reaches approvals through the link facade, never decide", a
   assert.deepEqual(decided.answer, { reset: NO_DECIDE });
   assert.deepEqual(decided.asked, []);
 });
+
+test('closing an idle approvals watch returns its iterator and closes the agent connection at once', async () => {
+  const log = [];
+  const released = Promise.withResolvers();
+  const events = {
+    [Symbol.asyncIterator]: () => ({
+      next: () => new Promise(() => {}),
+      async return() {
+        log.push('return');
+        return { done: true, value: undefined };
+      },
+    }),
+  };
+  const remote = createRemote({
+    control: async () => ({
+      approvals: async () => ({ approvals: [], events }),
+      close() {
+        log.push('close');
+        released.resolve();
+      },
+    }),
+    ownKernel: notOwn,
+  });
+  const link = await connect({ remote, id: OTHER });
+  const stream = await link.session.open({ kind: 'agent', op: 'approvals', watch: true });
+  assert.deepEqual(stream.info, { approvals: [] });
+  stream.close();
+  const late = setTimeout(() => released.reject(new Error(`still held: ${log}`)), 2000);
+  await released.promise;
+  clearTimeout(late);
+  assert.deepEqual(log, ['return', 'close']);
+  link.close();
+});
