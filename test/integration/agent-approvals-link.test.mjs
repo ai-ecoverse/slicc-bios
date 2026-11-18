@@ -143,6 +143,8 @@ function stubAgent() {
       async decide(request) {
         calls.push(['decide', request]);
         if (request.id === 'gone') throw refused('ENOENT', 'no approval has that id');
+        if (request.id === 'viewed') throw refused('EACCES', 'This connection can only watch.');
+        if (request.id === 'bare') throw refused('EOPNOTSUPP', 'this agent has no approvals');
         if (request.answer === 'always')
           throw refused('EINVAL', 'Always allow is not offered for this request.');
         return { ok: true };
@@ -264,12 +266,22 @@ test("a refused decide resets with the agent's sentence, exactly", async () => {
     await refusal(open({ id: 'gone', answer: 'deny' })),
     'ENOENT: no approval has that id'
   );
+  assert.equal(
+    await refusal(open({ id: 'viewed', answer: 'once' })),
+    'EACCES: This connection can only watch.'
+  );
+  assert.equal(
+    await refusal(open({ id: 'bare', answer: 'once' })),
+    'EOPNOTSUPP: this agent has no approvals'
+  );
   assert.equal(await refusal(open({ id: 'a1', answer: 'maybe' })), 'EINVAL');
   assert.equal(await refusal(open({ answer: 'once' })), 'EINVAL');
   assert.equal(await refusal(open({ id: 'a1', answer: 'once', reason: 7 })), 'EINVAL');
   assert.deepEqual(agent.calls, [
     ['decide', { id: 'a1', answer: 'always', device: OTHER }],
     ['decide', { id: 'gone', answer: 'deny', device: OTHER }],
+    ['decide', { id: 'viewed', answer: 'once', device: OTHER }],
+    ['decide', { id: 'bare', answer: 'once', device: OTHER }],
   ]);
   link.close();
 });
