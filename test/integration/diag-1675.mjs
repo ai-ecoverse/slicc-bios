@@ -405,6 +405,82 @@ const text = (value) => {
   }
 };
 
+export function frameTreeOrder(frames, pageIds) {
+  const out = [];
+  for (const pageId of pageIds) {
+    for (const attach of frames.filter(
+      (frame) =>
+        frame.dir === 'in' &&
+        frame.method === 'Target.attachedToTarget' &&
+        frame.targetInfo?.targetId === pageId
+    )) {
+      const session = attach.session;
+      const conn = attach.conn;
+      const asking = new Set(
+        frames
+          .filter(
+            (frame) =>
+              frame.conn === conn &&
+              frame.dir === 'out' &&
+              frame.t >= attach.t &&
+              (frame.params ?? '').includes(pageId)
+          )
+          .map((frame) => frame.id)
+      );
+      const mine = frames.filter(
+        (frame) =>
+          frame.conn === conn &&
+          frame.t >= attach.t &&
+          (frame.sessionId === session ||
+            (frame.params ?? '').includes(pageId) ||
+            (frame.dir === 'in' && frame.sessionId === undefined && asking.has(frame.id)))
+      );
+      const asked = mine.find(
+        (frame) =>
+          frame.dir === 'out' && frame.method === 'Page.getFrameTree' && frame.sessionId === session
+      );
+      const answer =
+        asked &&
+        frames.find(
+          (frame) =>
+            frame.dir === 'in' &&
+            frame.conn === conn &&
+            frame.id === asked.id &&
+            frame.sessionId === session
+        );
+      const start = mine.find((frame) => frame.dir === 'out')?.t ?? attach.t;
+      out.push({
+        pageId,
+        session,
+        envelope: attach.sessionId ?? null,
+        conn,
+        attachedAt: attach.t,
+        firstGetFrameTree: asked
+          ? {
+              id: asked.id,
+              sentMs: asked.t - attach.t,
+              replyMs: answer ? answer.t - asked.t : null,
+              error: answer?.error ?? null,
+              result: answer && !answer.error ? (answer.result ?? answer.resultKeys) : null,
+            }
+          : null,
+        order: mine
+          .filter((frame) => frame.t - start <= 1000)
+          .map((frame) => [
+            frame.t - attach.t,
+            frame.dir,
+            frame.id ?? null,
+            frame.method ?? frame.for ?? null,
+            frame.sessionId === session ? 'page-session' : (frame.sessionId ?? 'browser'),
+            frame.error?.message ?? null,
+            frame.waited ?? null,
+          ]),
+      });
+    }
+  }
+  return out;
+}
+
 export async function diagBegin(page, label, pageIds) {
   const tag = label.replace(/\s+/g, '_');
   const started = Date.now();
@@ -450,6 +526,8 @@ export async function diagBegin(page, label, pageIds) {
         .filter((frame) => frame.waited >= 500 || frame.for === 'Page.createIsolatedWorld')
         .map((frame) => [frame.conn, frame.id, frame.for, frame.sessionId, frame.waited]);
       process.stdout.write(`DIAG-NODE-WAITS ${tag} ${text(waits)}\n`);
+      for (const gft of frameTreeOrder(frames, pageIds))
+        process.stdout.write(`DIAG-NODE-GFT ${tag} ${text(gft)}\n`);
     } catch (error) {
       process.stdout.write(`DIAG-ERROR ${tag} node ${error.message}\n`);
     }
