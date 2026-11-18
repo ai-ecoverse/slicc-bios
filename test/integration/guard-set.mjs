@@ -866,6 +866,31 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
+            if (current?.id === 'C3.tab-iframe-leak' && data.step)
+              process.stdout.write(
+                `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} ${JSON.stringify(
+                  {
+                    as: data.step.as,
+                    session: data.step.session ?? 'page',
+                    cdp: data.step.cdp,
+                    ok: data.out?.ok,
+                    error: String(data.out?.error?.message ?? '').slice(0, 160),
+                  }
+                )}\n`
+              );
+            if (current?.id === 'C3.tab-iframe-leak' && data.events)
+              process.stdout.write(
+                `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} attached ${JSON.stringify(
+                  data.events
+                    .filter((event) => event.method === 'Target.attachedToTarget')
+                    .map((event) => [
+                      event.params?.targetInfo?.type,
+                      URL.parse(event.params?.targetInfo?.url ?? '')?.origin ??
+                        event.params?.targetInfo?.url,
+                      Boolean(event.sessionId),
+                    ])
+                )}\n`
+              );
             if (
               data.side === 'guarded' &&
               data.calls &&
