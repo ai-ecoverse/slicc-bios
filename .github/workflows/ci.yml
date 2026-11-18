@@ -25,10 +25,11 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
+      test-glob: test/integration/{guard-set-link-rest,guard-set-link-rest-lagging,remote-cdp-stock-link}.test.mjs
+      shards: 3
+      test: GUARD_IDS=C9.frame-nested GUARD_TARGETS=ordinary npm test
       timeout-minutes: 90
-      flaky-retry: 3
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*

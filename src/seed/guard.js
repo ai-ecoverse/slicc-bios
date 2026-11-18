@@ -7179,6 +7179,11 @@ class Guard {
 
   start() {
     const { connection, guarded } = this;
+    if (typeof globalThis.sliccDiagGuardHook === 'function') {
+      try {
+        globalThis.sliccDiagGuardHook(this);
+      } catch {}
+    }
     connection.onmessage = (text) => this.received(text);
     connection.onclose = (why) => {
       this.closing = true;

@@ -9,6 +9,7 @@ import WebSocket from 'ws';
 import { boot, ready } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { CLI } from './cli.mjs';
+import { diagWindow } from './diag-1675.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { linkNode } from './linked-node.mjs';
@@ -140,6 +141,8 @@ async function recordedTransport(url) {
     close: () => socket.close(),
   };
   const trace = [];
+  const diag = [];
+  const sentAt = new Map();
   const note = (way, text) => {
     let message;
     try {
@@ -166,6 +169,15 @@ async function recordedTransport(url) {
         .join(' ')
     );
     if (trace.length > 200) trace.shift();
+    const at = Date.now();
+    let waited;
+    if (message.id !== undefined && way === '>') sentAt.set(message.id, at);
+    if (message.id !== undefined && way === '<' && !message.method && sentAt.has(message.id)) {
+      waited = at - sentAt.get(message.id);
+      sentAt.delete(message.id);
+    }
+    diag.push({ at, line: trace[trace.length - 1], waited });
+    if (diag.length > 5000) diag.shift();
   };
   transport.send = (message) => {
     note('>', message);
@@ -181,7 +193,7 @@ async function recordedTransport(url) {
       transport.onclose?.();
     })
   );
-  return { transport, closed, trace };
+  return { transport, closed, trace, diag, sentAt };
 }
 
 const bounded = (promise, ms, what) =>
@@ -541,7 +553,22 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     }
   }
 
-  async function clientsSee(base, origin, mark) {
+  async function framedPages() {
+    const plain = await unguarded(rig.browserUrl);
+    try {
+      const { targetInfos } = await plain.send('Target.getTargets', { filter: [{}] });
+      process.stdout.write(
+        `DIAG-CHROME ${label} ${Date.now()} ${JSON.stringify(targetInfos.map((info) => [info.type, info.targetId, info.url, info.openerId, info.parentId, info.attached]))}\n`
+      );
+      return targetInfos
+        .filter((info) => info.type === 'page' && info.url.includes('/framed-same'))
+        .map((info) => info.targetId);
+    } finally {
+      plain.close();
+    }
+  }
+
+  async function clientsSee(base, origin, mark, seven) {
     const out = {};
     try {
       const playwright = await step('playwright', `connect beside ${mark}`, () =>
@@ -569,12 +596,26 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     } catch (error) {
       out.playwright = `error: ${error.message.slice(0, 200)}`;
     }
+    const pageIds = seven ? await framedPages().catch(() => []) : [];
     const { body } = await httpJson(`${base}/json/version`);
     const recorded = await recordedTransport(body.webSocketDebuggerUrl);
+    const diagStart = Date.now();
     try {
-      const driven = await step('puppeteer', `connect beside ${mark}`, () =>
-        puppeteer.connect({ transport: recorded.transport, protocolTimeout: STEP_MS })
-      );
+      const driven = await diagWindow(seven, `${label} ${mark}`, pageIds, () =>
+        step('puppeteer', `connect beside ${mark}`, () =>
+          puppeteer.connect({ transport: recorded.transport, protocolTimeout: STEP_MS })
+        )
+      ).finally(() => {
+        if (!seven) return;
+        const tag = `${label} ${mark}`.replace(/\s+/g, '_');
+        for (const item of recorded.diag)
+          process.stdout.write(
+            `DIAG-PPTR ${tag} ${item.at - diagStart} ${item.waited === undefined ? '' : `waited=${item.waited} `}${item.line}\n`
+          );
+        process.stdout.write(
+          `DIAG-PPTR-UNANSWERED ${tag} ${JSON.stringify([...recorded.sentAt].map(([id, at]) => [id, at - diagStart]))}\n`
+        );
+      });
       try {
         out.puppeteerTargets = driven
           .targets()
@@ -627,12 +668,39 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       ...(await reach(base, targetId, SIGN_IN_MARK)),
     };
     process.stdout.write(`STOCK-SIGNIN ${label} ${JSON.stringify(seen)}\n`);
-    seen.clients = await clientsSee(base, rig.idpOrigin, SIGN_IN_MARK);
+    seen.clients = await clientsSee(base, rig.idpOrigin, SIGN_IN_MARK, page);
     process.stdout.write(`STOCK-SIGNIN-CLIENTS ${label} ${JSON.stringify(seen.clients)}\n`);
     unreachable(seen, 'the sign-in tab');
   }
 
   async function signIns(t, base, page) {
+    await t.test(
+      'DIAG a stock Puppeteer connect beside /framed-same, no sign-in tab',
+      async (t) => {
+        const plain = await unguarded(rig.browserUrl);
+        const framed = `${rig.ordinary}/framed-same`;
+        const created = [];
+        t.after(async () => {
+          for (const targetId of created)
+            await plain.send('Target.closeTarget', { targetId }).catch(() => {});
+          plain.close();
+        });
+        const { targetInfos } = await plain.send('Target.getTargets');
+        const present = targetInfos.some((info) => info.type === 'page' && info.url === framed);
+        process.stdout.write(`DIAG-PLAIN ${label} framed-same already open: ${present}\n`);
+        if (!present) {
+          const asked = hits.get('ordinary.test/inner') ?? 0;
+          const { targetId } = await plain.send('Target.createTarget', {
+            url: framed,
+            background: true,
+          });
+          created.push(targetId);
+          await until('the /inner frame', () => (hits.get('ordinary.test/inner') ?? 0) > asked);
+        }
+        const clients = await clientsSee(base, framed, 'DIAG-PLAIN-FRAMED', page);
+        process.stdout.write(`DIAG-PLAIN-CLIENTS ${label} ${JSON.stringify(clients)}\n`);
+      }
+    );
     await t.test('seven’s own sign-in tab (its client id and callback) stays out of reach', (t) =>
       signInTab(t, base, page, rig.signIn)
     );
@@ -682,7 +750,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
         ...(await reach(base, info.targetId, HELD_MARK)),
       };
       process.stdout.write(`STOCK-HELD ${label} ${JSON.stringify(seen)}\n`);
-      seen.clients = await clientsSee(base, heldUrl, HELD_MARK);
+      seen.clients = await clientsSee(base, heldUrl, HELD_MARK, page);
       process.stdout.write(`STOCK-HELD-CLIENTS ${label} ${JSON.stringify(seen.clients)}\n`);
       unreachable(seen, 'the held sign-in tab');
       assert.equal(held, 'held', `seven held its sign-in popup: ${JSON.stringify(seen)}`);
