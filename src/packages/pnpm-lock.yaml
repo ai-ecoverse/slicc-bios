@@ -21,14 +21,14 @@ importers:
         specifier: 1.2.1
         version: 1.2.1
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.189.2
-        version: 1.189.2
+        specifier: 1.190.0
+        version: 1.190.0
       '@ai-ecoverse/slicc-spectrum':
         specifier: 2.16.1
         version: 2.16.1
       '@ai-ecoverse/wasi-fnox':
-        specifier: 1.47.0-1
-        version: 1.47.0-1
+        specifier: 1.48.0-1
+        version: 1.48.0-1
       '@ai-ecoverse/wasi-pnpm':
         specifier: 12.9.1-21
         version: 12.9.1-21
@@ -65,8 +65,8 @@ packages:
     resolution: {integrity: sha512-7Ihkpq8b5ruq0gtB6HUJJbwZKFVgqRZjSxd4nsYk2VyszdUCLf2lEvsmb9MIqHOEPEI94ZOZHEOj7ExLU7A1LA==}
     engines: {node: '>=24', slicc-kernel: '>=1.183.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.189.2':
-    resolution: {integrity: sha512-jOV0DWEQyH1DNaxPkY7o6cVenFSZuMHQmXntmNVkqzcdisdxYGsBSgRUiZkrA1fNTF8lzUlDegG92x1Z0eRJSQ==}
+  '@ai-ecoverse/slicc-kernel@1.190.0':
+    resolution: {integrity: sha512-WwF3XhWcBG3uzuxRFmvFSw7IPPyeK51mfmnqyxbEVsau4CWYOFglbpQXMFloxFkAOUgFElpGsRhpGzRpBDrjhQ==}
     engines: {node: '>=26'}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
@@ -116,8 +116,8 @@ packages:
     resolution: {integrity: sha512-N6Zot1/18xbRJyBGvTq9oq58P0TrIqYquvykWK87e9vPzpga329zgD2I9OVjZApYewm3D6ph6IvlwQTciFGIow==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/wasi-fnox@1.47.0-1':
-    resolution: {integrity: sha512-n2I/5j2XkGM470WhxkGczCLcAoD4ealFdUCZfSkaWYp+fEG1exJE1tXZLlHzEb4pwXi+fy6jvsysduUuBMw0eQ==}
+  '@ai-ecoverse/wasi-fnox@1.48.0-1':
+    resolution: {integrity: sha512-2sB4bM8m3fbVxlHVaJla2DalKBsfYLW2ky51a5LJxmwzNnshujqA7KSzKBrSrfZr1gpSJ4W0TAPoGbDBgqeOBA==}
     engines: {slicc-kernel: '>=1.175.0'}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-21':
@@ -272,7 +272,7 @@ snapshots:
     dependencies:
       esptool-js: 0.7.1
 
-  '@ai-ecoverse/slicc-kernel@1.189.2': {}
+  '@ai-ecoverse/slicc-kernel@1.190.0': {}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
     dependencies:
@@ -292,7 +292,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-spectrum@2.16.1': {}
 
-  '@ai-ecoverse/wasi-fnox@1.47.0-1': {}
+  '@ai-ecoverse/wasi-fnox@1.48.0-1': {}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-21': {}
 
