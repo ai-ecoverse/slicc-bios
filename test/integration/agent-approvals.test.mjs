@@ -74,15 +74,18 @@ test("approvals and decide against the real agent: EACCES without Control, a pen
     );
   const list = { kind: 'agent', op: 'approvals' };
   const decide = (id, answer) => ({ kind: 'agent', op: 'decide', id, answer });
-  const grant = async (name) => {
+  const grant = async (name, before = null) => {
     const device = await page.within(
       60000,
-      (name) =>
+      (name, before) =>
         document
           .querySelector('slicc-app')
           .model.network.status()
-          .links?.devices.find((d) => d.name === name && d.state === 'connected'),
-      name
+          .links?.devices.find(
+            (d) => d.name === name && d.state === 'connected' && d.id !== before
+          ),
+      name,
+      before
     );
     await page.evaluate(
       (id) => document.querySelector('slicc-app').model.network.setAccess(id, 'control', true),
@@ -124,6 +127,42 @@ test("approvals and decide against the real agent: EACCES without Control, a pen
     code: 'EACCES',
     message: OWN_KERNEL,
   });
+  const rotated = await raw.evaluate(async (join) => {
+    const { certificateKey } = await import('/seed/leaders.js');
+    const { certificate, hubOrigin, keptFingerprints } = await import('/seed/follow.js');
+    const year = 366 * 24 * 60 * 60 * 1000;
+    await certificate(certificateKey(hubOrigin(join)), { now: () => Date.now() + year });
+    return keptFingerprints('link:');
+  }, joinUrl);
+  assert.deepEqual(
+    await open(OWN, decide(item.id, 'once')),
+    { code: 'EACCES', message: OWN_KERNEL },
+    'the own-kernel link that stayed up while its certificate was replaced'
+  );
+  assert.ok(rotated.includes(own), `the replaced certificate is gone from ${rotated}`);
+  assert.ok(
+    rotated.some((print) => print !== own),
+    `no new certificate in ${rotated}`
+  );
+  assert.equal(rotated.includes(other), false);
+  await raw.evaluate(
+    async (join, name) => {
+      const { joinKey } = await import('/seed/leaders.js');
+      const id = await joinKey(join);
+      await globalThis.nodes[name].disconnect(id);
+      await globalThis.nodes[name].reconnect(id);
+    },
+    joinUrl,
+    OWN
+  );
+  const redialled = await grant(OWN, own);
+  assert.notEqual(redialled, own, 'the reconnect dials with the new certificate');
+  assert.ok(rotated.includes(redialled), `${redialled} is not in ${rotated}`);
+  assert.deepEqual(
+    await open(OWN, decide(item.id, 'once')),
+    { code: 'EACCES', message: OWN_KERNEL },
+    'the own-kernel link dialled again after the rotation'
+  );
   const seen = await open(OWN, list);
   assert.deepEqual(
     seen.opened?.approvals.map((entry) => entry.id),
