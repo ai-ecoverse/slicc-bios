@@ -592,7 +592,9 @@ export async function guardHost(t, path, { frames = true } = {}) {
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
         const { tabs, route, frames } = routes[path]();
         void window.guardDiag(
-          `DIAG-FRAMES hook ${path} ${JSON.stringify({ route, frames: typeof frames, version: globalThis.sliccExtension?.version })}`
+          JSON.stringify(
+            `DIAG-FRAMES hook ${path} ${JSON.stringify({ route, frames: typeof frames, version: globalThis.sliccExtension?.version })}`
+          )
         );
         const connection = guardProtected(
           gated,
