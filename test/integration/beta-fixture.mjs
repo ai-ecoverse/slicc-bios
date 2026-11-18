@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { after } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
+import { schemaOf } from '../../src/seed/durable.js';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { fakeRegistry, fakeRelease } from './fake-npm.mjs';
@@ -11,6 +12,11 @@ export const PINNED = JSON.parse(
 ).dependencies[AGENT];
 export const MAJOR = Number(PINNED.split('.')[0]);
 export const BETA = `${MAJOR}.99.0`;
+export const BEYOND = (() => {
+  let major = MAJOR + 1;
+  while (schemaOf(`${major}.0.0`) !== Number.POSITIVE_INFINITY) major += 1;
+  return major;
+})();
 export const ELSEWHERE = 'Only the tab running SLICC can install a beta or leave one.';
 
 export const release = await fakeRelease({
@@ -82,7 +88,7 @@ export const pinned = await fakeRelease({
 export const major = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: `${MAJOR + 1}.0.0`,
+  version: `${BEYOND}.0.0`,
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
 });
 export const releases = [release, clipboard, mcpcat];

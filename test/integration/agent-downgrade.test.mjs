@@ -162,7 +162,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
 
   await t.test('a marker above 2 refuses the 7.x agent', async () => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
-    await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+    await marker(page, JSON.stringify({ durableSchema: 3, agent: '9.0.0' }));
     const seen = await refused(page);
     assert.equal(seen.error, OLDER);
     assert.equal(seen.agents, 0);
@@ -173,7 +173,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     'an automatic check keeps a refused row failed, keeps the notice, and does not launch again',
     async (t) => {
       await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
-      await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+      await marker(page, JSON.stringify({ durableSchema: 3, agent: '9.0.0' }));
       t.after(() => marker(page, null).catch(() => {}));
       const before = page.console.filter((line) => line.includes('the agent did not start')).length;
       const seen = await refused(page);
@@ -231,7 +231,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
 
   await t.test('a marker change after the refusal lets seven start the agent', async (t) => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
-    await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+    await marker(page, JSON.stringify({ durableSchema: 3, agent: '9.0.0' }));
     const seen = await refused(page);
     assert.equal(seen.error, OLDER);
     assert.equal(seen.agents, 0);
@@ -264,7 +264,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     'an explicit Retry after a refusal attempts a start again with nothing changed',
     async (t) => {
       await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
-      await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+      await marker(page, JSON.stringify({ durableSchema: 3, agent: '9.0.0' }));
       t.after(() => marker(page, null).catch(() => {}));
       const before = page.console.filter((line) => line.includes('the agent did not start')).length;
       const seen = await refused(page);
