@@ -865,6 +865,13 @@ const ORDINARY = /^(?:https?|data):/i;
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 const CALLBACK_NAMED = RELAY.replace(/^https?:\/\//, '').toLowerCase();
+const CALLBACK_ORIGIN = new URL(RELAY).origin;
+const callbackOrigin = (uri) => {
+  const parsed = URL.parse(uri);
+  if (!parsed) return false;
+  parsed.hostname = parsed.hostname.replace(/\.$/, '');
+  return parsed.origin === CALLBACK_ORIGIN;
+};
 const CALLBACK_CUT = new RegExp(
   `(?:^|[^a-z0-9.-])${new URL(RELAY).host.toLowerCase().replaceAll('.', '\\.')}(?::443)?/?(?:[?&#;\\s]|$)`
 );
@@ -876,6 +883,9 @@ export function signsIn(url, { cut = false } = {}) {
     const lower = text.toLowerCase();
     if (lower.includes(CALLBACK_NAMED)) return true;
     if (cut && CALLBACK_CUT.test(lower)) return true;
+    for (const [, uri] of lower.matchAll(/[?&#]redirect_uri=([^&#\s]*)/g)) {
+      if (callbackOrigin(uri)) return true;
+    }
     for (const [, id] of lower.matchAll(/[?&#]client_id=([^&#\s]*)/g)) {
       if ([...SIGN_IN_CLIENTS].some((client) => client.toLowerCase() === id)) return true;
     }

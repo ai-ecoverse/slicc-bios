@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { fixtureServer } from '@ai-ecoverse/slicc-browsers/fixture';
@@ -18,23 +22,54 @@ const known = (row) => knownRow(row, exposure);
 import { linkNode } from './linked-node.mjs';
 
 export const fixture = await fixtureServer();
-const origin = (host) => `http://${host}:${fixture.port}`;
-export const targets = {
-  ordinary: origin('ordinary.example.test'),
-  plain: origin('ordinary.example.test'),
-  cross: origin('cross.test'),
-  seven: origin('seven.sliccy.ai'),
-  vault: origin('vault.sliccy.ai'),
-  'vault-x': origin('vault-x.sliccy.ai'),
-  apex: origin('sliccy.ai'),
-  own: origin('client.example.test'),
-  client: origin('client.example.test'),
-  log: origin('log.example.test'),
-  idp: origin('ims-na1.adobelogin.com'),
+const certs = mkdtempSync(join(tmpdir(), 'slicc-guard-set-'));
+execFileSync(
+  'openssl',
+  [
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-days',
+    '1',
+    '-subj',
+    '/CN=ims-na1.adobelogin.com',
+    '-keyout',
+    join(certs, 'key.pem'),
+    '-out',
+    join(certs, 'cert.pem'),
+  ],
+  { stdio: 'ignore' }
+);
+export const secure = await fixtureServer({
+  tls: { key: readFileSync(join(certs, 'key.pem')), cert: readFileSync(join(certs, 'cert.pem')) },
+});
+const origin = (host, server = fixture) =>
+  `${server === fixture ? 'http' : 'https'}://${host}:${server.port}`;
+const hosts = {
+  ordinary: 'ordinary.example.test',
+  plain: 'ordinary.example.test',
+  cross: 'cross.test',
+  seven: 'seven.sliccy.ai',
+  vault: 'vault.sliccy.ai',
+  'vault-x': 'vault-x.sliccy.ai',
+  apex: 'sliccy.ai',
+  own: 'client.example.test',
+  client: 'client.example.test',
+  log: 'log.example.test',
+  idp: 'ims-na1.adobelogin.com',
+  'idp-stg': 'ims-na1-stg1.adobelogin.com',
 };
+const on = (server) =>
+  Object.fromEntries(Object.entries(hosts).map(([key, host]) => [key, origin(host, server)]));
+export const secureTargets = on(secure);
+export const targets = on(fixture);
 const PATHS = {
   devtools: {
     autoAttach: true,
+    iframeAutoAttach: true,
+    signInHold: true,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: true,
@@ -47,6 +82,8 @@ const PATHS = {
   },
   extension: {
     autoAttach: true,
+    iframeAutoAttach: false,
+    signInHold: true,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: false,
@@ -61,6 +98,8 @@ const PATHS = {
   },
   link: {
     autoAttach: true,
+    iframeAutoAttach: true,
+    signInHold: true,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: true,
@@ -100,13 +139,15 @@ const browserAt = () =>
     extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
     args: [
       '--remote-allow-origins=*',
-      '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1, MAP cross.test 127.0.0.1, MAP *.adobelogin.com 127.0.0.1',
+      '--ignore-certificate-errors',
+      '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1, MAP cross.test 127.0.0.1, MAP *.adobelogin.com 127.0.0.1, MAP adobe.com 127.0.0.1, MAP *.adobe.com 127.0.0.1',
     ],
   });
 const chrome = await browserAt();
 after(async () => {
   chrome.close();
   await fixture.close();
+  await secure.close();
 });
 const { port, browser } = await devtools(chrome);
 
@@ -742,10 +783,10 @@ export function shared(path, { variants, except = [], group } = {}) {
           },
           rowTimeoutMs: ROW_MS,
           settleScale: SCALE[variant] ?? 1,
-          targets,
+          targets: group === 'idp' ? secureTargets : targets,
           capabilities: PATHS[path],
           variant,
-          fixture,
+          fixture: group === 'idp' ? secure : fixture,
           log: (row) =>
             trace(
               'row',

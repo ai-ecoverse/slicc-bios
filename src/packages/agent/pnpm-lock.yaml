@@ -14,16 +14,16 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 7.34.0
-        version: 7.34.0(@ai-ecoverse/slicc-kernel@1.190.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
+        specifier: 7.34.4
+        version: 7.34.4(@ai-ecoverse/slicc-kernel@1.190.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.190.0
         version: 1.190.0
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@7.34.0':
-    resolution: {integrity: sha512-mKi8IxtCXvPlK9N8m1PziAcd6XD43XZI7bTi9IJJBHrwQILREbZ0SfHthhC4LFboYUK+h5Q3yxKOidGDJdRCwg==}
+  '@ai-ecoverse/slicc-agent@7.34.4':
+    resolution: {integrity: sha512-cAsi7TaSejFdPXqHK5A2HZqgeaZXtnmywai5QSt+tuleQxOi3EGEtfblLq3/FIP1yjJsKyx1uTDhe92k3Os87w==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-kernel': '>=1.172.2 <2'
@@ -338,7 +338,7 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@7.34.0(@ai-ecoverse/slicc-kernel@1.190.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)':
+  '@ai-ecoverse/slicc-agent@7.34.4(@ai-ecoverse/slicc-kernel@1.190.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)':
     dependencies:
       '@ai-ecoverse/slicc-kernel': 1.190.0
       '@aws-sdk/middleware-websocket': 3.972.54
