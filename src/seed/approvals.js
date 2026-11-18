@@ -402,11 +402,15 @@ export function hostApprovals({
   ...rest
 } = {}) {
   const notices = [];
+  const answers = [];
   let missingWarned = false;
   let undeliveredWarned = false;
   const lick = async (notice) => {
     notices.push(notice);
-    if (debug.sliccKernelDebug === true) debug.sliccApprovalRunNotices = notices;
+    if (debug.sliccKernelDebug === true) {
+      debug.sliccApprovalRunNotices = notices;
+      debug.sliccApprovalRunNoticeAnswers = answers;
+    }
     if (typeof deliver !== 'function') {
       if (!missingWarned) {
         missingWarned = true;
@@ -418,12 +422,24 @@ export function hostApprovals({
     try {
       result = await deliver(notice);
     } catch (error) {
+      answers.push({
+        id: notice?.id,
+        phase: notice?.phase,
+        delivered: false,
+        reason: String(error?.message ?? error),
+      });
       if (!undeliveredWarned) {
         undeliveredWarned = true;
         warn(`approval run notice: ${error?.message ?? error}`);
       }
       return;
     }
+    answers.push({
+      id: notice?.id,
+      phase: notice?.phase,
+      delivered: result?.delivered === true,
+      ...(result?.reason ? { reason: result.reason } : {}),
+    });
     if (result?.delivered === false && !undeliveredWarned) {
       if (quietUndelivered(result.reason)) return;
       undeliveredWarned = true;
@@ -434,6 +450,7 @@ export function hostApprovals({
   if (debug.sliccKernelDebug === true) {
     debug.sliccApprovals = approvals;
     debug.sliccApprovalRunNotices = notices;
+    debug.sliccApprovalRunNoticeAnswers = answers;
   }
   return approvals;
 }

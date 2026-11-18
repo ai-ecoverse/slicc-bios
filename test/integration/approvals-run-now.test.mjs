@@ -1052,6 +1052,7 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
           licks,
           allSudoRun: allSudoRun(),
           notices: globalThis.sliccApprovalRunNotices ?? null,
+          answers: globalThis.sliccApprovalRunNoticeAnswers ?? null,
         };
       },
       okId,
@@ -1106,6 +1107,7 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       licks: ran.licks,
       allSudoRun: ran.allSudoRun,
       notices: ran.notices,
+      answers: ran.answers,
       doneMs: ran.doneMs,
       lickWaitMs: ran.lickWaitMs,
     })}`
