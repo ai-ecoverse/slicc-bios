@@ -284,6 +284,50 @@ const COOKIES = new Set([
   'Storage.getCookies',
   'Page.getCookies',
 ]);
+const WRITES = new Set(['Fetch.fulfillRequest', 'Fetch.continueResponse']);
+const SETS_COOKIE = new Set(['set-cookie', 'set-cookie2']);
+const COOKIE_DOMAIN = /(?:^|;)\s*domain\s*=([^;]*)/gi;
+const DOMAIN_VALUE = /^\.?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?$/i;
+const attributeDomain = (text) =>
+  text
+    .trim()
+    .replace(/^(["'])(.*)\1$/, '$2')
+    .trim();
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-z-]+$/i;
+const BASE64 = /^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$/i;
+const LINES = /\r\n|[\r\n\0]/;
+const headerLines = (name, value) => {
+  if (typeof name !== 'string' || typeof value !== 'string' || !HEADER_NAME.test(name)) return null;
+  const lines = value.split(LINES);
+  if (SETS_COOKIE.has(name.toLowerCase())) return lines;
+  return lines.length === 1 ? [] : null;
+};
+const responseLines = (headers) => {
+  if (headers === undefined) return [];
+  if (!headers || typeof headers !== 'object') return null;
+  const entries = Array.isArray(headers)
+    ? headers.map((entry) => [entry?.name, entry?.value])
+    : Object.entries(headers);
+  const lines = entries.map(([name, value]) => headerLines(name, value));
+  return lines.includes(null) ? null : lines.flat();
+};
+const binaryLines = (text) => {
+  if (text === undefined) return [];
+  if (typeof text !== 'string' || !BASE64.test(text)) return null;
+  const lines = atob(text)
+    .split(LINES)
+    .filter(Boolean)
+    .map((line) => {
+      const at = line.indexOf(':');
+      return at < 0 ? null : headerLines(line.slice(0, at), line.slice(at + 1));
+    });
+  return lines.includes(null) ? null : lines.flat();
+};
+const cookieLines = ({ responseHeaders, binaryResponseHeaders }) => {
+  const lines = responseLines(responseHeaders);
+  const binary = binaryLines(binaryResponseHeaders);
+  return lines && binary ? [...lines, ...binary] : null;
+};
 const ORIGINS = new Set([
   'origin',
   'securityOrigin',
@@ -817,6 +861,7 @@ class Guard {
     this.closing = false;
     this.closed = false;
     this.is = protection(own, { cut: this.route === 'link' });
+    this.covers = [(domain) => this.is.cookieDomain(domain)];
     this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
     this.redact = redacting(this.is);
     this.redirected = new Set();
@@ -5779,6 +5824,18 @@ class Guard {
     );
   }
 
+  planted(method, params) {
+    if (!WRITES.has(method)) return false;
+    const lines = cookieLines(params);
+    if (!lines) return true;
+    return lines.some((line) =>
+      [...line.matchAll(COOKIE_DOMAIN)].some(([, value]) => {
+        const domain = attributeDomain(value);
+        return !DOMAIN_VALUE.test(domain) || this.covers.some((covered) => covered(domain));
+      })
+    );
+  }
+
   keyed(key, value, readOnly) {
     const { is } = this;
     if (key === 'urls' && Array.isArray(value)) {
@@ -5859,6 +5916,7 @@ class Guard {
     return (
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
+      this.planted(method, params) ||
       (REQUESTS.has(method) &&
         typeof params.url === 'string' &&
         this.hops.has(hopKey(params.url))) ||
