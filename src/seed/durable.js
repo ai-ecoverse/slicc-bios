@@ -1,6 +1,10 @@
 export const MARKER = ['.slicc', 'agent-profile.json'];
 export const STARTED = 'slicc-os.agent-schema';
 export const KNOWN = 2;
+const SCHEMAS = new Map([
+  [7, KNOWN],
+  [8, KNOWN],
+]);
 export const OLDER =
   'This profile was opened by a newer agent, and its sessions can’t be opened by the agent seven runs now. Seven didn’t start it. Turn on Developer mode and install the newer agent from Install / Update, or wait until seven ships it.';
 
@@ -10,7 +14,7 @@ export const UNRECORDED =
 export function schemaOf(version) {
   const major = Number(String(version ?? '').split('.')[0]);
   if (!Number.isInteger(major) || major < 7) return 1;
-  return major === 7 ? KNOWN : Number.POSITIVE_INFINITY;
+  return SCHEMAS.get(major) ?? Number.POSITIVE_INFINITY;
 }
 
 async function marker(root) {
