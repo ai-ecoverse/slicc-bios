@@ -3626,6 +3626,7 @@ class Guard {
     if (
       info.type !== 'iframe' ||
       owners.size !== 1 ||
+      (sessionId !== undefined && this.sessionTarget(sessionId) !== owner) ||
       [...this.frameRoots.values()].includes(info.targetId)
     )
       return '';
@@ -3752,9 +3753,10 @@ class Guard {
     const { sessionId, targetInfo } = params;
     const { targetId } = targetInfo;
     const proven =
-      targetInfo.type === 'iframe' &&
+      this.route === 'link' &&
       !nav?.taken &&
       !nav?.failed &&
+      (await this.treeEstimate(targetInfo, parent)) &&
       (await this.watch(sessionId, targetId, parent)) &&
       this.estimated.has(targetId);
     return proven ? targetInfo : null;

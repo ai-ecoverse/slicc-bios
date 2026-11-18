@@ -8,6 +8,7 @@ const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/s
 const MID = 'https://cross.test/oopif-mid';
 const SEVEN = `${protectedOrigin}/controller/oopif-mid`;
 const route = { kind: 'link' };
+const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const settle = async (rounds = 60) => {
   for (let i = 0; i < rounds; i += 1) await flush();
@@ -35,10 +36,11 @@ function listing(raw, guard, infos) {
   return guard(raw);
 }
 
-function browserAttach(p, id, sessionId, info) {
+function browserAttach(p, id, sessionId, info, under) {
   p.sessions.set(sessionId, id);
   p.emit({
     method: 'Target.attachedToTarget',
+    ...(under ? { sessionId: under } : {}),
     params: { sessionId, targetInfo: { ...info }, waitingForDebugger: false },
   });
 }
@@ -65,6 +67,54 @@ async function claimed(p, id) {
   await settle();
 }
 
+function routed(t, kind) {
+  const p = protocol(t, (raw, owner) =>
+    listing(
+      raw,
+      (wired) => guardProtected(wired, owner, new Map(), kind),
+      () => [...p.targets.values()]
+    )
+  );
+  return p;
+}
+
+const midReads = (p, since) =>
+  p.sent
+    .slice(since)
+    .filter(
+      (message) =>
+        message.id >= 2 ** 30 &&
+        message.method === 'Target.getTargetInfo' &&
+        message.params?.targetId === 'mid'
+    ).length;
+
+async function clientNest(t, kind, { arrives, tree = MID } = {}) {
+  const p = routed(t, kind);
+  const top = p.target('top', 'page', { ...plainFrame('top'), loaderId: 'top-loader' });
+  const session = await p.attach('top');
+  assert.equal(await enable(p, session), undefined);
+  const mid = p.target('mid', 'iframe', frameAt('mid', 'top', MID), 'top');
+  mid.info.url = '';
+  if (tree) top.tree.childFrames = [{ frame: frameAt('mid', 'top', tree) }];
+  p.sessions.set('client-mid', 'mid');
+  p.emit({
+    method: 'Target.attachedToTarget',
+    sessionId: session,
+    params: { sessionId: 'client-mid', targetInfo: { ...mid.info }, waitingForDebugger: false },
+  });
+  if (arrives !== undefined) {
+    await later(arrives);
+    mid.info.url = MID;
+  }
+  return { p, session, mid };
+}
+
+const shownWith = (p, sessionId) =>
+  p.delivered.find(
+    (message) =>
+      message.method === 'Target.attachedToTarget' && message.params?.sessionId === sessionId
+  )?.params.targetInfo.url;
+
 async function linkNest(
   t,
   {
@@ -79,16 +129,11 @@ async function linkNest(
     during,
     leaf,
     named,
+    under,
     client = true,
   } = {}
 ) {
-  const p = protocol(t, (raw, owner) =>
-    listing(
-      raw,
-      (wired) => guardProtected(wired, owner, new Map(), route),
-      () => [...p.targets.values()]
-    )
-  );
+  const p = routed(t, route);
   const topFrame = { ...plainFrame('top'), loaderId: 'top-loader' };
   if (topUrl !== undefined) Object.assign(topFrame, { url: topUrl, securityOrigin: '://' });
   const top = p.target('top', 'page', topFrame);
@@ -101,7 +146,7 @@ async function linkNest(
   if (twice) top.tree.childFrames.push({ frame: frameAt('mid', 'top', twice) });
   if (leaf) mid.tree.childFrames = [{ frame: frameAt('leaf', 'mid', leaf) }];
   if (during) await during(p, top, mid);
-  browserAttach(p, 'mid', 'auto-mid', mid.info);
+  browserAttach(p, 'mid', 'auto-mid', mid.info, under);
   if (named) mid.info.url = named;
   await settle();
   if (leaf) {
@@ -329,4 +374,70 @@ test('over link, an OOPIF estimated from its owner tree that then navigates to s
   const answer = await p.send('Runtime.evaluate', { expression: 'location.href' }, 'auto-mid');
   assert.equal(answer.result, undefined);
   assert.equal(await enable(p, session), PROTECTED);
+});
+
+test('over link, an empty OOPIF attached under a session the guard cannot map stays refused although its owner tree lists it', async (t) => {
+  const { p, session } = await linkNest(t, { under: 'unmapped' });
+  assert.equal(attachedOf(p, 'auto-mid'), false);
+  assert.equal(await enable(p, 'auto-mid'), PROTECTED);
+  assert.equal(await enable(p, session), PROTECTED);
+});
+
+test('over link, an empty OOPIF attached under a session on another target stays refused although the owner tree lists it', async (t) => {
+  const { p, session } = await linkNest(t, {
+    before: (p) => claimed(p, 'other'),
+    under: 'auto-other',
+  });
+  assert.equal(attachedOf(p, 'auto-mid'), false);
+  assert.equal(await enable(p, session), PROTECTED);
+});
+
+for (const [kind, tree] of [
+  ['devtools', MID],
+  ['devtools', null],
+  ['extension', MID],
+  ['link', null],
+]) {
+  const listed = tree ? 'its top tree lists' : 'its top tree does not list';
+  test(`over ${kind}, an empty iframe under the client top session that ${listed}, whose URL arrives at 300 ms, is shown with the URL and leaves no proof pending`, async (t) => {
+    const { p, session, mid } = await clientNest(t, { kind }, { arrives: 300, tree });
+    await later(300);
+    await settle();
+    assert.equal(shownWith(p, 'client-mid'), MID);
+    assert.equal(await enable(p, 'client-mid'), undefined);
+    p.emit({
+      sessionId: 'guard-mid',
+      method: 'Page.frameNavigated',
+      params: { frame: mid.tree.frame },
+    });
+    await settle();
+    assert.equal(await enable(p, session), undefined);
+    const since = p.sent.length;
+    assert.equal(await enable(p, session), undefined);
+    assert.equal(midReads(p, since), 0);
+  });
+}
+
+test('over devtools, an empty iframe under the client top session whose URL never arrives is cut after the 10 s wait as before', async (t) => {
+  const { p } = await clientNest(t, { kind: 'devtools' });
+  await later(2000);
+  await settle();
+  assert.equal(shownWith(p, 'client-mid'), undefined);
+  assert.equal(
+    p.sent.some(
+      (message) =>
+        message.method === 'Target.detachFromTarget' && message.params?.sessionId === 'client-mid'
+    ),
+    false
+  );
+  await later(9500);
+  await settle();
+  assert.equal(shownWith(p, 'client-mid'), undefined);
+  assert.ok(
+    p.sent.some(
+      (message) =>
+        message.method === 'Target.detachFromTarget' && message.params?.sessionId === 'client-mid'
+    )
+  );
+  assert.equal(await enable(p, 'client-mid'), PROTECTED);
 });
