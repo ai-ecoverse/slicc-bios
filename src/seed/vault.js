@@ -128,9 +128,12 @@ function pairs(headers) {
   return Object.entries(headers).map(([name, value]) => [name, String(value)]);
 }
 
+const BODYLESS = new Set(['GET', 'HEAD']);
+
 export function answerEgress(transport, request, port, { timers = globalThis } = {}) {
   let done = false;
-  const body = new TextEncoder().encode(request.body ?? '');
+  const bodyless = BODYLESS.has(String(request.method).toUpperCase());
+  const body = new TextEncoder().encode(bodyless ? '' : (request.body ?? ''));
   const controller = new AbortController();
   const reply = (message) => {
     if (done) return;
@@ -150,7 +153,7 @@ export function answerEgress(transport, request, port, { timers = globalThis } =
         url: request.url,
         method: request.method,
         headers: request.headers,
-        body,
+        ...(bodyless ? {} : { body }),
         signal: controller.signal,
       });
       body.fill(0);

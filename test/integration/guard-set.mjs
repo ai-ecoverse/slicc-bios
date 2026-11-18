@@ -15,6 +15,7 @@ import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
+import { extensionFrames } from './guard-set-frames.mjs';
 
 const exposure = { listed: false, sample: null };
 const known = (row) => knownRow(row, exposure);
@@ -290,7 +291,7 @@ async function unguardedClient(browser) {
   };
 }
 
-export async function guardHost(t, path) {
+export async function guardHost(t, path, { frames = true } = {}) {
   const { chrome, browser } = await launched();
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
@@ -316,6 +317,8 @@ export async function guardHost(t, path) {
     }
     rows.get(row)?.messages.push(text);
   });
+  await seven.expose('extensionFrames', ([tabId, own]) => extensionFrames(browser, tabId, own));
+  await seven.init(`() => { globalThis.sliccFakeFrames = ${frames === true}; }`);
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
     const every = window.setInterval;
@@ -337,8 +340,17 @@ export async function guardHost(t, path) {
     };
     Object.defineProperty(globalThis, 'sliccExtension', {
       value: Object.freeze({
-        version: '7.10.0',
+        version: globalThis.sliccFakeFrames ? '7.12.0' : '7.10.0',
         fetch: (input, init) => fetch(input, init),
+        ...(globalThis.sliccFakeFrames
+          ? {
+              async frames(tabId) {
+                const answer = await window.extensionFrames([tabId, location.origin]);
+                if (answer.error) throw new Error(answer.error);
+                return answer.result;
+              },
+            }
+          : {}),
         cdp: Object.freeze({
           send(method, params, sessionId) {
             const id = ++next;
@@ -373,6 +385,29 @@ export async function guardHost(t, path) {
         if (!linked) throw new Error('no linked browser');
         return linked.open();
       },
+    };
+    let extensionTabs;
+    const routes = {
+      devtools: () => ({}),
+      extension: () => {
+        const extension = globalThis.sliccExtension;
+        if (!extensionTabs) {
+          extensionTabs = new Map();
+          extension.cdp.on((event) => {
+            if (event.method === 'Target.targetDestroyed')
+              extensionTabs.delete(event.params?.targetId);
+          });
+        }
+        return {
+          tabs: extensionTabs,
+          route: { kind: 'extension', version: extension.version },
+          frames:
+            typeof extension.frames === 'function'
+              ? (targetId) => extension.frames(targetId)
+              : undefined,
+        };
+      },
+      link: () => ({ route: globalThis.sliccLinkedBrowsers()[0]?.route }),
     };
     const lagged = (connection, lag, paintDelay, row) => {
       const send = connection.send.bind(connection);
@@ -545,7 +580,14 @@ export async function guardHost(t, path) {
     window.guards = {
       async open(row, own, path, lag, paintDelay, capture) {
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
-        const connection = guardProtected(gated, [location.origin, own].flat());
+        const { tabs, route, frames } = routes[path]();
+        const connection = guardProtected(
+          gated,
+          [location.origin, own].flat(),
+          tabs,
+          route,
+          frames
+        );
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
@@ -741,6 +783,11 @@ export async function guardHost(t, path) {
         close,
       };
     };
+  const probe = await clientFactory(path)({});
+  const version = await probe.client.send('Browser.getVersion');
+  await probe.close();
+  process.stdout.write(`GUARD-ROUTE ${path} ${JSON.stringify(version?.slicc ?? null)}\n`);
+  assert.equal(version?.slicc?.route, path, `the ${path} path runs under the ${path} guard route`);
   return Object.assign(clientFactory, { vault: chrome.vault.origin });
 }
 
