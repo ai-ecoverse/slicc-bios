@@ -148,6 +148,7 @@ const HELD = {
   'seven’s origin with a trailing slash': idp(`${ORIGIN}/`),
   'seven’s origin with a trailing slash, percent-encoded': idp(encodeURIComponent(`${ORIGIN}/`)),
   'a path on seven’s origin': idp(`${ORIGIN}/some/path`),
+  'seven’s origin with a trailing dot on its host': idp(`${ORIGIN}./`),
   'a path on seven’s origin, percent-encoded': idp(encodeURIComponent(`${ORIGIN}/some/path`)),
 };
 
@@ -157,6 +158,9 @@ const DRIVABLE = {
   ),
   'an authorize URL whose redirect_uri names another sliccy.ai address': idp(
     encodeURIComponent('https://vault.sliccy.ai/cb')
+  ),
+  'an authorize URL whose redirect_uri names a host under seven’s host': idp(
+    'https://www.sliccy.ai.evil.example/'
   ),
   'an ordinary page naming www.sliccy.ai in its path and query':
     'http://ordinary.example.test/www.sliccy.ai/page?q=www.sliccy.ai/docs',
