@@ -667,6 +667,21 @@ export async function guardHost(t, path) {
                   : { result: JSON.stringify(answer.result ?? null).slice(0, 200) },
               })}\n`
             );
+            if (diagInputs <= 10) {
+              const frames = await seven
+                .evaluate(
+                  (since) =>
+                    (globalThis.sliccDiagNode?.frames ?? [])
+                      .filter((frame) => frame.t >= since)
+                      .slice(0, 80),
+                  diagAt
+                )
+                .catch((error) => [{ error: error.message }]);
+              for (const frame of frames)
+                process.stdout.write(
+                  `DIAG-C9-NODE ${variant} ${diagInputs} ${frame.t - diagAt} ${JSON.stringify(frame)}\n`
+                );
+            }
           }
           ledger = await seven
             .evaluate((row) => window.guards.forwarded(row), row)
