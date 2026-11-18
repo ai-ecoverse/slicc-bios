@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -123,6 +124,14 @@ async function tabsBrowser(t, path) {
 }
 
 const COMMAND_MS = 20000;
+const PROBE_IDS = ['C3.ordinary-parent-iframes.page', 'C3.protected-parent-iframes.page'];
+const SLICC_VERSION = JSON.parse(
+  readFileSync(
+    new URL('../../node_modules/@ai-ecoverse/slicc/package.json', import.meta.url),
+    'utf8'
+  )
+).version;
+let linkRuntime = '';
 
 function cdpError(error) {
   const failure = new Error(error.message);
@@ -318,11 +327,10 @@ export async function guardHost(t, path) {
   });
   await boot(seven);
   const tabs = await tabsBrowser(t, path);
-  if (path === 'link')
-    trace(
-      'link',
-      (await linkNode(t, seven, tabs.port, 'guard-fixture', { seven: true })).join(' ')
-    );
+  if (path === 'link') {
+    linkRuntime = (await linkNode(t, seven, tabs.port, 'guard-fixture', { seven: true })).join(' ');
+    trace('link', linkRuntime);
+  }
   const setup = async (sources) => {
     const auditForwards = new Function(`return (${sources.audit})`)();
     const attachRecorder = new Function(`return (${sources.attach})`)();
@@ -543,6 +551,9 @@ export async function guardHost(t, path) {
       forwarded(row) {
         return guards.get(row)?.gated.forwarded() ?? [];
       },
+      probe(row) {
+        return guards.get(row)?.connection.probe?.() ?? null;
+      },
       send(row, method, params, sessionId, wait) {
         const guard = guards.get(row);
         if (!guard) return { error: { message: 'the guard for this row is closed' } };
@@ -636,6 +647,24 @@ export async function guardHost(t, path) {
         [row, own, path, detachDelay, paintDelay, capture]
       );
       const close = async () => {
+        if (PROBE_IDS.includes(vector?.id)) {
+          const probe = await seven
+            .evaluate((row) => window.guards.probe(row), row)
+            .catch((error) => ({ error: String(error) }));
+          const label = `${path} ${vector.id} ${target} ${variant} row${row}`;
+          process.stdout.write(
+            `GUARD-LINKTRACE ${label} header ${JSON.stringify({
+              slicc: SLICC_VERSION,
+              linkRuntime,
+              route: probe?.route,
+              start: probe?.start,
+              lines: probe?.lines?.length,
+              error: probe?.error,
+            })}\n`
+          );
+          for (const [index, line] of (probe?.lines ?? []).entries())
+            process.stdout.write(`GUARD-LINKTRACE ${label} ${index} ${line}\n`);
+        }
         rows.delete(row);
         await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
       };

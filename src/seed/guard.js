@@ -930,6 +930,9 @@ class Guard {
     this.errorUrls = new Map();
     this.frameRoots = new Map();
     this.estimated = new Set();
+    this.probe = [];
+    this.probeStart = Date.now();
+    this.probeClient = new Map();
     this.unsafe = new WeakSet();
     this.blankReads = new Set();
     this.pendingContent = new Set();
@@ -1118,7 +1121,28 @@ class Guard {
     return metadata;
   }
 
+  probeDeliver(message) {
+    if (
+      message.method === 'Target.attachedToTarget' ||
+      message.method === 'Target.detachedFromTarget'
+    )
+      this.probeNote('deliver', {
+        method: message.method,
+        event: message.sessionId ?? 'absent',
+        session: message.params?.sessionId,
+        targetId: message.params?.targetInfo?.targetId,
+        url: message.params?.targetInfo?.url,
+      });
+    if (message.id !== undefined && message.error)
+      this.probeNote('deliver error', {
+        id: message.id,
+        session: message.sessionId,
+        text: String(message.error.message).slice(0, 80),
+      });
+  }
+
   deliver(message, release = true, source = message, proof) {
+    this.probeDeliver(message);
     if (
       message.id === undefined &&
       /^(?:Network|Fetch)\./.test(message.method) &&
@@ -1219,6 +1243,13 @@ class Guard {
 
   refuse(command, message = PROTECTED, release = true) {
     if (this.finished.has(command)) return;
+    this.probeNote('refuse', {
+      id: command.id,
+      method: command.method,
+      session: command.sessionId,
+      text: String(message).slice(0, 80),
+      caller: this.noteCaller(),
+    });
     this.finished.add(command);
     const key = requestKey(command);
     this.blankReads.delete(key);
@@ -1234,6 +1265,14 @@ class Guard {
   learn(info) {
     if (!info?.targetId) return;
     const known = this.targets.get(info.targetId);
+    if (info.parentId && known?.parentId !== info.parentId)
+      this.probeNote('parent', {
+        targetId: info.targetId,
+        parentId: info.parentId,
+        before: known?.parentId,
+        url: info.url,
+        caller: this.noteCaller(),
+      });
     const remembered = this.tabs.get(info.targetId)?.error;
     if (remembered && !this.errorFrames.has(remembered.id)) {
       this.recalled.add(info.targetId);
@@ -2986,6 +3025,7 @@ class Guard {
   }
 
   uncertainProof(targetId, uncertain = true) {
+    this.probeNote('uncertain', { targetId, uncertain, caller: this.noteCaller() });
     if (!targetId || this.retiredTargets.has(targetId)) return false;
     if (uncertain) {
       this.failedProof.add(targetId);
@@ -2999,11 +3039,36 @@ class Guard {
     return false;
   }
 
+  probeRefusal(message, owner, needed, id, session, parent) {
+    const via = !session ? 'placement' : this.shown.has(session) ? 'inspect' : 'watch';
+    this.probeNote('proveContent', {
+      id: message.id,
+      method: message.method,
+      session: message.sessionId,
+      owner,
+      needed,
+      failed: id,
+      via,
+      proofSession: session,
+      parent,
+      state: this.noteState(),
+    });
+  }
+
   async proveContent(message) {
     if (!message.sessionId || !contentRead(message.method)) return true;
     const owner = this.sessions.get(message.sessionId)?.targetId;
     for (const record of this.contextChecks.get(message.sessionId)?.values() ?? [])
-      if (!record.done && (await this.answered(record.promise)) !== true) return false;
+      if (!record.done && (await this.answered(record.promise)) !== true) {
+        this.probeNote('proveContent', {
+          id: message.id,
+          method: message.method,
+          session: message.sessionId,
+          owner,
+          refusedBy: 'context check',
+        });
+        return false;
+      }
     const needed = [...this.proofNeeded].filter((id) => {
       const root = this.frameRoots.get(id) ?? this.scopes.get(id)?.root ?? id;
       return (
@@ -3033,8 +3098,20 @@ class Guard {
           ? this.inspect(session, id, parent)
           : this.watch(session, id, parent);
       else checked = this.provePlacement(id);
-      if (!checked || !(await checked)) return false;
+      if (!checked || !(await checked)) {
+        this.probeRefusal(message, owner, needed, id, session, parent);
+        return false;
+      }
     }
+    if (needed.length)
+      this.probeNote('proveContent', {
+        id: message.id,
+        method: message.method,
+        session: message.sessionId,
+        owner,
+        needed,
+        passed: true,
+      });
     return true;
   }
 
@@ -3221,6 +3298,13 @@ class Guard {
     if (!info?.targetId || this.privateSessions.has(message.params.sessionId)) return;
     const owner = this.sessionTarget(message.sessionId);
     const parentId = info.type === 'iframe' ? (info.parentId ?? owner) : undefined;
+    this.probeNote('receiveAttachment', {
+      targetId: info.targetId,
+      url: info.url,
+      event: message.sessionId ?? 'absent',
+      owner,
+      parentId,
+    });
     this.learn({ ...info, ...(parentId ? { parentId } : {}) });
     if (info.url?.startsWith('chrome-error:') || this.is.target(info) || !URL.canParse(info.url))
       this.uncertainProof(info.targetId);
@@ -3607,6 +3691,121 @@ class Guard {
     return this.target(targetId);
   }
 
+  probeNote(kind, data = {}) {
+    if (this.probe.length >= 6000) return;
+    const at = Date.now() - this.probeStart;
+    let text;
+    try {
+      text = JSON.stringify({ at, kind, ...data });
+    } catch {
+      text = JSON.stringify({ at, kind, unserializable: true });
+    }
+    this.probe.push(text.length > 900 ? `${text.slice(0, 900)}...` : text);
+  }
+
+  noteCaller() {
+    return (new Error().stack ?? '')
+      .split('\n')
+      .slice(3, 7)
+      .map((line) =>
+        line
+          .trim()
+          .replace(/^at /, '')
+          .replace(/\(.*\/([^/]+:\d+):\d+\)$/, '($1)')
+      )
+      .join(' < ');
+  }
+
+  noteState() {
+    return {
+      proofNeeded: [...this.proofNeeded],
+      failedProof: [...this.failedProof],
+      proofEpoch: Object.fromEntries(this.proofEpoch),
+      estimated: [...this.estimated],
+      frameRoots: Object.fromEntries(this.frameRoots),
+      sessions: [...this.sessions].map(([id, entry]) => ({
+        id,
+        targetId: entry.targetId,
+        parent: entry.parent,
+        shown: this.shown.has(id),
+        blocked: this.blocked.has(id),
+        gone: this.gone.has(id),
+      })),
+      navs: [...this.navs].map(([id, nav]) => ({
+        id,
+        session: nav.session,
+        done: nav.done,
+        failed: nav.failed,
+        held: nav.held,
+        retired: nav.retired,
+      })),
+      targets: [...this.targets].map(([id, known]) => ({
+        id,
+        type: known.type,
+        url: known.url,
+        parentId: known.parentId,
+        parentFrameId: known.parentFrameId,
+        guarded: known.guarded,
+        was: known.was,
+      })),
+    };
+  }
+
+  noteIn(message) {
+    const { id, method, sessionId, params = {} } = message;
+    if (
+      [
+        'Target.attachedToTarget',
+        'Target.detachedFromTarget',
+        'Target.targetInfoChanged',
+        'Target.targetCreated',
+        'Target.targetDestroyed',
+      ].includes(method)
+    ) {
+      const info = params.targetInfo ?? {};
+      return this.probeNote('in', {
+        method,
+        event: sessionId ?? 'absent',
+        session: params.sessionId,
+        targetId: info.targetId ?? params.targetId,
+        type: info.type,
+        url: info.url,
+        parentId: info.parentId,
+        parentFrameId: info.parentFrameId,
+        waiting: params.waitingForDebugger,
+        route: this.route,
+      });
+    }
+    if (method === 'Runtime.executionContextCreated')
+      return this.probeNote('in', {
+        method,
+        event: sessionId ?? 'absent',
+        context: params.context?.id,
+        origin: params.context?.origin,
+        frameId: params.context?.auxData?.frameId,
+        isDefault: params.context?.auxData?.isDefault,
+      });
+    if (method === 'Page.frameNavigated' || method === 'Page.frameAttached')
+      return this.probeNote('in', {
+        method,
+        event: sessionId ?? 'absent',
+        frameId: params.frame?.id ?? params.frameId,
+        parentFrameId: params.frame?.parentId ?? params.parentFrameId,
+        url: params.frame?.url,
+      });
+    if (id !== undefined && this.probeClient.has(id)) {
+      const sent = this.probeClient.get(id);
+      this.probeClient.delete(id);
+      return this.probeNote('reply', {
+        id,
+        session: sessionId,
+        method: sent.method,
+        error: message.error?.message,
+        after: Date.now() - sent.at,
+      });
+    }
+  }
+
   ownerSession(owner, sessionId) {
     const nav = this.navs.get(owner);
     const settled = nav?.done && !nav.failed && !nav.retired && !nav.held ? nav.session : undefined;
@@ -3620,19 +3819,60 @@ class Guard {
     );
   }
 
+  probeBail(info, owners, sessionId) {
+    const [owner] = owners;
+    const mapped = this.sessionTarget(sessionId);
+    if (info.type !== 'iframe') return 'not iframe';
+    if (owners.size === 0) return 'no parent';
+    if (owners.size !== 1) return 'several owners';
+    if (sessionId !== undefined && mapped === undefined) return 'unmapped attach parent';
+    if (sessionId !== undefined && mapped !== owner) return 'attach parent on another target';
+    return 'frameRoots collision';
+  }
+
+  probeTree(base, session, answer, frames, found, placed, url) {
+    this.probeNote('estimate', {
+      ...base,
+      session,
+      answered: Boolean(answer?.result),
+      error: answer?.error?.message,
+      frames: frames.map((frame) => [frame.id, frame.parentId, frame.url]),
+      found: found.length,
+      placed,
+      url,
+      bail: !placed ? 'tree lacks the id' : this.estimable(url) ? undefined : 'not ordinary',
+    });
+  }
+
   async treeEstimate(info, sessionId) {
     const owners = this.frameParents(info.targetId);
     const [owner] = owners;
+    const base = {
+      targetId: info.targetId,
+      type: info.type,
+      attachParent: sessionId ?? 'absent',
+      attachParentTarget: this.sessionTarget(sessionId),
+      owners: [...owners],
+      caller: this.noteCaller(),
+    };
     if (
       info.type !== 'iframe' ||
       owners.size !== 1 ||
       (sessionId !== undefined && this.sessionTarget(sessionId) !== owner) ||
       [...this.frameRoots.values()].includes(info.targetId)
-    )
+    ) {
+      this.probeNote('estimate', { ...base, bail: this.probeBail(info, owners, sessionId) });
       return '';
-    if (await this.target(owner)) return '';
+    }
+    if (await this.target(owner)) {
+      this.probeNote('estimate', { ...base, bail: 'owner protected or held' });
+      return '';
+    }
     const session = this.ownerSession(owner, sessionId);
-    if (!session) return '';
+    if (!session) {
+      this.probeNote('estimate', { ...base, bail: 'owner not live', state: this.noteState() });
+      return '';
+    }
     const stamp = () =>
       [info.targetId, owner].flatMap((id) => [this.revisions.get(id), this.proofEpoch.get(id)]);
     const before = stamp();
@@ -3642,12 +3882,15 @@ class Guard {
       stamp().some((value, index) => value !== before[index]) ||
       parents.size !== 1 ||
       !parents.has(owner)
-    )
+    ) {
+      this.probeNote('estimate', { ...base, session, bail: 'stamp voided', parents: [...parents] });
       return '';
+    }
     const frames = framed(answer?.result?.frameTree);
     const found = frames.filter((frame) => frame.id === info.targetId);
     const placed = found.length === 1 && frames.some((frame) => frame.id === found[0].parentId);
     const url = placed ? this.framed(found[0]) : '';
+    this.probeTree(base, session, answer, frames, found, placed, url);
     return this.estimable(url) ? url : '';
   }
 
@@ -3667,6 +3910,14 @@ class Guard {
   }
 
   async proofInfo(raw, targetId, parent) {
+    this.probeNote('proofInfo', {
+      targetId,
+      rawUrl: raw?.url,
+      type: raw?.type,
+      parentId: raw?.parentId,
+      parent: parent ?? 'absent',
+      frameRoot: this.frameRoots.get(targetId),
+    });
     if (raw?.url !== '' || !NAV_TYPES.has(raw.type)) return { info: raw };
     const estimate = !this.frameRoots.has(targetId) && (await this.treeEstimate(raw, parent));
     const url = estimate || this.frames.get(this.frameRoots.get(targetId)) || '';
@@ -3771,8 +4022,22 @@ class Guard {
     this.touch(targetId, true);
     const nav = this.navs.get(targetId);
     await nav?.ready;
+    this.probeNote('blank', {
+      targetId,
+      session: sessionId,
+      parent: parent ?? 'absent',
+      route: this.route,
+    });
     const estimated = await this.blankEstimate(message, nav);
     const info = estimated ?? (await this.named(targetId));
+    this.probeNote('blank named', {
+      targetId,
+      session: sessionId,
+      estimated: Boolean(estimated),
+      url: info?.url ?? null,
+      navFailed: nav?.failed,
+      navTaken: nav?.taken,
+    });
     if (!info || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
     if (!estimated) {
       this.targets.delete(info.targetId);
@@ -6769,6 +7034,8 @@ class Guard {
     this.asked.set(requestKey(message), message);
     if (contentRead(method)) this.pendingContent.add(message);
     if (!QUIET.has(method)) this.changed();
+    this.probeNote('forward', { id: outgoing.id, method, session: sessionId, client: id });
+    this.probeClient.set(outgoing.id, { method, at: Date.now() });
     this.connection.send(JSON.stringify(outgoing));
   }
 
@@ -6954,6 +7221,7 @@ class Guard {
 
   received(text) {
     const message = parse(text);
+    this.noteIn(message);
     this.noteListedEvent(message);
     this.stamp(message);
     this.rememberFetchAnswer(message);
@@ -7246,6 +7514,12 @@ class Guard {
     guarded.send = (text) => {
       if (this.closing || this.closed) return;
       const message = parse(text);
+      this.probeNote('client', {
+        id: message.id,
+        method: message.method,
+        session: message.sessionId,
+        targetId: message.params?.targetId,
+      });
       const key = requestKey(message);
       if (message.id !== undefined) {
         if (this.callerIds.has(key)) return this.refuse(message, FAILED, false);
@@ -7353,5 +7627,8 @@ const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
 
 export function guardProtected(connection, own, tabs = new Map(), route, privateFrames, caller) {
-  return new Guard(connection, own, tabs, route, privateFrames, caller).start();
+  const guard = new Guard(connection, own, tabs, route, privateFrames, caller);
+  const guarded = guard.start();
+  guarded.probe = () => ({ route: guard.route, start: guard.probeStart, lines: guard.probe });
+  return guarded;
 }

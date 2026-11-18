@@ -25,10 +25,11 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
+      test-glob: test/integration/guard-set-link-seven*.test.mjs
+      shards: 2
+      test: GUARD_IDS=C3.ordinary-parent-iframes.page,C3.protected-parent-iframes.page npm test
       timeout-minutes: 90
-      flaky-retry: 3
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*
