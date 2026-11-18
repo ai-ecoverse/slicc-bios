@@ -105,6 +105,34 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     }
   );
 
+  await t.test(
+    'an 8.x agent records schema 2, so the 7.x agent starts after it on the same profile',
+    async (t) => {
+      await marker(page, null);
+      await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+      await relabel(page, '8.0.0');
+      t.after(() => relabel(page, pinned).catch(() => {}));
+      await page.goto('/');
+      await ready(page);
+      await agentUp(page, { label: 'the agent labelled 8.0.0' });
+      assert.equal(await record(page), '2');
+      await relabel(page, pinned);
+      await page.goto('/');
+      await ready(page);
+      await agentUp(page, { label: `the ${pinned} agent after 8.0.0` });
+      assert.equal(await record(page), '2');
+      assert.equal(
+        await page.evaluate(() =>
+          document
+            .querySelector('slicc-app')
+            .model.notices.list()
+            .some((item) => item.id === 'agent:older')
+        ),
+        false
+      );
+    }
+  );
+
   await t.test('the 7.x agent’s own marker refuses a 6.x agent', async (t) => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
     await relabel(page, '6.19.15');
