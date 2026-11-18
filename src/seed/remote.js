@@ -6,6 +6,8 @@ const MODES = ['steer', 'followUp', 'reject'];
 const ANSWERS = ['once', 'always', 'deny', 'stop'];
 const NO_APPROVALS = 'EOPNOTSUPP: this agent has no approvals';
 export const OWN_KERNEL = "EACCES: a link from this seven's own kernel can't decide approvals";
+export const UNCHECKED =
+  "EACCES: seven couldn't check this device when it linked; reconnect it to decide approvals";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -79,6 +81,17 @@ async function pump(stream, events) {
   }
   if (!gone) stream.closeWrite();
   void watching;
+}
+
+async function selfDecided(link, ownKernel) {
+  const identified = await link.ownKernel;
+  if (identified === 'own') return OWN_KERNEL;
+  try {
+    if (await ownKernel(link)) return OWN_KERNEL;
+  } catch {
+    return OWN_KERNEL;
+  }
+  return identified === 'unchecked' ? UNCHECKED : null;
 }
 
 const clock = {
@@ -172,7 +185,10 @@ export function createRemote({
   };
   return {
     identified(link) {
-      link.ownKernel = (async () => ownKernel(link))().then(Boolean, () => true);
+      link.ownKernel = (async () => ownKernel(link))().then(
+        (own) => (own ? 'own' : null),
+        () => 'unchecked'
+      );
     },
     controlling(link) {
       const counts = active.get(link.key);
@@ -183,11 +199,8 @@ export function createRemote({
       const op = ops[meta.op];
       if (!op) return stream.reset('EINVAL');
       if (meta.op === 'decide') {
-        try {
-          if ((await link.ownKernel) || (await ownKernel(link))) return stream.reset(OWN_KERNEL);
-        } catch {
-          return stream.reset(OWN_KERNEL);
-        }
+        const refused = await selfDecided(link, ownKernel);
+        if (refused) return stream.reset(refused);
       }
       const mode = meta.op === 'prompt' || meta.op === 'watch' ? meta.op : null;
       if (mode) mark(link, mode, 1);

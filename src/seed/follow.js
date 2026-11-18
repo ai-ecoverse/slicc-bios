@@ -11,6 +11,7 @@ export const CERT_DAYS = 365;
 const DAY = 24 * 60 * 60 * 1000;
 export const RETIRED = 'retired:';
 export const RETAIN_MS = CERT_DAYS * DAY;
+export const RETIRED_CAP = 256;
 const BACKOFF = [1_000, 2_000, 5_000, 10_000, 30_000];
 const GONE = new Set(['INVALID_JOIN_CAPABILITY', 'TRAY_EXPIRED']);
 
@@ -106,7 +107,13 @@ const prints = (cert) =>
     .filter((print) => print.algorithm === 'sha-256')
     .map((print) => print.value.replaceAll(':', '').toLowerCase());
 
-async function exchange(key, next, idb, at) {
+function trim(list, carried, at) {
+  const kept = list.filter(([print, until]) => until > at || carried.has(print));
+  let spare = kept.length - RETIRED_CAP;
+  return kept.filter(([print]) => carried.has(print) || spare-- <= 0);
+}
+
+async function exchange(key, next, { idb, at, live }) {
   const db = await opened(idb);
   try {
     const tx = db.transaction('certificates', 'readwrite');
@@ -118,10 +125,14 @@ async function exchange(key, next, idb, at) {
     const old = store.get(key);
     const kept = store.get(`${RETIRED}${key}`);
     kept.onsuccess = () => {
-      const live = (Array.isArray(kept.result) ? kept.result : []).filter(
-        ([, until]) => until > at
+      const all = trim(
+        [
+          ...(Array.isArray(kept.result) ? kept.result : []),
+          ...prints(old.result).map((print) => [print, at + RETAIN_MS]),
+        ],
+        new Set(live()),
+        at
       );
-      const all = [...live, ...prints(old.result).map((print) => [print, at + RETAIN_MS])];
       if (all.length) store.put(all, `${RETIRED}${key}`);
       else store.delete(`${RETIRED}${key}`);
       if (next) store.put(next, key);
@@ -139,6 +150,7 @@ export async function certificate(
     idb = indexedDB,
     generate = (options) => RTCPeerConnection.generateCertificate(options),
     now = Date.now,
+    live = () => [],
   } = {}
 ) {
   const kept = await certificates('readonly', (store) => store.get(hub), idb);
@@ -148,11 +160,11 @@ export async function certificate(
     namedCurve: 'P-256',
     expires: CERT_DAYS * DAY,
   });
-  await exchange(hub, made, idb, now());
+  await exchange(hub, made, { idb, at: now(), live });
   return made;
 }
 
-export async function keptFingerprints(prefix, { idb = indexedDB, now = Date.now } = {}) {
+export async function keptFingerprints(prefix, { idb = indexedDB } = {}) {
   const [kept, retired] = await certificates(
     'readonly',
     (store) => [
@@ -161,17 +173,14 @@ export async function keptFingerprints(prefix, { idb = indexedDB, now = Date.now
     ],
     idb
   );
-  const at = now();
   return [
     ...kept.flatMap(prints),
-    ...retired.flatMap((list) =>
-      (Array.isArray(list) ? list : []).filter(([, until]) => until > at).map(([print]) => print)
-    ),
+    ...retired.flatMap((list) => (Array.isArray(list) ? list.map(([print]) => print) : [])),
   ];
 }
 
-export function dropCertificate(hub, { idb = indexedDB, now = Date.now } = {}) {
-  return exchange(hub, null, idb, now());
+export function dropCertificate(hub, { idb = indexedDB, now = Date.now, live = () => [] } = {}) {
+  return exchange(hub, null, { idb, at: now(), live });
 }
 
 const refused = (code, message, extra = {}) =>
