@@ -405,9 +405,8 @@ const text = (value) => {
   }
 };
 
-export async function diagWindow(page, label, pageIds, work) {
+export async function diagBegin(page, label, pageIds) {
   const tag = label.replace(/\s+/g, '_');
-  if (!page) return work();
   const started = Date.now();
   process.stdout.write(`DIAG-START ${tag} ${started} ${text({ pageIds })}\n`);
   await page.evaluate(installDiag, pageIds, TRACED).catch((error) => {
@@ -439,9 +438,7 @@ export async function diagWindow(page, label, pageIds, work) {
     }
   };
   const timers = [3000, 10000, 20000].map((ms) => setTimeout(() => void dump(`${ms / 1000}s`), ms));
-  try {
-    return await work();
-  } finally {
+  const end = async () => {
     for (const timer of timers) clearTimeout(timer);
     await dump('end');
     try {
@@ -457,5 +454,6 @@ export async function diagWindow(page, label, pageIds, work) {
       process.stdout.write(`DIAG-ERROR ${tag} node ${error.message}\n`);
     }
     await page.evaluate(uninstallDiag).catch(() => {});
-  }
+  };
+  return { tag, started, end };
 }
