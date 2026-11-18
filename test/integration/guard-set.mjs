@@ -5,13 +5,15 @@ import { fileURLToPath } from 'node:url';
 import { fixtureServer } from '@ai-ecoverse/slicc-browsers/fixture';
 import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
+import { MIN_EXTENSION_VERSION } from '../../src/seed/extension.js';
 import { boot } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
+import { extensionFrames } from './fake-extension-frames.mjs';
 import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
-import { extensionFrames } from './guard-set-frames.mjs';
+import { CURRENT_EXTENSION } from './real-extension.mjs';
 
 const exposure = { listed: false, sample: null };
 const known = (row) => knownRow(row, exposure);
@@ -268,7 +270,9 @@ export async function guardHost(t, path, { frames = true } = {}) {
     rows.get(row)?.messages.push(text);
   });
   await seven.expose('extensionFrames', ([tabId, own]) => extensionFrames(browser, tabId, own));
-  await seven.init(`() => { globalThis.sliccFakeFrames = ${frames === true}; }`);
+  await seven.init(
+    `() => { globalThis.sliccFakeFrames = ${frames === true}; globalThis.sliccFakeVersion = ${JSON.stringify(frames === true ? CURRENT_EXTENSION.version : MIN_EXTENSION_VERSION)}; }`
+  );
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
     const every = window.setInterval;
@@ -290,7 +294,7 @@ export async function guardHost(t, path, { frames = true } = {}) {
     };
     Object.defineProperty(globalThis, 'sliccExtension', {
       value: Object.freeze({
-        version: globalThis.sliccFakeFrames ? '7.12.0' : '7.10.0',
+        version: globalThis.sliccFakeVersion,
         fetch: (input, init) => fetch(input, init),
         ...(globalThis.sliccFakeFrames
           ? {
@@ -809,6 +813,31 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
+            if (current?.id === 'C3.tab-worker-leak' && data.step)
+              process.stdout.write(
+                `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} ${JSON.stringify(
+                  {
+                    as: data.step.as,
+                    session: data.step.session ?? 'page',
+                    cdp: data.step.cdp,
+                    ok: data.out?.ok,
+                    error: String(data.out?.error?.message ?? '').slice(0, 160),
+                  }
+                )}\n`
+              );
+            if (current?.id === 'C3.tab-worker-leak' && data.events)
+              process.stdout.write(
+                `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} attached ${JSON.stringify(
+                  data.events
+                    .filter((event) => event.method === 'Target.attachedToTarget')
+                    .map((event) => [
+                      event.params?.targetInfo?.type,
+                      URL.parse(event.params?.targetInfo?.url ?? '')?.origin ??
+                        event.params?.targetInfo?.url,
+                      Boolean(event.sessionId),
+                    ])
+                )}\n`
+              );
             if (
               data.side === 'guarded' &&
               data.calls &&
