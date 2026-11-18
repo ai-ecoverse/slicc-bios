@@ -2,6 +2,7 @@ import { createKernel, fetchTransport } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { followAgent, installAgent, loadChat } from './agent.js';
+import { APPROVALS_LAYOUT } from './approvals.js';
 import { createFollow, deviceName, hubClient, keepFollow, takeFollow } from './follow.js';
 import { createNotices } from './notices.js';
 import { joinTray } from './present.js';
@@ -11,6 +12,7 @@ import { createUpdates } from './updates.js';
 
 export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
+  approvals: APPROVALS_LAYOUT,
   chat: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   network: { side: 'right', open: [] },

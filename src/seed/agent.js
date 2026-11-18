@@ -184,6 +184,85 @@ export async function deliverWebhook(owner, name, delivery, { load = loadChat } 
   }
 }
 
+export const APPROVAL_RUN_NOTICE_MS = 10_000;
+export const APPROVAL_RUN_SETTLE_MS = 60_000;
+
+function entryText(entry) {
+  const content = entry?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((part) => (typeof part === 'string' ? part : (part?.text ?? ''))).join('\n');
+}
+
+function viewHasSudoRunSource(view, source) {
+  for (const entry of view?.entries ?? []) {
+    const text = entryText(entry);
+    if (text.includes('channel="sudo-run"') && text.includes(`source="${source}"`)) return true;
+  }
+  return false;
+}
+
+export function connectionHasSudoRunSource(connection, source) {
+  if (!source || !connection) return false;
+  if (viewHasSudoRunSource(connection.transcript?.value, source)) return true;
+  for (const view of Object.values(connection.views?.value ?? {})) {
+    if (viewHasSudoRunSource(view, source)) return true;
+  }
+  return false;
+}
+
+async function waitForSudoRunLick(connection, source, settleMs) {
+  if (!(settleMs > 0) || connectionHasSudoRunSource(connection, source)) return;
+  const deadline = Date.now() + settleMs;
+  while (Date.now() < deadline) {
+    if (connectionHasSudoRunSource(connection, source)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+export async function deliverApprovalRunNotice(
+  owner,
+  notice,
+  { load = loadChat, timeoutMs = APPROVAL_RUN_NOTICE_MS, settleMs = APPROVAL_RUN_SETTLE_MS } = {}
+) {
+  if (
+    globalThis.sliccKernelDebug === true &&
+    typeof globalThis.sliccApprovalRunNotice === 'function'
+  )
+    return globalThis.sliccApprovalRunNotice(notice);
+  if (!owner) return { delivered: false, reason: 'the agent is not running' };
+
+  const { connectAgent } = await load();
+  const connection = await connectAgent(await owner.port());
+  try {
+    if (typeof connection.approvalRunNotice !== 'function')
+      return { delivered: false, reason: 'this slicc-agent has no approvalRunNotice' };
+
+    let timer = null;
+    const told =
+      timeoutMs > 0
+        ? await Promise.race([
+            connection.approvalRunNotice(notice),
+            new Promise((resolve) => {
+              timer = setTimeout(
+                () => resolve({ delivered: false, reason: 'timed out' }),
+                timeoutMs
+              );
+            }),
+          ])
+        : await connection.approvalRunNotice(notice);
+    if (timer !== null) clearTimeout(timer);
+
+    if (told?.delivered && notice?.phase === 'start' && typeof notice.id === 'string' && notice.id)
+      await waitForSudoRunLick(connection, notice.id, settleMs);
+    return told;
+  } finally {
+    try {
+      connection.close();
+    } catch {}
+  }
+}
+
 export function streamSink(stream) {
   let writes = Promise.resolve();
   return {
