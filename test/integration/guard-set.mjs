@@ -644,6 +644,7 @@ export async function guardHost(t, path) {
         await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
       };
       let ledger = [];
+      let diagInputs = 0;
       const client = {
         get forwarded() {
           return ledger;
@@ -687,11 +688,51 @@ export async function guardHost(t, path) {
           };
         },
         send: async (method, params = {}, sessionId) => {
+          const diagAt = Date.now();
           const answer = await seven.evaluate(
             ([row, method, params, sessionId, wait]) =>
               window.guards.send(row, method, params, sessionId ?? undefined, wait),
             [row, method, params, sessionId ?? null, COMMAND_MS]
           );
+          if (
+            vector?.id === 'C9.frame-nested' &&
+            (method.startsWith('Input.') || method === 'Page.captureScreenshot')
+          ) {
+            diagInputs += 1;
+            process.stdout.write(
+              `DIAG-C9 ${variant} ${method} ${JSON.stringify({
+                n: diagInputs,
+                path,
+                target,
+                row,
+                sessionId,
+                params: JSON.stringify(params).slice(0, 300),
+                ms: Date.now() - diagAt,
+                reply: answer.error
+                  ? {
+                      code: answer.error.code,
+                      message: answer.error.message,
+                      data: answer.error.data,
+                    }
+                  : { result: JSON.stringify(answer.result ?? null).slice(0, 200) },
+              })}\n`
+            );
+            if (diagInputs <= 10) {
+              const frames = await seven
+                .evaluate(
+                  (since) =>
+                    (globalThis.sliccDiagNode?.frames ?? [])
+                      .filter((frame) => frame.t >= since)
+                      .slice(0, 80),
+                  diagAt
+                )
+                .catch((error) => [{ error: error.message }]);
+              for (const frame of frames)
+                process.stdout.write(
+                  `DIAG-C9-NODE ${variant} ${diagInputs} ${frame.t - diagAt} ${JSON.stringify(frame)}\n`
+                );
+            }
+          }
           ledger = await seven
             .evaluate((row) => window.guards.forwarded(row), row)
             .catch(() => ledger);

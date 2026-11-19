@@ -404,6 +404,113 @@ export function browserHosts(
   return hosts;
 }
 
+const diagShort = (value) => {
+  try {
+    const text = JSON.stringify(value);
+    return text && text.length > 300 ? `${text.slice(0, 300)}...` : text;
+  } catch {
+    return undefined;
+  }
+};
+
+const diagInfo = (info) =>
+  info && {
+    type: info.type,
+    targetId: info.targetId,
+    url: info.url,
+    openerId: info.openerId,
+    parentId: info.parentId,
+    attached: info.attached,
+    browserContextId: info.browserContextId,
+  };
+
+function diagAnswer(entry, message, out) {
+  if (out) {
+    entry.for = out.method;
+    entry.waited = entry.t - out.t;
+  }
+  const result = message.result ?? {};
+  if (message.error) entry.error = message.error;
+  else if (result.sessionId) entry.resultSessionId = result.sessionId;
+  else if (result.targetInfo) entry.resultTargetInfo = diagInfo(result.targetInfo);
+  else if (out?.method === 'Target.getTargets')
+    entry.targets = (result.targetInfos ?? []).map((one) => [
+      one.type,
+      one.targetId,
+      one.url,
+      one.openerId,
+      one.parentId,
+    ]);
+  else if (out?.method === 'Page.getFrameTree') entry.result = diagShort(result);
+  else entry.resultKeys = Object.keys(result);
+}
+
+function diagTarget(entry, message, dir) {
+  const params = message.params ?? {};
+  if (params.targetInfo) entry.targetInfo = diagInfo(params.targetInfo);
+  if (params.sessionId) entry.session = params.sessionId;
+  if (params.targetId) entry.targetId = params.targetId;
+  if (params.waitingForDebugger !== undefined) entry.waitingForDebugger = params.waitingForDebugger;
+  if (dir === 'in' && message.id === undefined) entry.params = diagShort(params);
+}
+
+export function diagTap(opened, label) {
+  const ring = (globalThis.sliccDiagNode ??= { frames: [], conns: 0, max: 60000 });
+  const conn = ++ring.conns;
+  const sent = new Map();
+  const push = (entry) => {
+    ring.frames.push(entry);
+    if (ring.frames.length > ring.max) ring.frames.splice(0, ring.frames.length - ring.max);
+  };
+  const note = (dir, text) => {
+    const t = Date.now();
+    let message;
+    try {
+      message = JSON.parse(text);
+    } catch {
+      return push({ t, conn, label, dir, unparsed: String(text).slice(0, 200) });
+    }
+    const entry = { t, conn, label, dir, id: message.id, sessionId: message.sessionId };
+    entry.method = message.method;
+    if (dir === 'out' && message.id !== undefined) {
+      sent.set(message.id, { t, method: message.method });
+      entry.params = diagShort(message.params ?? {});
+    }
+    if (dir === 'in' && message.id !== undefined) {
+      diagAnswer(entry, message, sent.get(message.id));
+      sent.delete(message.id);
+    }
+    if (message.method?.startsWith('Target.')) diagTarget(entry, message, dir);
+    if (dir === 'in' && message.method?.startsWith('Page.frame'))
+      entry.params = diagShort(message.params);
+    push(entry);
+  };
+  return Promise.resolve(opened).then((raw) => {
+    push({ t: Date.now(), conn, label, dir: 'open' });
+    const tapped = {
+      onmessage: null,
+      onclose: null,
+      send(text) {
+        note('out', text);
+        return raw.send(text);
+      },
+      close() {
+        push({ t: Date.now(), conn, label, dir: 'close' });
+        return raw.close();
+      },
+    };
+    raw.onmessage = (text) => {
+      note('in', text);
+      tapped.onmessage?.(text);
+    };
+    raw.onclose = (why) => {
+      push({ t: Date.now(), conn, label, dir: 'closed', why: String(why) });
+      tapped.onclose?.(why);
+    };
+    return tapped;
+  });
+}
+
 export function linkedBrowsers(links) {
   return [...(links?.()?.links.values() ?? [])].flatMap((link) =>
     link.exit.browsers().map((browser) => ({
@@ -411,7 +518,7 @@ export function linkedBrowsers(links) {
       seven: browser.seven,
       local: link.mode === 'local',
       route: { kind: 'link', version: link.peer?.version },
-      open: () => link.exit.cdp(browser.id),
+      open: () => diagTap(link.exit.cdp(browser.id), `${link.label}/${browser.id}`),
     }))
   );
 }

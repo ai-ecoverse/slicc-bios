@@ -9,9 +9,10 @@ import WebSocket from 'ws';
 import { boot, ready } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { CLI } from './cli.mjs';
+import { diagBegin } from './diag-1675.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { model, startHub } from './fake-hub.mjs';
-import { linkNode } from './linked-node.mjs';
+import { linkNode, NODE_STDERR } from './linked-node.mjs';
 import {
   dial,
   escaped,
@@ -140,6 +141,8 @@ async function recordedTransport(url) {
     close: () => socket.close(),
   };
   const trace = [];
+  const diag = [];
+  const sentAt = new Map();
   const note = (way, text) => {
     let message;
     try {
@@ -166,6 +169,15 @@ async function recordedTransport(url) {
         .join(' ')
     );
     if (trace.length > 200) trace.shift();
+    const at = Date.now();
+    let waited;
+    if (message.id !== undefined && way === '>') sentAt.set(message.id, at);
+    if (message.id !== undefined && way === '<' && !message.method && sentAt.has(message.id)) {
+      waited = at - sentAt.get(message.id);
+      sentAt.delete(message.id);
+    }
+    diag.push({ at, line: trace[trace.length - 1], waited });
+    if (diag.length > 5000) diag.shift();
   };
   transport.send = (message) => {
     note('>', message);
@@ -181,7 +193,7 @@ async function recordedTransport(url) {
       transport.onclose?.();
     })
   );
-  return { transport, closed, trace };
+  return { transport, closed, trace, diag, sentAt };
 }
 
 const bounded = (promise, ms, what) =>
@@ -541,7 +553,305 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     }
   }
 
-  async function clientsSee(base, origin, mark) {
+  async function framedPages() {
+    const plain = await unguarded(rig.browserUrl);
+    try {
+      const { targetInfos } = await plain.send('Target.getTargets', { filter: [{}] });
+      process.stdout.write(
+        `DIAG-CHROME ${label} ${Date.now()} ${JSON.stringify(targetInfos.map((info) => [info.type, info.targetId, info.url, info.openerId, info.parentId, info.attached]))}\n`
+      );
+      return targetInfos
+        .filter((info) => info.type === 'page' && info.url.includes('/framed-same'))
+        .map((info) => info.targetId);
+    } finally {
+      plain.close();
+    }
+  }
+
+  async function related(pageIds) {
+    const plain = await unguarded(rig.browserUrl);
+    try {
+      const { targetInfos } = await plain.send('Target.getTargets', { filter: [{}] });
+      const ids = new Set(pageIds);
+      for (let size = 0; size !== ids.size; ) {
+        size = ids.size;
+        for (const info of targetInfos)
+          if (ids.has(info.parentId) || ids.has(info.openerId)) ids.add(info.targetId);
+      }
+      for (const info of targetInfos)
+        if (info.type === 'tab' && info.url.includes('/framed-same')) ids.add(info.targetId);
+      return [...ids];
+    } finally {
+      plain.close();
+    }
+  }
+
+  function nodeStderr(tag, since, ids) {
+    const lines = NODE_STDERR.filter(
+      (entry) =>
+        entry.t >= since &&
+        (/refused/i.test(entry.line) ||
+          (/slicc debug: (?:cdp|link):/.test(entry.line) &&
+            (/protect/i.test(entry.line) || ids.some((id) => entry.line.includes(id)))))
+    );
+    for (const entry of lines)
+      process.stdout.write(
+        `DIAG-NODE-STDERR ${tag} ${entry.t - since} ${entry.name} ${entry.line}\n`
+      );
+    const debug = NODE_STDERR.filter((entry) => entry.t >= since && /debug/i.test(entry.line));
+    process.stdout.write(
+      `DIAG-NODE-STDERR-COUNT ${tag} ${JSON.stringify({ matched: lines.length, debugLines: debug.length, allLines: NODE_STDERR.filter((entry) => entry.t >= since).length })}\n`
+    );
+  }
+
+  async function chromeCtx(tag, pageId) {
+    const socket = new WebSocket(rig.browserUrl, { maxPayload: 256 * 1024 * 1024 });
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+    const t0 = Date.now();
+    const print = (kind, value) =>
+      process.stdout.write(
+        `DIAG-CHROME-CTX ${tag} ${Date.now() - t0} ${kind} ${JSON.stringify(value)}\n`
+      );
+    const waiting = new Map();
+    const roles = new Map();
+    let next = 0;
+    const send = (method, params = {}, sessionId) =>
+      new Promise((resolve) => {
+        next += 1;
+        const id = next;
+        const timer = setTimeout(() => {
+          waiting.delete(id);
+          resolve({ error: { message: 'no answer in 5 s' } });
+        }, 5000);
+        waiting.set(id, (message) => {
+          clearTimeout(timer);
+          resolve(message);
+        });
+        socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      });
+    socket.on('message', (data) => {
+      const message = JSON.parse(data.toString());
+      if (message.id !== undefined) {
+        const done = waiting.get(message.id);
+        waiting.delete(message.id);
+        return done?.(message);
+      }
+      const { method, params = {}, sessionId } = message;
+      const role = roles.get(sessionId) ?? 'browser';
+      if (method === 'Target.attachedToTarget') {
+        roles.set(params.sessionId, `child ${params.targetInfo?.type} ${params.targetInfo?.url}`);
+        print('attached', {
+          on: role,
+          session: params.sessionId,
+          type: params.targetInfo?.type,
+          targetId: params.targetInfo?.targetId,
+          url: params.targetInfo?.url,
+          parentId: params.targetInfo?.parentId,
+        });
+        void send('Runtime.enable', {}, params.sessionId);
+        void send('Page.enable', {}, params.sessionId);
+        void send('Page.getFrameTree', {}, params.sessionId).then((answer) =>
+          print('child-tree', { session: params.sessionId, answer: frames(answer) })
+        );
+        void send(
+          'Target.setAutoAttach',
+          { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+          params.sessionId
+        );
+        return;
+      }
+      if (method?.startsWith('Runtime.executionContext'))
+        return print('ctx', {
+          session: role,
+          method,
+          id: params.context?.id ?? params.executionContextId,
+          origin: params.context?.origin,
+          name: params.context?.name,
+          uniqueId: params.context?.uniqueId ?? params.executionContextUniqueId,
+          auxData: params.context?.auxData,
+        });
+      if (/^Page\.frame(?:Attached|Navigated|Detached)$/.test(method ?? ''))
+        print('frame', {
+          session: role,
+          method,
+          frameId: params.frameId ?? params.frame?.id,
+          parentFrameId: params.parentFrameId ?? params.frame?.parentId,
+          url: params.frame?.url,
+          securityOrigin: params.frame?.securityOrigin,
+          reason: params.reason,
+        });
+    });
+    const frames = (answer) => {
+      if (answer?.error) return answer.error;
+      const list = [];
+      const walk = (node) => {
+        if (!node) return;
+        list.push({
+          id: node.frame?.id,
+          parentId: node.frame?.parentId,
+          url: node.frame?.url,
+          securityOrigin: node.frame?.securityOrigin,
+        });
+        for (const child of node.childFrames ?? []) walk(child);
+      };
+      walk(answer?.result?.frameTree);
+      return list;
+    };
+    try {
+      const listed = await send('Target.getTargets', { filter: [{}] });
+      print(
+        'targets',
+        (listed.result?.targetInfos ?? []).map((info) => [
+          info.type,
+          info.targetId,
+          info.url,
+          info.parentId ?? null,
+          info.openerId ?? null,
+          info.attached,
+        ])
+      );
+      const attached = await send('Target.attachToTarget', { targetId: pageId, flatten: true });
+      const sessionId = attached.result?.sessionId;
+      print('attach', { pageId, sessionId, error: attached.error });
+      if (!sessionId) return;
+      roles.set(sessionId, 'page');
+      await send(
+        'Target.setAutoAttach',
+        { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+        sessionId
+      );
+      await send('Page.enable', {}, sessionId);
+      print('runtime-enable', (await send('Runtime.enable', {}, sessionId)).error ?? 'ok');
+      print('tree', frames(await send('Page.getFrameTree', {}, sessionId)));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await send('Target.detachFromTarget', { sessionId });
+    } finally {
+      socket.close();
+    }
+  }
+
+  async function nodeCtx(seven, tag, pageId) {
+    const result = await seven
+      .evaluate(
+        async ([pageId, ms]) => {
+          const [browser] = globalThis
+            .sliccLinkedBrowsers()
+            .filter((linked) => linked.seven && linked.local);
+          const connection = await browser.open();
+          const t0 = Date.now();
+          const log = [];
+          const roles = new Map();
+          const waiting = new Map();
+          let next = 0;
+          const send = (method, params = {}, sessionId) =>
+            new Promise((resolve) => {
+              next += 1;
+              const id = next;
+              const sent = Date.now();
+              const timer = setTimeout(() => {
+                waiting.delete(id);
+                log.push({ t: Date.now() - t0, reply: method, sessionId, timeout: true });
+                resolve({ error: { message: 'no answer in 12 s' } });
+              }, 12000);
+              waiting.set(id, (message) => {
+                clearTimeout(timer);
+                log.push({
+                  t: Date.now() - t0,
+                  reply: method,
+                  session: roles.get(sessionId) ?? 'browser',
+                  sessionId,
+                  ms: Date.now() - sent,
+                  error: message.error,
+                  keys: Object.keys(message.result ?? {}),
+                  tree:
+                    method === 'Page.getFrameTree'
+                      ? JSON.stringify(message.result ?? null).slice(0, 600)
+                      : undefined,
+                });
+                resolve(message);
+              });
+              connection.send(
+                JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
+              );
+            });
+          connection.onmessage = (text) => {
+            const message = JSON.parse(text);
+            if (message.id !== undefined) {
+              const done = waiting.get(message.id);
+              waiting.delete(message.id);
+              return done?.(message);
+            }
+            const { method, params = {}, sessionId } = message;
+            const role = roles.get(sessionId) ?? 'browser';
+            if (method === 'Target.attachedToTarget') {
+              roles.set(params.sessionId, `child ${params.targetInfo?.type}`);
+              log.push({
+                t: Date.now() - t0,
+                event: method,
+                on: role,
+                session: params.sessionId,
+                type: params.targetInfo?.type,
+                targetId: params.targetInfo?.targetId,
+                url: params.targetInfo?.url,
+                parentId: params.targetInfo?.parentId,
+              });
+              if (sessionId) {
+                void send('Runtime.enable', {}, params.sessionId);
+                void send('Page.enable', {}, params.sessionId);
+              }
+              return;
+            }
+            if (
+              method?.startsWith('Runtime.executionContext') ||
+              /^Page\.frame(?:Attached|Navigated|Detached)$/.test(method ?? '') ||
+              method === 'Target.detachedFromTarget' ||
+              method === 'Target.targetDestroyed'
+            )
+              log.push({
+                t: Date.now() - t0,
+                event: method,
+                session: role,
+                id: params.context?.id ?? params.executionContextId,
+                origin: params.context?.origin,
+                name: params.context?.name,
+                uniqueId: params.context?.uniqueId ?? params.executionContextUniqueId,
+                auxData: params.context?.auxData,
+                frameId: params.frameId ?? params.frame?.id,
+                parentFrameId: params.parentFrameId ?? params.frame?.parentId,
+                url: params.frame?.url,
+                reason: params.reason,
+                detached: method === 'Target.detachedFromTarget' ? params.sessionId : undefined,
+              });
+          };
+          const attached = await send('Target.attachToTarget', { targetId: pageId, flatten: true });
+          const sessionId = attached.result?.sessionId;
+          if (sessionId) {
+            roles.set(sessionId, 'page (own tap session)');
+            await send(
+              'Target.setAutoAttach',
+              { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+              sessionId
+            );
+            await send('Page.enable', {}, sessionId);
+            await send('Runtime.enable', {}, sessionId);
+            await send('Page.getFrameTree', {}, sessionId);
+            await new Promise((resolve) => setTimeout(resolve, ms));
+            await send('Target.detachFromTarget', { sessionId });
+          }
+          connection.close();
+          return log;
+        },
+        [pageId, 3000]
+      )
+      .catch((error) => [{ error: error.message }]);
+    for (const entry of result)
+      process.stdout.write(`DIAG-NODE-CTX ${tag} ${entry.t ?? ''} ${JSON.stringify(entry)}\n`);
+  }
+
+  async function clientsSee(base, origin, mark, seven) {
     const out = {};
     try {
       const playwright = await step('playwright', `connect beside ${mark}`, () =>
@@ -569,12 +879,48 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     } catch (error) {
       out.playwright = `error: ${error.message.slice(0, 200)}`;
     }
+    const pageIds = seven ? await framedPages().catch(() => []) : [];
+    const ctxTag = `${label} ${mark}`.replace(/\s+/g, '_');
+    const plainRow = Boolean(seven) && mark === 'DIAG-PLAIN-FRAMED';
+    const ids = seven ? await related(pageIds).catch(() => pageIds) : [];
+    if (seven) process.stdout.write(`DIAG-IDS ${ctxTag} ${JSON.stringify(ids)}\n`);
+    if (plainRow) {
+      nodeStderr(`${ctxTag}_BEFORE`, 0, ids);
+      for (const id of pageIds)
+        await chromeCtx(ctxTag, id).catch((error) =>
+          process.stdout.write(`DIAG-CHROME-CTX ${ctxTag} error ${error.message}\n`)
+        );
+    }
     const { body } = await httpJson(`${base}/json/version`);
+    const diag = seven ? await diagBegin(seven, `${label} ${mark}`, pageIds) : null;
     const recorded = await recordedTransport(body.webSocketDebuggerUrl);
-    try {
-      const driven = await step('puppeteer', `connect beside ${mark}`, () =>
-        puppeteer.connect({ transport: recorded.transport, protocolTimeout: STEP_MS })
+    const diagStart = diag?.started ?? Date.now();
+    const report = async () => {
+      if (!diag) return;
+      await diag.end();
+      nodeStderr(diag.tag, diag.started, ids);
+      if (plainRow) {
+        const before = Date.now();
+        for (const id of pageIds) await nodeCtx(seven, ctxTag, id);
+        nodeStderr(`${ctxTag}_NODECTX`, before, ids);
+      }
+      for (const item of recorded.diag)
+        process.stdout.write(
+          `DIAG-PPTR ${diag.tag} ${item.at - diagStart} ${item.waited === undefined ? '' : `waited=${item.waited} `}${item.line}\n`
+        );
+      process.stdout.write(
+        `DIAG-PPTR-UNANSWERED ${diag.tag} ${JSON.stringify([...recorded.sentAt].map(([id, at]) => [id, at - diagStart]))}\n`
       );
+    };
+    try {
+      let driven;
+      try {
+        driven = await step('puppeteer', `connect beside ${mark}`, () =>
+          puppeteer.connect({ transport: recorded.transport, protocolTimeout: STEP_MS })
+        );
+      } finally {
+        await report();
+      }
       try {
         out.puppeteerTargets = driven
           .targets()
@@ -627,12 +973,39 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       ...(await reach(base, targetId, SIGN_IN_MARK)),
     };
     process.stdout.write(`STOCK-SIGNIN ${label} ${JSON.stringify(seen)}\n`);
-    seen.clients = await clientsSee(base, rig.idpOrigin, SIGN_IN_MARK);
+    seen.clients = await clientsSee(base, rig.idpOrigin, SIGN_IN_MARK, page);
     process.stdout.write(`STOCK-SIGNIN-CLIENTS ${label} ${JSON.stringify(seen.clients)}\n`);
     unreachable(seen, 'the sign-in tab');
   }
 
   async function signIns(t, base, page) {
+    await t.test(
+      'DIAG a stock Puppeteer connect beside /framed-same, no sign-in tab',
+      async (t) => {
+        const plain = await unguarded(rig.browserUrl);
+        const framed = `${rig.ordinary}/framed-same`;
+        const created = [];
+        t.after(async () => {
+          for (const targetId of created)
+            await plain.send('Target.closeTarget', { targetId }).catch(() => {});
+          plain.close();
+        });
+        const { targetInfos } = await plain.send('Target.getTargets');
+        const present = targetInfos.some((info) => info.type === 'page' && info.url === framed);
+        process.stdout.write(`DIAG-PLAIN ${label} framed-same already open: ${present}\n`);
+        if (!present) {
+          const asked = hits.get('ordinary.test/inner') ?? 0;
+          const { targetId } = await plain.send('Target.createTarget', {
+            url: framed,
+            background: true,
+          });
+          created.push(targetId);
+          await until('the /inner frame', () => (hits.get('ordinary.test/inner') ?? 0) > asked);
+        }
+        const clients = await clientsSee(base, framed, 'DIAG-PLAIN-FRAMED', page);
+        process.stdout.write(`DIAG-PLAIN-CLIENTS ${label} ${JSON.stringify(clients)}\n`);
+      }
+    );
     await t.test('seven’s own sign-in tab (its client id and callback) stays out of reach', (t) =>
       signInTab(t, base, page, rig.signIn)
     );
@@ -682,7 +1055,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
         ...(await reach(base, info.targetId, HELD_MARK)),
       };
       process.stdout.write(`STOCK-HELD ${label} ${JSON.stringify(seen)}\n`);
-      seen.clients = await clientsSee(base, heldUrl, HELD_MARK);
+      seen.clients = await clientsSee(base, heldUrl, HELD_MARK, page);
       process.stdout.write(`STOCK-HELD-CLIENTS ${label} ${JSON.stringify(seen.clients)}\n`);
       unreachable(seen, 'the held sign-in tab');
       assert.equal(held, 'held', `seven held its sign-in popup: ${JSON.stringify(seen)}`);
