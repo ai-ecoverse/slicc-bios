@@ -14,10 +14,13 @@ import { devtools, launch } from './chrome.mjs';
 import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
-import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
+import { KNOWN, known as knownRow, LINK, listedWrong, stale } from './guard-known.mjs';
 
 const exposure = { listed: false, sample: null };
-const known = (row) => knownRow(row, exposure);
+const known = (row) => knownRow({ ...row, why: row.why?.replace(/ \[g:[^\]]*\]/g, '') }, exposure);
+const LISTED = [...Object.values(KNOWN), ...Object.values(LINK).map(({ ids }) => ids)];
+const listed = (row) => LISTED.some((ids) => ids.includes(row.id));
+const wires = new Map();
 
 import { linkNode } from './linked-node.mjs';
 
@@ -374,12 +377,41 @@ export async function guardHost(t, path) {
         return linked.open();
       },
     };
+    const wires = new Map();
+    const tally = (row, side, message) => {
+      const wire = wires.get(row);
+      if (!wire) return;
+      const seen = wire[side];
+      const count = (key) => {
+        seen[key] = (seen[key] ?? 0) + 1;
+      };
+      if (message.method === 'Network.responseReceivedExtraInfo') {
+        const headers = message.params?.headers ?? {};
+        const where = headers.location ?? headers.Location;
+        const kind =
+          where === undefined
+            ? 'none'
+            : URL.canParse(where) && new URL(where).origin === where
+              ? 'origin'
+              : 'full';
+        count(`extra ${message.params?.statusCode} ${kind}`);
+      }
+      if (['Target.detachedFromTarget', 'Inspector.detached'].includes(message.method))
+        count(message.method);
+      if (side === 'raw' && message.id !== undefined) {
+        const method = wire.asked.get(message.id);
+        wire.asked.delete(message.id);
+        if (message.error && wire.errors.length < 40)
+          wire.errors.push(`${method}: ${String(message.error.message).slice(0, 300)}`);
+      }
+    };
     const lagged = (connection, lag, paintDelay, row) => {
       const send = connection.send.bind(connection);
       const shots = new Set();
       const relay = { onmessage: null, onclose: null, close: () => connection.close() };
       connection.onmessage = (text) => {
         const message = JSON.parse(text);
+        tally(row, 'raw', message);
         if (message.method === 'Target.attachedToTarget')
           void window.guardTransport(
             JSON.stringify([
@@ -400,6 +432,8 @@ export async function guardHost(t, path) {
       connection.onclose = (why) => relay.onclose?.(why);
       relay.send = (text) => {
         const message = JSON.parse(text);
+        if (message.id !== undefined && message.method)
+          wires.get(row)?.asked.set(message.id, message.method);
         if (message.method === 'Runtime.runIfWaitingForDebugger')
           void window.guardTransport(
             JSON.stringify([
@@ -543,14 +577,21 @@ export async function guardHost(t, path) {
     };
     const guards = new Map();
     window.guards = {
-      async open(row, own, path, lag, paintDelay, capture) {
+      async open(row, own, path, lag, paintDelay, capture, bare) {
+        wires.set(row, { raw: {}, out: {}, asked: new Map(), errors: [], refusals: [] });
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
-        const connection = guardProtected(gated, [location.origin, own].flat());
+        const connection = bare ? gated : guardProtected(gated, [location.origin, own].flat());
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
           void window.guardRaw(JSON.stringify([row, text]));
           const message = JSON.parse(text);
+          tally(row, 'out', message);
+          const wire = wires.get(row);
+          if (message.error && wire && wire.refusals.length < 40)
+            wire.refusals.push(
+              `${pending.get(message.id)?.command?.method}: ${String(message.error.message).slice(0, 600)}`
+            );
           if (message.id === undefined) {
             return void window.guardEvent(JSON.stringify([row, text]));
           }
@@ -604,9 +645,24 @@ export async function guardHost(t, path) {
           guard.connection.send(JSON.stringify(command));
         });
       },
+      wire(row) {
+        const wire = wires.get(row);
+        if (!wire) return null;
+        const unanswered = {};
+        for (const method of wire.asked.values())
+          unanswered[method] = (unanswered[method] ?? 0) + 1;
+        return {
+          raw: wire.raw,
+          out: wire.out,
+          errors: wire.errors,
+          refusals: wire.refusals,
+          unanswered,
+        };
+      },
       close(row) {
         guards.get(row)?.connection.close();
         guards.delete(row);
+        wires.delete(row);
       },
     };
   };
@@ -624,7 +680,7 @@ export async function guardHost(t, path) {
   const unguarded = await unguardedClient(tabs.browser);
   t.after(() => unguarded.close());
   const clientFactory =
-    (path) =>
+    (path, bare = false) =>
     async ({ detachDelay, paintDelay, own = targets.own, vector, target, variant }) => {
       const capture = vector?.id === 'C8.newtab';
       count += 1;
@@ -635,12 +691,15 @@ export async function guardHost(t, path) {
       rows.set(row, { push, messages, transportEvents });
       await ensure();
       await seven.evaluate(
-        ([row, own, path, lag, paintDelay, capture]) =>
-          window.guards.open(row, own, path, lag, paintDelay, capture),
-        [row, own, path, detachDelay, paintDelay, capture]
+        ([row, own, path, lag, paintDelay, capture, bare]) =>
+          window.guards.open(row, own, path, lag, paintDelay, capture, bare),
+        [row, own, path, detachDelay, paintDelay, capture, bare]
       );
       const close = async () => {
         rows.delete(row);
+        const wire = await seven.evaluate((row) => window.guards.wire(row), row).catch(() => null);
+        const key = `${bare ? 'off' : 'on'} ${vector?.id}@${target}/${variant}`;
+        if (wire) wires.set(key, [...(wires.get(key) ?? []), wire]);
         await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
       };
       let ledger = [];
@@ -764,6 +823,7 @@ export function shared(path, { variants, except = [], group } = {}) {
   };
   const where = group ? `, ${group === 'rest' ? 'the other targets' : `target ${group}`}` : '';
   const results = [];
+  const bare = [];
   const subset = (target) => ({
     ...set,
     vectors: set.vectors
@@ -882,6 +942,25 @@ export function shared(path, { variants, except = [], group } = {}) {
             );
         }
       }
+      if (process.env.GUARD_BARE)
+        for (const target of chosen.targets) {
+          const vectors = subset(target).vectors.filter(listed);
+          if (!vectors.length) continue;
+          trace('bare', path, target, variant);
+          const execution = await run(
+            { ...set, vectors },
+            {
+              clientFactory: clientFactory(path, true),
+              rowTimeoutMs: ROW_MS,
+              settleScale: SCALE[variant] ?? 1,
+              targets: group === 'idp' ? secureTargets : targets,
+              capabilities: PATHS[path],
+              variant,
+              fixture: group === 'idp' ? secure : fixture,
+            }
+          );
+          bare.push(...execution.results);
+        }
       const failed = results.filter((row) => row.variant === variant && failing(row));
       for (const row of failed)
         process.stdout.write(
@@ -940,6 +1019,21 @@ export function shared(path, { variants, except = [], group } = {}) {
         (row) =>
           `GUARD-KNOWN ${known(row)} ${row.id}@${row.target}/${row.variant}: ${row.live === 'fail' ? 'not live' : row.why}`
       ),
+      ...results.filter(listed).map((row) => {
+        const key = `${row.id}@${row.target}/${row.variant}`;
+        const off = bare.find((other) => `${other.id}@${other.target}/${other.variant}` === key);
+        const leg = (item, side) => ({
+          control: item.control,
+          guarded: item.guarded,
+          live: item.live,
+          why: item.why,
+          notes: item.notes,
+          ran: item.ran,
+          observed: item.observations?.guarded,
+          wire: wires.get(`${side} ${key}`),
+        });
+        return `GUARD-WHY ${key} ${path}: ${JSON.stringify({ ...leg(row, 'on'), off: off && leg(off, 'off') })}`;
+      }),
       ...results
         .filter((row) => [row.control, row.guarded, row.live].includes('incomplete'))
         .map(
