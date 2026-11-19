@@ -39,6 +39,8 @@ const SEVEN_CLIENT = 'experience-catalyst-prod';
 const SIGN_IN_MARK = 'STOCK-SIGN-IN-BODY';
 const HELD_MARK = 'STOCK-HELD-BODY';
 const STEP_MS = 60000;
+const AGAIN_MS = 5000;
+const UTILITY = '__puppeteer_utility_world__';
 const HELD_MS = 5000;
 const PIN = JSON.parse(
   readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')
@@ -481,6 +483,121 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     }
   }
 
+  async function frameWorlds(targetId) {
+    const socket = new WebSocket(rig.browserUrl, { maxPayload: 256 * 1024 * 1024 });
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+    const waiting = new Map();
+    const contexts = [];
+    let next = 0;
+    socket.on('message', (data) => {
+      const message = JSON.parse(data.toString());
+      if (message.method === 'Runtime.executionContextCreated')
+        contexts.push(message.params.context);
+      const done = waiting.get(message.id);
+      if (!done) return;
+      waiting.delete(message.id);
+      done(message);
+    });
+    const send = (method, params = {}, sessionId) =>
+      new Promise((resolve, reject) => {
+        next += 1;
+        const id = next;
+        const timer = setTimeout(() => {
+          waiting.delete(id);
+          reject(new Error(`${method}: no answer in 10 s`));
+        }, 10000);
+        waiting.set(id, (message) => {
+          clearTimeout(timer);
+          if (message.error) reject(new Error(`${method}: ${message.error.message}`));
+          else resolve(message.result);
+        });
+        socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      });
+    try {
+      const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
+      const { frameTree } = await send('Page.getFrameTree', {}, sessionId);
+      await send('Runtime.enable', {}, sessionId);
+      await send('Target.detachFromTarget', { sessionId });
+      const frames = [];
+      const walk = (node) => {
+        frames.push(node.frame);
+        for (const child of node.childFrames ?? []) walk(child);
+      };
+      walk(frameTree);
+      return frames.map((frame) => ({
+        url: frame.url,
+        worlds: contexts
+          .filter((context) => context.auxData?.frameId === frame.id)
+          .map((context) => context.name || context.auxData?.type),
+      }));
+    } finally {
+      socket.close();
+    }
+  }
+
+  async function puppeteerAgain(t, base) {
+    const run = (name, work) => step('puppeteer', name, work);
+    const url = `${rig.ordinary}/framed-same?left=${Math.random().toString(36).slice(2)}`;
+    const plain = await unguarded(rig.browserUrl);
+    t.after(async () => {
+      const { targetInfos } = await plain
+        .send('Target.getTargets')
+        .catch(() => ({ targetInfos: [] }));
+      for (const info of targetInfos.filter((one) => one.url === url))
+        await plain.send('Target.closeTarget', { targetId: info.targetId }).catch(() => {});
+      plain.close();
+    });
+    const first = await run('connect, first of two', () =>
+      puppeteer.connect({ browserURL: base, protocolTimeout: STEP_MS })
+    );
+    try {
+      const page = await run('newPage, first of two', () => first.newPage());
+      await run('goto a same-origin iframe page, first of two', () => page.goto(url));
+      await run('inner frame, first of two', async (signal) => {
+        while (!signal.aborted) {
+          if (page.frames().some((item) => item.url().startsWith(`${rig.ordinary}/inner`)))
+            return true;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      });
+    } finally {
+      await bounded(first.disconnect(), 5000, 'disconnect');
+    }
+    const left = await until('the page the first connection left open', async () => {
+      const { targetInfos } = await plain.send('Target.getTargets');
+      return targetInfos.find((one) => one.type === 'page' && one.url === url);
+    });
+    const worlds = await frameWorlds(left.targetId);
+    assert.deepEqual(
+      worlds.map((frame) => frame.url.replace(/\?.*$/, '')),
+      [`${rig.ordinary}/framed-same`, `${rig.ordinary}/inner`],
+      `the left page holds its same-origin iframe: ${JSON.stringify(worlds)}`
+    );
+    assert.ok(
+      worlds.some((frame) => frame.worlds.some((name) => name.startsWith(UTILITY))),
+      `the left page carries Puppeteer's utility world: ${JSON.stringify(worlds)}`
+    );
+    const started = Date.now();
+    const second = await run('connect, second of two, beside the page the first left open', () =>
+      puppeteer.connect({ browserURL: base, protocolTimeout: STEP_MS })
+    );
+    const took = Date.now() - started;
+    try {
+      process.stdout.write(`STOCK-AGAIN ${label} ${JSON.stringify({ took, worlds })}\n`);
+      assert.ok(took < AGAIN_MS, `the second connect took ${took} ms, want under ${AGAIN_MS} ms`);
+      const listed = await run('pages(), second of two', () => second.pages());
+      assert.ok(
+        listed.some((page) => page.url() === url),
+        `pages() lists the page the first connection left open: ${JSON.stringify(listed.map((page) => page.url()))}`
+      );
+    } finally {
+      await bounded(second.disconnect(), 5000, 'disconnect');
+    }
+  }
+
   async function sliccLayer(page, targetId) {
     if (route !== 'link') return 'no link layer on this route';
     return page.evaluate(async (targetId) => {
@@ -799,6 +916,10 @@ export function stockChain(route, { chain = 'tray' } = {}) {
 
     await t.test('Playwright', () => playwrightFlow(base));
     await t.test('Puppeteer', () => puppeteerFlow(base));
+    await t.test(
+      'Puppeteer connects again beside an ordinary page with a same-origin iframe that its first connection left open',
+      (t) => puppeteerAgain(t, base)
+    );
     await signIns(t, base, page);
 
     await t.test('the switch closes live Playwright and Puppeteer sessions', async () => {
@@ -853,6 +974,10 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     await routeHint(base);
     await t.test('Playwright', () => playwrightFlow(base));
     await t.test('Puppeteer', () => puppeteerFlow(base));
+    await t.test(
+      'Puppeteer connects again beside an ordinary page with a same-origin iframe that its first connection left open',
+      (t) => puppeteerAgain(t, base)
+    );
     await signIns(t, base, page);
     await t.test('the chip shows while a live session is connected', async () => {
       const sessions = await live(base);
