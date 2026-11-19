@@ -6,6 +6,7 @@ export const GROUPS = {
   vault: ['vault'],
   'vault-x': ['vault-x'],
   apex: ['apex'],
+  idp: ['idp', 'idp-stg'],
 };
 const named = new Set(Object.values(GROUPS).flat());
 
