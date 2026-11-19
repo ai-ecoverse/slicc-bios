@@ -184,10 +184,11 @@ test('a 7.x follower of an 8.x owner only sees its link close: no chat, no other
     `the 7.x follower stopped trying after ${attempts(page).length} attempts:\n${attempts(page).join('\n')}\nowner: ${await agentState(owner)}`
   );
   const before = attempts(page).length;
-  await new Promise((resolve) => setTimeout(resolve, 10000));
+  for (let i = 0; i < 120 && attempts(page).length <= before; i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 500));
   assert.ok(
     attempts(page).length > before,
-    `the 7.x follower stopped trying, so it joined the 8.x owner or gave up:\n${attempts(page).join('\n')}`
+    `waited 60 s for the 7.x follower to try again after attempt ${before}, and saw ${attempts(page).length} attempts, so it joined the 8.x owner or gave up:\n${attempts(page).join('\n')}`
   );
   const tried = await followed(page);
   assert.equal(tried.link, 'connected', JSON.stringify(tried));

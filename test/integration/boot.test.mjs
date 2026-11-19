@@ -61,7 +61,12 @@ test('reports each step and the download as it happens', async (t) => {
   );
   const [installed] = bios.texts('seed');
   assert.ok(installed.startsWith(`os/{${seed.join(',')}} `), installed);
-  assert.match(installed, / [\d.]+[kM]B$/);
+  const [, amount, unit] = / (\d+(?:\.\d)?)(B|kB|MB|GB)$/.exec(installed) ?? [];
+  assert.ok(unit, `the seed step names no size: ${installed}`);
+  assert.ok(
+    Number(amount) >= 1 && Number(amount) <= 1000,
+    `the seed step's ${amount}${unit} isn't in the unit bios.js picks for that size: ${installed}`
+  );
   const origin = await page.evaluate(() => new URL('/', location).href);
   assert.deepEqual(bios.texts('intercept'), [origin]);
   assert.deepEqual(bios.texts('navigate'), ['/os/']);

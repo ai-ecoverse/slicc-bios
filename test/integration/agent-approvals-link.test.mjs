@@ -368,3 +368,96 @@ test('closing an idle approvals watch returns its iterator and closes the agent 
   assert.deepEqual(log, ['return', 'close']);
   link.close();
 });
+
+test('closing one approvals watch leaves a second watch on the same link delivering its next snapshot, and closing the second closes it once', async () => {
+  const opened = [];
+  const control = async () => {
+    const log = [];
+    const closed = Promise.withResolvers();
+    let latest;
+    let wake;
+    let ended = false;
+    const events = {
+      [Symbol.asyncIterator]: () => ({
+        async next() {
+          while (latest === undefined && !ended) await new Promise((resolve) => (wake = resolve));
+          const value = latest;
+          latest = undefined;
+          return value === undefined ? { done: true, value: undefined } : { done: false, value };
+        },
+        async return() {
+          log.push('return');
+          ended = true;
+          wake?.();
+          return { done: true, value: undefined };
+        },
+      }),
+    };
+    const push = (approvals) => {
+      latest = approvals;
+      wake?.();
+    };
+    opened.push({ log, closed: closed.promise, push });
+    return {
+      approvals: async () => ({ approvals: [], events }),
+      close() {
+        log.push('close');
+        closed.resolve();
+      },
+    };
+  };
+  const within = async (promise, what, seen) => {
+    let timer;
+    const late = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`waited 2000 ms for ${what}; saw ${seen()}`)),
+        2000
+      );
+    });
+    try {
+      return await Promise.race([promise, late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const remote = createRemote({ control, ownKernel: notOwn });
+  const link = await connect({ remote, id: OTHER });
+  const watch = () => link.session.open({ kind: 'agent', op: 'approvals', watch: true });
+  const first = await watch();
+  const second = await watch();
+  assert.equal(opened.length, 2);
+  const [firstAgent, secondAgent] = opened;
+  first.close();
+  await within(firstAgent.closed, "the first watch's agent connection to close", () =>
+    JSON.stringify(firstAgent.log)
+  );
+  assert.deepEqual(firstAgent.log, ['return', 'close']);
+  assert.deepEqual(secondAgent.log, []);
+  const item = { id: 'a1', kind: 'sudo' };
+  secondAgent.push([item]);
+  let text = '';
+  const reading = (async () => {
+    while (!text.includes('\n')) {
+      const chunk = await second.read();
+      if (chunk === null)
+        throw new Error(`the second watch ended before its next snapshot: ${text}`);
+      text += new TextDecoder().decode(chunk);
+    }
+    return JSON.parse(text.slice(0, text.indexOf('\n')));
+  })();
+  assert.deepEqual(
+    await within(reading, 'the second watch to deliver its next snapshot', () =>
+      JSON.stringify(text)
+    ),
+    { t: 'approvals', approvals: [item] }
+  );
+  assert.deepEqual(secondAgent.log, []);
+  second.close();
+  await within(secondAgent.closed, "the second watch's agent connection to close", () =>
+    JSON.stringify(secondAgent.log)
+  );
+  assert.deepEqual(secondAgent.log, ['return', 'close']);
+  assert.deepEqual(firstAgent.log, ['return', 'close']);
+  assert.equal(opened.length, 2);
+  link.close();
+});
