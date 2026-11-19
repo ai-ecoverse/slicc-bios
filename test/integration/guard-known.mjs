@@ -24,14 +24,6 @@ export const LINK = {
     ids: ['C2.redirect-secret', 'C2.redirect-secret-mix'],
     allowed: new Set(['extraLocation']),
   },
-  '#1663 over-blocks an ordinary iframe under a protected parent on link (#1642 follow-up, #1667)':
-    {
-      ids: ['C3.ordinary-parent-iframes.page'],
-      exact: [
-        'contextEvaluate: got false, want true',
-        /^incomplete: guarded protectedParentIframes: Runtime\.evaluate unanswered \(\d+: Runtime\.evaluate got no answer through the guard\)$/,
-      ],
-    },
 };
 
 export function listedWrong(text) {
