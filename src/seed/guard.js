@@ -3035,6 +3035,68 @@ class Guard {
     return typeof url !== 'string' || url === '' || inherits(url) || !URL.canParse(url);
   }
 
+  errorPageUrl(url) {
+    return typeof url === 'string' && url.startsWith('chrome-error:');
+  }
+
+  errorFailedKnown(targetId) {
+    const remembered = this.errored.get(targetId);
+    if (typeof remembered === 'string' && remembered) return remembered;
+    const root = this.frameRoots.get(targetId);
+    const marked = root && this.errorUrls.get(root);
+    if (typeof marked === 'string' && marked) return marked;
+    return undefined;
+  }
+
+  errorOrdinaryFailed(failed) {
+    return typeof failed === 'string' && URL.canParse(failed) && !this.is.url(failed);
+  }
+
+  rememberFailedUrl(targetId, failed, frameId) {
+    if (typeof failed !== 'string' || !failed || !targetId) return;
+    this.errored.set(targetId, failed);
+    const root = frameId ?? this.frameRoots.get(targetId);
+    if (!root) return;
+    this.frameRoots.set(targetId, root);
+    this.errorUrls.set(root, failed);
+  }
+
+  async errorFailedUrl(targetId) {
+    const known = this.errorFailedKnown(targetId);
+    if (known) return known;
+    const session = this.navs.get(targetId)?.session;
+    if (!session) return undefined;
+    const tree = await this.answered(this.call('Page.getFrameTree', {}, session));
+    const frame = tree?.result?.frameTree?.frame;
+    if (typeof frame?.unreachableUrl === 'string' && frame.unreachableUrl) {
+      this.rememberFailedUrl(targetId, frame.unreachableUrl, frame.id);
+      return frame.unreachableUrl;
+    }
+    const history = await this.answered(this.call('Page.getNavigationHistory', {}, session));
+    if (!history || history.error) return undefined;
+    const { entries = [], currentIndex = 0 } = history.result ?? {};
+    const ordered = [entries[currentIndex], ...entries].filter(Boolean);
+    for (const entry of ordered) {
+      for (const field of [entry.userTypedURL, entry.url]) {
+        if (
+          typeof field === 'string' &&
+          field &&
+          !this.errorPageUrl(field) &&
+          URL.canParse(field)
+        ) {
+          this.rememberFailedUrl(targetId, field, frame?.id);
+          return field;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  async errorUnproven(info, targetId = info?.targetId) {
+    if (!this.errorPageUrl(info?.url)) return false;
+    return !this.errorOrdinaryFailed(await this.errorFailedUrl(targetId));
+  }
+
   createdPending(info, targetId = info?.targetId) {
     const nav = this.navs.get(targetId);
     if (!nav?.created || nav.failed || inherits(nav.created) || this.is.url(nav.created))
@@ -3788,7 +3850,8 @@ class Guard {
       info?.targetId !== targetId ||
       typeof info.type !== 'string' ||
       !URL.canParse(info.url) ||
-      this.createdPending(info, targetId)
+      this.createdPending(info, targetId) ||
+      (await this.errorUnproven(info, targetId))
     )
       return this.uncertainProof(targetId);
     this.learn(info);
@@ -3847,7 +3910,13 @@ class Guard {
     for (let waited = 0; waited < BLANK_MS; waited += POLL_MS) {
       const info = (await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo;
       if (!info) return null;
-      if (info.url) return info;
+      if (info.url) {
+        if (await this.errorUnproven(info, targetId)) {
+          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+          continue;
+        }
+        return info;
+      }
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
     return null;
@@ -3868,13 +3937,19 @@ class Guard {
     this.learn(info);
     if (await this.watch(sessionId, info.targetId, parent)) {
       const guarded = await this.target(info.targetId);
-      if (guarded || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
+      if (guarded || nav?.taken || nav?.failed || (await this.errorUnproven(info, info.targetId)))
+        return this.cut(sessionId, parent);
       if (nav) nav.held = false;
       this.shownTarget(
         { ...message, params: { ...params, waitingForDebugger: false } },
         info,
         message
       );
+    } else {
+      void this.reprove({
+        ...message,
+        params: { ...params, targetInfo: { ...info, attached: true }, waitingForDebugger: false },
+      });
     }
   }
 
@@ -4449,6 +4524,7 @@ class Guard {
     const targetId = info?.targetId;
     const guarded = await this.answered(this.current(targetId));
     if (this.hints.get(targetId) !== message) return;
+    const unproven = await this.errorUnproven(info, targetId);
     if (guarded === false && !this.is.url(info?.url)) {
       let pending = false;
       for (const [id, ticket] of this.quarantined) {
@@ -4456,7 +4532,7 @@ class Guard {
         pending = true;
         this.startHint(id, ticket);
       }
-      if (!pending) this.shownTarget(message, info);
+      if (!pending && !unproven) this.shownTarget(message, info);
       return;
     }
     for (const [id, entry] of this.sessions) {
@@ -4474,7 +4550,7 @@ class Guard {
         .map((ticket) => ticket.checking)
     );
     const proof = guarded || this.is.url(info?.url) ? await this.stranded(targetId) : null;
-    if (this.hints.get(targetId) === message && this.fresh(proof))
+    if (this.hints.get(targetId) === message && this.fresh(proof) && !unproven)
       this.shownTarget(message, info, message, proof);
   }
 
@@ -4537,6 +4613,10 @@ class Guard {
 
   async showAttachment(message, info) {
     this.touch(info.targetId);
+    if (await this.errorUnproven(info, info.targetId)) {
+      void this.reprove(message);
+      return;
+    }
     const proof = this.is.url(info.url) ? await this.stranded(info.targetId) : null;
     this.shownTarget(message, info, message, proof);
   }
@@ -4783,12 +4863,13 @@ class Guard {
   }
 
   protectedFrame(frame) {
+    const failed = frame.unreachableUrl ?? this.errorUrls.get(frame.id);
     return (
       this.is.url(frame.url) ||
       this.is.url(frame.securityOrigin) ||
       (typeof frame.url === 'string' &&
         frame.url.startsWith('chrome-error:') &&
-        this.unsafeUrl(frame.unreachableUrl))
+        this.unsafeUrl(failed))
     );
   }
 
@@ -5650,8 +5731,11 @@ class Guard {
     const raw = info ?? {};
     const originOnly = message.method === 'Target.attachedToTarget' && this.fresh(proof);
     const shown = this.masked(raw, originOnly);
-    const names = (value) =>
-      typeof value === 'string' && value.includes('://') && this.is.url(value);
+    const names = (value) => {
+      if (typeof value !== 'string' || !value) return false;
+      if (value.includes('://')) return this.is.url(value);
+      return this.is.url(`https://${value}/`) || this.is.url(`http://${value}/`);
+    };
     const origin = originOnly && this.is.url(raw.url) && shown.url === shown.title;
     if ([raw.url, raw.title, shown.url, shown.title].some(names) && !origin) return;
     this.deliver(
@@ -5681,16 +5765,12 @@ class Guard {
       const { origin } = new URL(info.url);
       return { ...info, url: origin, title: origin };
     }
-    const failed = this.errored.get(info.targetId);
+    if (this.errorPageUrl(info.url)) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
+    const failed = this.errored.get(info.targetId) ?? this.errorFailedKnown(info.targetId);
     const entries = [...this.sessions.values()].filter((entry) => entry.targetId === info.targetId);
     const error =
       this.errorFrames.has(this.frameRoots.get(info.targetId)) ||
       entries.some((entry) => this.errorFrames.has(entry.frameId));
-    if (
-      info.url?.startsWith('chrome-error:') &&
-      !entries.some((entry) => this.frames.get(entry.frameId)?.startsWith('chrome-error:'))
-    )
-      info = { ...info, title: '' };
     if (error) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
     if (info.url === undefined || failed === undefined) return info;
     if (![failed, '', ERROR_PAGE].includes(bare(info.url))) return info;

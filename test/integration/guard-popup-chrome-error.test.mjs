@@ -309,6 +309,67 @@ for (const [hostName, own] of hosts) {
   }
 }
 
+for (const [hostName, own] of hosts) {
+  const failed = `${own}/doc?title-leak`;
+  const hostOnly = new URL(own).hostname;
+  for (const [routeName, route] of routes) {
+    for (const title of [failed, hostOnly, own]) {
+      test(`chrome-error discovery title ${JSON.stringify(title)} never names ${hostName} (${routeName})`, {
+        timeout: 5000,
+      }, async (t) => {
+        const wire = protocol(t, own, route);
+        const entry = wire.target(`title-${hostName}-${routeName}`);
+        entry.info.url = errorPage;
+        entry.info.title = title;
+        entry.tree.frame = blankFrame(entry.info.targetId);
+        const from = wire.delivered.length;
+        for (const method of ['Target.targetCreated', 'Target.targetInfoChanged']) {
+          wire.emit({
+            method,
+            params: {
+              targetInfo: {
+                targetId: entry.info.targetId,
+                type: 'page',
+                url: errorPage,
+                title,
+              },
+            },
+          });
+        }
+        await wire.drain(10);
+        const listed = await wire.send('Target.getTargets');
+        const info = await wire.send('Target.getTargetInfo', {
+          targetId: entry.info.targetId,
+        });
+        const events = wire.delivered
+          .slice(from)
+          .filter((message) =>
+            ['Target.targetCreated', 'Target.targetInfoChanged'].includes(message.method)
+          );
+        for (const message of [
+          ...events,
+          { result: listed.result },
+          { result: { targetInfos: [info.result?.targetInfo] } },
+        ]) {
+          const text = JSON.stringify(message);
+          assert.equal(text.includes(hostOnly), false, text.slice(0, 400));
+          assert.equal(text.includes(new URL(own).host), false);
+          assert.equal(text.includes(failed), false);
+        }
+        for (const event of events) {
+          assert.equal(event.params.targetInfo.url, errorPage);
+          assert.equal(event.params.targetInfo.title, errorPage);
+        }
+        assert.equal(info.result.targetInfo.url, errorPage);
+        assert.equal(info.result.targetInfo.title, errorPage);
+        const row = listed.result.targetInfos.find((item) => item.targetId === entry.info.targetId);
+        assert.equal(row.url, errorPage);
+        assert.equal(row.title, errorPage);
+      });
+    }
+  }
+}
+
 for (const [routeName, route] of routes) {
   test(`ordinary unreachable chrome-error is released after proof (${routeName})`, {
     timeout: 5000,
