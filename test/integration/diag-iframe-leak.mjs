@@ -1,4 +1,4 @@
-export const DIAG_ROWS = new Set(['C3.tab-iframe-leak']);
+export const DIAG_ROWS = new Set(['C3.tab-iframe-leak', 'C3.tab-worker-leak']);
 
 export function installGuardTrace() {
   if (globalThis.sliccDiagAttach) return;
