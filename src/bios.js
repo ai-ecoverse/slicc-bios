@@ -239,6 +239,7 @@ await step('seed', async () => {
     'guard.js',
     'handoff.js',
     'held.js',
+    'hid.js',
     'index.html',
     'inventory.js',
     'jerk.js',

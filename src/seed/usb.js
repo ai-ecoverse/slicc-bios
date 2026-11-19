@@ -14,9 +14,9 @@ export function usbWhat(handle, info) {
   return `${handle} (${info.productName ? `${ids} ${info.productName}` : ids})`;
 }
 
-export function usbLive(usb, live) {
+export function deviceLive(source, live, { kind, label }) {
   const shown = new Map();
-  return usb.watch((event) => {
+  return source.watch((event) => {
     if (event.type !== 'open' && event.type !== 'close') return;
     shown.get(event.handle)?.();
     shown.delete(event.handle);
@@ -24,13 +24,15 @@ export function usbLive(usb, live) {
     shown.set(
       event.handle,
       live.add({
-        kind: 'usb',
-        label: USB_LABEL,
+        kind,
+        label,
         what: usbWhat(event.handle, event.info),
         asker: who(event.stamp),
         since: event.since,
-        action: { label: 'Close', run: () => usb.close(event.handle) },
+        action: { label: 'Close', run: () => source.close(event.handle) },
       })
     );
   });
 }
+
+export const usbLive = (usb, live) => deviceLive(usb, live, { kind: 'usb', label: USB_LABEL });

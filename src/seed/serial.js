@@ -1,3 +1,4 @@
+import { HID_SWITCH, hidLive } from './hid.js';
 import { plugged, programOf, requesterOf, who } from './requests.js';
 import { USB_SWITCH, usbLive } from './usb.js';
 
@@ -34,6 +35,7 @@ export function deviceClick(clicks, kind, what) {
 
 export const serialClick = (clicks) => deviceClick(clicks, 'serial.request', 'serial');
 export const usbClick = (clicks) => deviceClick(clicks, 'usb.request', 'usb');
+export const hidClick = (clicks) => deviceClick(clicks, 'hid.request', 'hid');
 
 export function serialLive(ports, live) {
   const shown = new Map();
@@ -61,14 +63,26 @@ export function serialLive(ports, live) {
 export function serialPorts({ create, switches, clicks, live }) {
   let toggle = null;
   let usb = null;
-  const devices = create({ enabled: () => toggle.on(), usbEnabled: () => usb.on() });
+  let hid = null;
+  const devices = create({
+    enabled: () => toggle.on(),
+    usbEnabled: () => usb.on(),
+    hidEnabled: () => hid.on(),
+  });
   toggle = switches.add({ ...SERIAL_SWITCH, off: () => devices.ports.closeAll() });
   usb = switches.add({ ...USB_SWITCH, off: () => devices.devices.usb.closeAll() });
+  hid = switches.add({ ...HID_SWITCH, off: () => devices.devices.hid.closeAll() });
   serialLive(devices.ports, live);
   usbLive(devices.devices.usb, live);
-  const serialGuard = serialClick(clicks);
-  const usbGuard = usbClick(clicks);
-  const guard = (request, prompt) => serialGuard(request, prompt) ?? usbGuard(request, prompt);
+  hidLive(devices.devices.hid, live);
+  const guards = [serialClick(clicks), usbClick(clicks), hidClick(clicks)];
+  const guard = (request, prompt) => {
+    for (const each of guards) {
+      const guarded = each(request, prompt);
+      if (guarded) return guarded;
+    }
+    return null;
+  };
   return {
     kinds: devices.kinds,
     handlers: plugged(devices, serialPrompts(devices), undefined, guard),
