@@ -12,6 +12,7 @@ import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'j
 import { MIN_EXTENSION_VERSION } from '../../src/seed/extension.js';
 import { boot } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
+import { DIAG_ROWS, installGuardTrace, takeGuardTrace } from './diag-iframe-leak.mjs';
 import { extensionFrames } from './fake-extension-frames.mjs';
 import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
@@ -613,6 +614,9 @@ export async function guardHost(t, path, { frames = true } = {}) {
             { route, frames: typeof frames, version: globalThis.sliccExtension?.version ?? null },
           ])
         );
+        globalThis.sliccDiagGuardHook = globalThis.sliccDiagRows?.has(row)
+          ? (guard) => globalThis.sliccDiagAttach(guard, row)
+          : undefined;
         const connection = guardProtected(
           gated,
           [location.origin, own].flat(),
@@ -620,6 +624,7 @@ export async function guardHost(t, path, { frames = true } = {}) {
           route,
           frames
         );
+        globalThis.sliccDiagGuardHook = undefined;
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
@@ -692,6 +697,7 @@ export async function guardHost(t, path, { frames = true } = {}) {
       attach: attachRecorder.toString(),
       browser,
     });
+    await seven.evaluate(installGuardTrace);
   };
   await ensure();
   let count = 0;
@@ -708,6 +714,8 @@ export async function guardHost(t, path, { frames = true } = {}) {
       const transportEvents = [];
       rows.set(row, { push, messages, transportEvents });
       await ensure();
+      const diag = DIAG_ROWS.has(vector?.id);
+      if (diag) await seven.evaluate((row) => globalThis.sliccDiagRows.add(row), row);
       await seven.evaluate(
         ([row, own, path, lag, paintDelay, capture]) =>
           window.guards.open(row, own, path, lag, paintDelay, capture),
@@ -715,6 +723,22 @@ export async function guardHost(t, path, { frames = true } = {}) {
       );
       const close = async () => {
         rows.delete(row);
+        if (diag) {
+          const taken = await seven.evaluate(takeGuardTrace, row).catch((error) => ({
+            error: error.message,
+          }));
+          const head = `${path} ${vector.id} ${target} ${variant} row${row}`;
+          process.stdout.write(
+            `GUARD-DIAG-HEAD ${head} ${JSON.stringify({ route: taken?.route, started: taken?.started, dropped: taken?.dropped, records: taken?.log?.length, error: taken?.error })}\n`
+          );
+          for (const [index, record] of (taken?.log ?? []).entries())
+            process.stdout.write(
+              `GUARD-DIAG ${head} ${index} ${JSON.stringify(record)
+                .replace(/\b([0-9A-F]{8})[0-9A-F]{24}\b/g, '$1')
+                .slice(0, 14000)}\n`
+            );
+          process.stdout.write(`GUARD-DIAG-STATE ${head} ${taken?.final}\n`);
+        }
         await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
       };
       let ledger = [];
@@ -893,7 +917,7 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
-            if (current?.id === 'C3.tab-worker-leak' && data.step)
+            if (['C3.tab-worker-leak', 'C3.tab-iframe-leak'].includes(current?.id) && data.step)
               process.stdout.write(
                 `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} ${JSON.stringify(
                   {
@@ -905,7 +929,7 @@ export function shared(path, { variants, except = [], group } = {}) {
                   }
                 )}\n`
               );
-            if (current?.id === 'C3.tab-worker-leak' && data.events)
+            if (['C3.tab-worker-leak', 'C3.tab-iframe-leak'].includes(current?.id) && data.events)
               process.stdout.write(
                 `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} attached ${JSON.stringify(
                   data.events
