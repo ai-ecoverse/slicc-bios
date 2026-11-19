@@ -71,6 +71,7 @@ export const targets = on(fixture);
 const PATHS = {
   devtools: {
     autoAttach: true,
+    errorFrameClass: true,
     iframeAutoAttach: true,
     signInHold: false,
     browserSession: true,
@@ -85,6 +86,7 @@ const PATHS = {
   },
   extension: {
     autoAttach: true,
+    errorFrameClass: false,
     iframeAutoAttach: false,
     signInHold: false,
     browserSession: true,
@@ -101,6 +103,7 @@ const PATHS = {
   },
   link: {
     autoAttach: true,
+    errorFrameClass: true,
     iframeAutoAttach: true,
     signInHold: false,
     browserSession: true,
@@ -319,11 +322,9 @@ export async function guardHost(t, path, { frames = true } = {}) {
     }
     rows.get(row)?.messages.push(text);
   });
-  let handed = false;
-  await seven.expose('guardDiag', ([path, hook]) => {
-    if (handed) return;
-    handed = true;
-    process.stdout.write(`DIAG-FRAMES hook ${path} ${JSON.stringify(hook)}\n`);
+  let handed = null;
+  await seven.expose('guardFrames', ([path, hook]) => {
+    handed ??= { path, hook };
   });
   await seven.expose('extensionFrames', async ([id, tabId, own]) => {
     const answer = await extensionFrames(browser, tabId, own);
@@ -606,7 +607,7 @@ export async function guardHost(t, path, { frames = true } = {}) {
       async open(row, own, path, lag, paintDelay, capture) {
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
         const { tabs, route, frames } = routes[path]();
-        void window.guardDiag(
+        void window.guardFrames(
           JSON.stringify([
             path,
             { route, frames: typeof frames, version: globalThis.sliccExtension?.version ?? null },
@@ -818,6 +819,7 @@ export async function guardHost(t, path, { frames = true } = {}) {
   const version = await probe.client.send('Browser.getVersion');
   await probe.close();
   process.stdout.write(`GUARD-ROUTE ${path} ${JSON.stringify(version?.slicc ?? null)}\n`);
+  process.stdout.write(`GUARD-FRAMES hook ${path} ${JSON.stringify(handed?.hook ?? null)}\n`);
   assert.equal(version?.slicc?.route, path, `the ${path} path runs under the ${path} guard route`);
   return Object.assign(clientFactory, { vault: chrome.vault.origin });
 }
