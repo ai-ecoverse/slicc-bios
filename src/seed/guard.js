@@ -1375,9 +1375,17 @@ class Guard {
     return this.targets.get(targetId);
   }
 
-  async opener(openerId, depth, seen) {
+  async opener(openerId, depth, seen, fresh = false) {
     if (!openerId) return undefined;
-    if (!(await this.lookup(openerId))) return 'unknown';
+    if (fresh) {
+      const known = this.targets.get(openerId)?.info;
+      const info = await this.openerInfo(openerId);
+      if (!info) return 'unknown';
+      const observed = this.targets.get(openerId)?.info;
+      if (observed && !this.sameTarget(observed, known) && !this.sameTarget(observed, info))
+        return 'unknown';
+      this.learn(info);
+    } else if (!(await this.lookup(openerId))) return 'unknown';
     return (await this.target(openerId, depth + 1, seen)) ? 'protected' : 'unprotected';
   }
 
@@ -1481,7 +1489,7 @@ class Guard {
     );
   }
 
-  async target(targetId, depth = 0, seen = new Set()) {
+  async target(targetId, depth = 0, seen = new Set(), framedBlank = false) {
     if (seen.has(targetId)) return true;
     const found = await this.lookup(targetId);
     if (!found) return true;
@@ -1521,14 +1529,30 @@ class Guard {
       if (refused && !this.targets.get(found.parentId)?.guarded) return true;
       refused = refused || (await this.createdOwner(found.parentId));
     }
-    const opener = cross ? undefined : await this.opener(found.openerId, depth, seen);
-    const lent = found.type === 'page' && !cross && !emptyNoAccess(found.info);
+    return (await this.openerVerdict(targetId, found, cross, depth, seen, framedBlank)) || refused;
+  }
+
+  inheritingBlank(found, framedBlank) {
+    return (
+      found.type === 'page' &&
+      Boolean(found.openerId) &&
+      found.info?.canAccessOpener !== false &&
+      (framedBlank || INHERITING.test(found.url))
+    );
+  }
+
+  async openerVerdict(targetId, found, cross, depth, seen, framedBlank) {
+    const blank = this.inheritingBlank(found, framedBlank);
+    const crossed = cross && !blank;
+    const opener = crossed ? undefined : await this.opener(found.openerId, depth, seen, blank);
+    const lent = found.type === 'page' && !crossed && !emptyNoAccess(found.info);
     if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
       hold(targetId);
       found.guarded = true;
       return true;
     }
-    return this.classifyTarget(targetId, found, opener) || refused;
+    if (blank && opener !== 'unprotected') return true;
+    return this.classifyTarget(targetId, found, opener);
   }
 
   sessionTarget(sessionId) {
@@ -5445,12 +5469,13 @@ class Guard {
     return false;
   }
 
-  async surfaceOpener(info) {
+  async surfaceOpener(info, frames = []) {
     if (info?.type !== 'page') return false;
     if (isHeld(info.targetId)) return true;
     if (!info.openerId) return info.canAccessOpener === true;
     this.learn(info);
-    return this.target(info.targetId);
+    const root = frames.find((frame) => !frame?.parentId);
+    return this.target(info.targetId, 0, new Set(), Boolean(root) && INHERITING.test(root.url));
   }
 
   async confirmed(sessionId, method, arrived) {
@@ -5466,7 +5491,7 @@ class Guard {
     const now = await this.reuse(`surface:${sessionId}`, arrived, () => this.surface(sessionId));
     const navigating = NAVIGATES.has(method);
     if (!now) return navigating && (await this.openDocument(sessionId)) ? null : PROTECTED;
-    if (await this.surfaceOpener(now.info)) return PROTECTED;
+    if (await this.surfaceOpener(now.info, now.frames)) return PROTECTED;
     if (now.pendingTree) return navigating ? null : PROTECTED;
     this.note(sessionId, now);
     if (!now.protected) return null;
@@ -7293,7 +7318,7 @@ class Guard {
       return true;
     }
     this.note(sessionId, now);
-    if (await this.surfaceOpener(now.info)) {
+    if (await this.surfaceOpener(now.info, now.frames)) {
       this.refuse(message);
       return true;
     }

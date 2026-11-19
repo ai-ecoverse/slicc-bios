@@ -1,14 +1,39 @@
 import { followInventory, inventoryIdentity, shaped } from './inventory.js';
+import { fromThisKernel } from './leaders.js';
 
 export const MAX_PROMPT = 16 * 1024 * 1024;
 const MODES = ['steer', 'followUp', 'reject'];
+const ANSWERS = ['once', 'always', 'deny', 'stop'];
+const NO_APPROVALS = 'EOPNOTSUPP: this agent has no approvals';
+export const OWN_KERNEL = "EACCES: a link from this seven's own kernel can't decide approvals";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const line = (event) => encoder.encode(`${JSON.stringify(event)}\n`);
 
-const refusal = (error) => `${error.code ?? 'EIO'}${error.message ? `: ${error.message}` : ''}`;
+function refusal(error) {
+  const code = error.code ?? 'EIO';
+  const message = error.message ?? '';
+  if (message === code || message.startsWith(`${code}:`)) return message;
+  return message ? `${code}: ${message}` : code;
+}
+
+function lines(events) {
+  const iterator = events[Symbol.asyncIterator]();
+  return {
+    [Symbol.asyncIterator]: () => ({
+      async next() {
+        const next = await iterator.next();
+        return next.done ? next : { done: false, value: { t: 'approvals', approvals: next.value } };
+      },
+      async return() {
+        await iterator.return?.();
+        return { done: true, value: undefined };
+      },
+    }),
+  };
+}
 
 async function readText(stream, length) {
   const chunks = [];
@@ -31,17 +56,23 @@ async function readText(stream, length) {
 async function pump(stream, events) {
   const iterator = events[Symbol.asyncIterator]();
   let gone = false;
+  let stop;
+  const stopped = new Promise((resolve) => {
+    stop = () => resolve({ done: true, value: undefined });
+  });
+  const next = () => Promise.race([iterator.next(), stopped]);
   const watching = (async () => {
     try {
       while ((await stream.read()) !== null);
       if (!(await stream.settled)) return;
     } catch {}
     gone = true;
+    stop();
     await iterator.return?.();
   })();
   try {
-    for (let next = await iterator.next(); !next.done && !gone; next = await iterator.next()) {
-      await stream.write(line(next.value));
+    for (let step = await next(); !step.done && !gone; step = await next()) {
+      await stream.write(line(step.value));
     }
   } catch {
     gone = true;
@@ -61,6 +92,7 @@ export function createRemote({
   inventory = inventoryIdentity(),
   now = Date.now,
   timers = clock,
+  ownKernel = fromThisKernel,
 }) {
   const active = new Map();
   const mark = (link, mode, by) => {
@@ -111,6 +143,27 @@ export function createRemote({
       if (!watch || !opened.events) return stream.closeWrite();
       await followInventory(stream, opened.snapshot, opened.events, { render, line, now, timers });
     },
+    async approvals(api, meta, stream) {
+      if (typeof api.approvals !== 'function') return stream.reset(NO_APPROVALS);
+      const watch = meta.watch === true;
+      const opened = await api.approvals({ watch });
+      stream.accepted({ approvals: opened.approvals });
+      if (!watch || !opened.events) return stream.closeWrite();
+      await pump(stream, lines(opened.events));
+    },
+    async decide(api, meta, stream, link) {
+      if (typeof api.decide !== 'function') return stream.reset(NO_APPROVALS);
+      const { id, answer, reason } = meta;
+      if (typeof id !== 'string' || !id) return stream.reset('EINVAL: decide needs an approval id');
+      if (!ANSWERS.includes(answer))
+        return stream.reset('EINVAL: the answer is once, always, deny or stop');
+      if (reason !== undefined && typeof reason !== 'string')
+        return stream.reset('EINVAL: a reason is text');
+      const device = link.id ?? link.key;
+      await api.decide({ id, answer, ...(reason === undefined ? {} : { reason }), device });
+      stream.accepted({ ok: true });
+      stream.closeWrite();
+    },
     async abort(api, _meta, stream) {
       const { aborted } = await api.abort();
       stream.accepted({ aborted: aborted === true });
@@ -126,13 +179,20 @@ export function createRemote({
     async handle(link, meta, stream) {
       const op = ops[meta.op];
       if (!op) return stream.reset('EINVAL');
+      if (meta.op === 'decide') {
+        try {
+          if (await ownKernel(link)) return stream.reset(OWN_KERNEL);
+        } catch {
+          return stream.reset(OWN_KERNEL);
+        }
+      }
       const mode = meta.op === 'prompt' || meta.op === 'watch' ? meta.op : null;
       if (mode) mark(link, mode, 1);
       let api = null;
       try {
         api = await control();
         if (!api) return stream.reset('EOPNOTSUPP: the agent is not running');
-        await op(api, meta, stream);
+        await op(api, meta, stream, link);
       } catch (error) {
         stream.reset(refusal(error));
       } finally {
