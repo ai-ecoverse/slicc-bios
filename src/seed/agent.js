@@ -161,12 +161,20 @@ export async function remoteAgent(owner, { load = loadChat, cone } = {}) {
   const { connectAgent, remoteControl } = await load();
   if (!remoteControl) return null;
   const connection = await connectAgent(await owner.port());
-  const remote = remoteControl(connection, cone ? { agent: cone } : {});
+  const options = (device) => ({ ...(cone ? { agent: cone } : {}), ...(device ? { device } : {}) });
+  const remote = remoteControl(connection, options());
   return {
     prompt: (args) => remote.prompt(args),
     watch: (args) => remote.watch(args),
     abort: () => remote.abort(),
     ...(remote.inventory ? { inventory: (args) => remote.inventory(args) } : {}),
+    ...(remote.approvals ? { approvals: (args) => remote.approvals(args) } : {}),
+    ...(remote.decide
+      ? {
+          decide: ({ device, ...request }) =>
+            remoteControl(connection, options(device)).decide(request),
+        }
+      : {}),
     close: () => connection.close(),
   };
 }

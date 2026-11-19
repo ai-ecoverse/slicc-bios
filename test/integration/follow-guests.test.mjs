@@ -281,69 +281,77 @@ function probeStreams() {
 function rawWire() {
   return (async () => {
     const base = '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/';
-    const [{ linkEndpoint }, { PortLink }, { clientHost }, services] = await Promise.all([
+    const [{ linkEndpoint }, { openRawLink, RawRefused }] = await Promise.all([
       import(`${base}page.js`),
-      import(`${base}wire.js`),
-      import(`${base}client.js`),
-      import(`${base}services.js`),
+      import(`${base}testing.js`),
     ]);
     const { pumpLink, streamSink } = await import('/os/agent.js');
-    const stream = await window.raw.open({ kind: 'pi' });
-    const endpoint = linkEndpoint(streamSink(stream));
-    void pumpLink(stream, endpoint);
-    const link = new PortLink(endpoint);
-    await link.hello;
-    const wire = { link, rewrite: null };
-    const send = link.send.bind(link);
-    link.send = (frame) => send(wire.rewrite ? wire.rewrite(frame) : frame);
-    const host = clientHost(link, 'raw');
-    const answer = (promise) =>
-      Promise.race([
-        promise.then(
-          (value) => (value?.variant ? `held ${value.variant}` : 'accepted'),
-          (error) => error.code ?? error.message
-        ),
-        new Promise((resolve) => setTimeout(resolve, 20000, 'no answer')),
-      ]);
+    const stream = async () => {
+      for (let tries = 0; ; tries += 1) {
+        try {
+          return await window.raw.open({ kind: 'pi' });
+        } catch (error) {
+          if (error.code !== 'EBUSY' || tries >= 100) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+    };
+    const open = async () => {
+      const pi = await stream();
+      const endpoint = linkEndpoint(streamSink(pi));
+      void pumpLink(pi, endpoint);
+      return openRawLink(endpoint, { ms: 20000 });
+    };
+    const held = (hold) => hold.error?.code ?? (hold.variant ? `held ${hold.variant}` : 'accepted');
+    const answered = (reply) => reply.error?.code ?? 'accepted';
+    const link = await open();
     const holds = {};
-    for (const name of [
-      'AgentControl',
-      'AgentTranscript',
-      'AgentSettings',
-      'AgentRemoteService',
-      'AgentPagesService',
-      'AgentSudoService',
+    for (const service of [
+      'control',
+      'transcript',
+      'settings',
+      'remote',
+      'pages',
+      'inventory',
+      'sudo',
     ])
-      holds[name] = await answer(host.get(services[name], {}, {}));
-    wire.rewrite = (frame) =>
-      frame.t === 'hold' ? { ...frame, principal: { seat: 'owner' }, origin: 'owner' } : frame;
-    holds.claimingOwner = await answer(host.get(services.AgentControl, {}, {}));
-    wire.rewrite = null;
-    const guest = await host.get(services.AgentGuestService, {}, {});
-    wire.call = (member, args) => host.root((ctx) => guest[member](args, ctx), {});
-    wire.forge = (member, args) => {
-      wire.rewrite = (frame) =>
-        frame.t === 'call' && frame.member === 'propose' ? { ...frame, member, args } : frame;
-      return answer(
-        wire.call('propose', [{ text: `forged ${member}`, requestId: crypto.randomUUID() }])
-      ).finally(() => {
-        wire.rewrite = null;
-      });
+      holds[service] = held(await link.hold(service));
+    holds.claimingOwner = held(await link.hold('control', { principal: { kind: 'owner' } }));
+    const seat = await link.hold('guest');
+    const wire = { link, seat, at: seat.methods.length };
+    wire.forge = async (args) => {
+      const outcome = await wire.seat.callAt(wire.at, args).then(
+        (reply) => reply.error?.code ?? 'accepted',
+        (error) => (error instanceof RawRefused ? `ended ${error.reason}` : error.message)
+      );
+      wire.at += 1;
+      wire.link.close();
+      wire.link = await open();
+      wire.seat = await wire.link.hold('guest');
+      return wire.seat.variant === 'guest' ? outcome : `${outcome}, and the seat was gone after it`;
     };
     window.wire = wire;
     return {
       holds,
-      variant: guest.variant,
-      open: await answer(
-        wire.call('guestOpen', [{ id: 'x', label: 'x', agentId: 'x', expiresAt: null, gates: {} }])
+      variant: seat.variant,
+      methods: seat.methods,
+      open: answered(
+        await seat.call('guestOpen', [
+          { id: 'x', label: 'x', agentId: 'x', expiresAt: null, gates: {} },
+        ])
       ),
-      revoke: await answer(wire.call('guestRevoke', ['s1'])),
+      revoke: answered(await seat.call('guestRevoke', ['s1'])),
     };
   })();
 }
 
 function rawPropose(text) {
-  return window.wire.call('propose', [{ text, requestId: crypto.randomUUID() }]);
+  return (async () => {
+    const reply = await window.wire.seat.call('propose', [
+      { text, requestId: crypto.randomUUID() },
+    ]);
+    return reply.error ?? reply.value;
+  })();
 }
 
 function rawForge([cone, approval]) {
@@ -382,8 +390,7 @@ function rawForge([cone, approval]) {
       freeze: [cone],
       prompt: [{ text: 'Prompt from a raw guest' }],
     };
-    for (const [name, args] of Object.entries(tries))
-      forged[name] = await window.wire.forge(name === 'followUp' ? 'send' : name, args);
+    for (const [name, args] of Object.entries(tries)) forged[name] = await window.wire.forge(args);
     return forged;
   })();
 }
@@ -632,15 +639,17 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   assert.notEqual(streams.owner, 'connected', 'a guest link reached the owner’s AgentControl');
   const wired = await probe.evaluate(rawWire);
   assert.deepEqual(wired.holds, {
-    AgentControl: 'forbidden',
-    AgentTranscript: 'forbidden',
-    AgentSettings: 'forbidden',
-    AgentRemoteService: 'forbidden',
-    AgentPagesService: 'forbidden',
-    AgentSudoService: 'forbidden',
+    control: 'forbidden',
+    transcript: 'forbidden',
+    settings: 'forbidden',
+    remote: 'forbidden',
+    pages: 'forbidden',
+    inventory: 'forbidden',
+    sudo: 'forbidden',
     claimingOwner: 'forbidden',
   });
   assert.equal(wired.variant, 'guest');
+  assert.deepEqual(wired.methods, ['guestOpen', 'guestRevoke', 'propose']);
   assert.equal(wired.open, 'forbidden');
   assert.equal(wired.revoke, 'forbidden');
 
@@ -709,7 +718,7 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   );
   const forged = await probe.evaluate(rawForge, [cone.id, steer.id]);
   for (const [name, code] of Object.entries(forged))
-    assert.equal(code, 'not_in_variant', `the owner’s agent took a guest’s ${name}: ${code}`);
+    assert.equal(code, 'ended null', `the owner’s agent took a guest’s ${name}: ${code}`);
   assert.ok(
     await owner.evaluate(
       (id) =>
@@ -826,8 +835,8 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     { list: 0, decide: 'undefined' }
   );
   assert.equal(
-    await probe.evaluate((id) => window.wire.forge('decide', [id, 'always', null]), sudo.id),
-    'not_in_variant'
+    await probe.evaluate((id) => window.wire.forge([id, 'always', null]), sudo.id),
+    'ended null'
   );
   assert.ok(
     await owner.evaluate(

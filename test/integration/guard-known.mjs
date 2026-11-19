@@ -24,6 +24,14 @@ export const LINK = {
     ids: ['C2.redirect-secret', 'C2.redirect-secret-mix'],
     allowed: new Set(['extraLocation']),
   },
+  '#1663 over-blocks an ordinary iframe under a protected parent on link (#1642 follow-up, #1667)':
+    {
+      ids: ['C3.ordinary-parent-iframes.page'],
+      exact: [
+        'contextEvaluate: got false, want true',
+        /^incomplete: guarded protectedParentIframes: Runtime\.evaluate unanswered \(\d+: Runtime\.evaluate got no answer through the guard\)$/,
+      ],
+    },
 };
 
 export function listedWrong(text) {
@@ -57,11 +65,16 @@ const checks = (why = '') =>
 
 const issue = (id) => Object.keys(KNOWN).find((key) => KNOWN[key].includes(id));
 
+const matches = (items, exact) =>
+  items.length === exact.length &&
+  exact.every((want, at) => (typeof want === 'string' ? items[at] === want : want.test(items[at])));
+
 function linked(row, listed) {
   if (listed) return null;
   if (row.control !== 'pass' || row.guarded !== 'fail') return null;
-  const found = Object.entries(LINK).find(([, { ids, allowed, notLive }]) => {
+  const found = Object.entries(LINK).find(([, { ids, allowed, notLive, exact }]) => {
     if (!ids.includes(row.id)) return false;
+    if (exact) return row.live === 'pass' && matches((row.why ?? '').split('; '), exact);
     if (row.live === 'fail') {
       const items = (row.why ?? '').split('; ');
       return Boolean(notLive && items.at(-1) === notLive && unmet(items.slice(0, -1)));
