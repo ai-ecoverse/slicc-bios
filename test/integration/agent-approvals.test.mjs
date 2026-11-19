@@ -296,5 +296,17 @@ test("approvals and decide against the real agent: EACCES without Control, a pen
     false,
     JSON.stringify(settled)
   );
+  const record = await page.within(
+    30000,
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.approvals.history?.()
+        .find((entry) => entry.approval.id === id && entry.state !== 'pending'),
+    item.id
+  );
+  assert.equal(record.state, 'rejected', JSON.stringify(record));
+  assert.equal(record.decidedBy, 'follower', JSON.stringify(record));
+  assert.equal(record.device, other, JSON.stringify(record));
   await page.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });
