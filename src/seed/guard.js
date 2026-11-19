@@ -1073,6 +1073,7 @@ class Guard {
     this.answering = new Set();
     this.finished = new WeakSet();
     this.watching = new Map();
+    this.proofSignals = new Map();
     this.queues = new Map();
     this.clock = 0;
     this.changes = 0;
@@ -3157,18 +3158,24 @@ class Guard {
       !this.locked(message.sessionId, true)
     )
       return true;
-    for (const id of needed) {
-      const session = [...this.sessions].find(([, entry]) => entry.targetId === id)?.[0];
-      const parent = this.sessions.get(session)?.parent;
-      let checked;
-      if (session)
-        checked = this.shown.has(session)
-          ? this.inspect(session, id, parent)
-          : this.watch(session, id, parent);
-      else checked = this.provePlacement(id);
-      if (!checked || !(await checked)) return false;
-    }
+    for (const id of needed) if (!(await this.proveTarget(id))) return false;
     return true;
+  }
+
+  async proveTarget(id) {
+    const owned = [...this.sessions].filter(([, entry]) => entry.targetId === id);
+    if (!owned.length) return this.provePlacement(id);
+    const live = ([session]) =>
+      this.shown.has(session) && !this.blocked.has(session) && !this.gone.has(session);
+    for (const [session, entry] of [...owned.filter(live), ...owned.filter((item) => !live(item))])
+      if (
+        this.sessions.get(session) === entry &&
+        (await (this.shown.has(session)
+          ? this.inspect(session, id, entry.parent)
+          : this.watch(session, id, entry.parent)))
+      )
+        return true;
+    return false;
   }
 
   async provePlacement(targetId) {
@@ -4488,11 +4495,9 @@ class Guard {
         return true;
       }
       this.learn(info);
-      if (await this.watch(params.sessionId, info.targetId, sessionId)) {
-        this.touch(info.targetId);
-        const proof = this.is.url(info.url) ? await this.stranded(info.targetId) : null;
-        this.shownTarget(message, info, message, proof);
-      }
+      if (await this.watch(params.sessionId, info.targetId, sessionId))
+        await this.showAttachment(message, info);
+      else void this.reprove(message);
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
@@ -4528,6 +4533,95 @@ class Guard {
       return !this.shown.delete(params.sessionId) || notified === true;
     }
     return false;
+  }
+
+  async showAttachment(message, info) {
+    this.touch(info.targetId);
+    const proof = this.is.url(info.url) ? await this.stranded(info.targetId) : null;
+    this.shownTarget(message, info, message, proof);
+  }
+
+  live(sessionId, targetId) {
+    return (
+      !this.closing &&
+      !this.closed &&
+      this.sessions.get(sessionId)?.targetId === targetId &&
+      !this.blocked.has(sessionId) &&
+      !this.gone.has(sessionId)
+    );
+  }
+
+  undecided(sessionId, targetId) {
+    return this.live(sessionId, targetId) && !this.shown.has(sessionId);
+  }
+
+  signalProof({ method, params = {}, sessionId }) {
+    const targetId =
+      method === 'Target.targetInfoChanged'
+        ? params.targetInfo?.targetId
+        : method === 'Page.frameNavigated' && !params.frame?.parentId
+          ? this.sessionTarget(sessionId)
+          : undefined;
+    const waiting = targetId && this.proofSignals.get(targetId);
+    if (!waiting) return;
+    this.proofSignals.delete(targetId);
+    for (const resolve of waiting) resolve(true);
+  }
+
+  proofSignal(targetId, ms) {
+    return new Promise((resolve) => {
+      const waiting = this.proofSignals.get(targetId) ?? new Set();
+      const done = (signalled) => {
+        clearTimeout(timer);
+        waiting.delete(done);
+        if (!waiting.size && this.proofSignals.get(targetId) === waiting)
+          this.proofSignals.delete(targetId);
+        resolve(signalled);
+      };
+      const timer = setTimeout(() => done(false), Math.max(0, ms));
+      timer.unref?.();
+      waiting.add(done);
+      this.proofSignals.set(targetId, waiting);
+    });
+  }
+
+  async readable(targetId) {
+    const answer = await this.answered(this.call('Target.getTargetInfo', { targetId }));
+    const url = answer?.result?.targetInfo?.url;
+    return typeof url === 'string' && URL.canParse(url);
+  }
+
+  async reprove(message) {
+    const { params, sessionId: parent } = message;
+    const { sessionId } = params;
+    const targetId = params.targetInfo?.targetId;
+    const deadline = Date.now() + BLANK_MS;
+    let poll = true;
+    while (this.undecided(sessionId, targetId)) {
+      const left = deadline - Date.now();
+      if (left <= 0) return this.withdraw(sessionId, targetId, parent);
+      const signalled = await this.proofSignal(targetId, poll ? Math.min(POLL_MS, left) : left);
+      if (!this.undecided(sessionId, targetId)) return;
+      if (!signalled && !poll) continue;
+      if (!signalled && !(await this.readable(targetId))) continue;
+      if (!this.undecided(sessionId, targetId)) return;
+      if (await this.watch(sessionId, targetId, parent))
+        return (
+          this.live(sessionId, targetId) &&
+          this.showAttachment(message, { ...this.targets.get(targetId).info, attached: true })
+        );
+      poll = false;
+    }
+  }
+
+  withdraw(sessionId, targetId, parent) {
+    this.cut(sessionId, parent, false);
+    if (
+      ![...this.sessions].some(
+        ([id, entry]) => entry.targetId === targetId && this.shown.has(id) && !this.blocked.has(id)
+      )
+    )
+      this.deliver({ method: 'Target.targetDestroyed', params: { targetId } });
   }
 
   async skippedAttachment(message) {
@@ -7174,6 +7268,7 @@ class Guard {
     this.receiveFrame(message);
     this.receiveEstimate(message);
     this.receiveNavigation(message);
+    this.signalProof(message);
     if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged')
       this.receiveHint(message);
     if (message.method === 'Target.targetDestroyed') {
