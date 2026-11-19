@@ -1853,7 +1853,7 @@ class Guard {
       this.replaceDebuggerLease(targetId, 'revoked');
       return;
     }
-    if (!Array.isArray(frames) || frames.some((frame) => frame?.kind !== 'ordinary')) {
+    if (!Array.isArray(frames) || !frames.every(ordinaryFrame)) {
       this.replaceDebuggerLease(targetId, 'suspended');
       return;
     }
@@ -1886,7 +1886,7 @@ class Guard {
       ) &&
       list.localFrames.length + list.remoteOwners.length === frames.length &&
       this.relatedFrames(scope.frames).size <= frames.length &&
-      frames.every((frame) => Number.isSafeInteger(frame.frameId) && frame.kind === 'ordinary');
+      frames.every((frame) => Number.isSafeInteger(frame.frameId) && ordinaryFrame(frame));
     const rooted = Boolean(complete && this.rootedPrivateFrames(frames));
     if (rooted) {
       for (const owner of list.remoteOwners)
@@ -4536,6 +4536,9 @@ class Guard {
   }
 
   async showAttachment(message, info) {
+    const entry = this.sessions.get(message.params.sessionId);
+    if (entry?.announced) return;
+    if (entry) entry.announced = true;
     this.touch(info.targetId);
     const proof = this.is.url(info.url) ? await this.stranded(info.targetId) : null;
     this.shownTarget(message, info, message, proof);
@@ -4559,9 +4562,11 @@ class Guard {
     const targetId =
       method === 'Target.targetInfoChanged'
         ? params.targetInfo?.targetId
-        : method === 'Page.frameNavigated' && !params.frame?.parentId
-          ? this.sessionTarget(sessionId)
-          : undefined;
+        : method === 'Target.targetDestroyed'
+          ? params.targetId
+          : method === 'Page.frameNavigated' && !params.frame?.parentId
+            ? this.sessionTarget(sessionId)
+            : undefined;
     const waiting = targetId && this.proofSignals.get(targetId);
     if (!waiting) return;
     this.proofSignals.delete(targetId);
@@ -4596,22 +4601,31 @@ class Guard {
     const { sessionId } = params;
     const targetId = params.targetInfo?.targetId;
     const deadline = Date.now() + BLANK_MS;
+    let failures = 0;
     let poll = true;
     while (this.undecided(sessionId, targetId)) {
       const left = deadline - Date.now();
-      if (left <= 0) return this.withdraw(sessionId, targetId, parent);
+      if (left <= 0 || this.retiredTargets.has(targetId))
+        return this.withdraw(sessionId, targetId, parent);
       const signalled = await this.proofSignal(targetId, poll ? Math.min(POLL_MS, left) : left);
       if (!this.undecided(sessionId, targetId)) return;
       if (!signalled && !poll) continue;
       if (!signalled && !(await this.readable(targetId))) continue;
       if (!this.undecided(sessionId, targetId)) return;
+      if (this.retiredTargets.has(targetId)) continue;
       if (await this.watch(sessionId, targetId, parent))
-        return (
-          this.live(sessionId, targetId) &&
-          this.showAttachment(message, { ...this.targets.get(targetId).info, attached: true })
-        );
-      poll = false;
+        return this.reproved(message, sessionId, targetId, parent);
+      failures += 1;
+      poll = failures < PROBE_TRIES;
     }
+  }
+
+  reproved(message, sessionId, targetId, parent) {
+    const info = this.targets.get(targetId)?.info;
+    if (!this.live(sessionId, targetId)) return;
+    if (!info || this.retiredTargets.has(targetId))
+      return this.withdraw(sessionId, targetId, parent);
+    return this.showAttachment(message, { ...info, attached: true });
   }
 
   withdraw(sessionId, targetId, parent) {
@@ -7646,6 +7660,9 @@ function narrowed(message, device) {
   }
   return message;
 }
+
+const ordinaryFrame = (frame) =>
+  frame?.kind === 'ordinary' || (frame?.kind === 'error' && frame.errorProtected === false);
 
 const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
