@@ -1,3 +1,4 @@
+import { BLE_SWITCH, bleLive } from './ble.js';
 import { HID_SWITCH, hidLive } from './hid.js';
 import { plugged, programOf, requesterOf, who } from './requests.js';
 import { USB_SWITCH, usbLive } from './usb.js';
@@ -36,6 +37,7 @@ export function deviceClick(clicks, kind, what) {
 export const serialClick = (clicks) => deviceClick(clicks, 'serial.request', 'serial');
 export const usbClick = (clicks) => deviceClick(clicks, 'usb.request', 'usb');
 export const hidClick = (clicks) => deviceClick(clicks, 'hid.request', 'hid');
+export const bleClick = (clicks) => deviceClick(clicks, 'ble.request', 'ble');
 
 export function serialLive(ports, live) {
   const shown = new Map();
@@ -64,18 +66,22 @@ export function serialPorts({ create, switches, clicks, live }) {
   let toggle = null;
   let usb = null;
   let hid = null;
+  let ble = null;
   const devices = create({
     enabled: () => toggle.on(),
     usbEnabled: () => usb.on(),
     hidEnabled: () => hid.on(),
+    bleEnabled: () => ble.on(),
   });
   toggle = switches.add({ ...SERIAL_SWITCH, off: () => devices.ports.closeAll() });
   usb = switches.add({ ...USB_SWITCH, off: () => devices.devices.usb.closeAll() });
   hid = switches.add({ ...HID_SWITCH, off: () => devices.devices.hid.closeAll() });
+  ble = switches.add({ ...BLE_SWITCH, off: () => devices.devices.ble.closeAll() });
   serialLive(devices.ports, live);
   usbLive(devices.devices.usb, live);
   hidLive(devices.devices.hid, live);
-  const guards = [serialClick(clicks), usbClick(clicks), hidClick(clicks)];
+  bleLive(devices.devices.ble, live);
+  const guards = [serialClick(clicks), usbClick(clicks), hidClick(clicks), bleClick(clicks)];
   const guard = (request, prompt) => {
     for (const each of guards) {
       const guarded = each(request, prompt);
