@@ -106,6 +106,25 @@ test('a profile a 6.x agent last opened upgrades to the pinned agent one way, an
   );
 
   await t.test(
+    'a bare record of 3 that a seven before 8.x was known wrote for an 8.x start yields to the 8.x marker, so the pinned agent starts and the record heals to 2',
+    async () => {
+      await marker(page, JSON.stringify({ durableSchema: 2, agent: pinned }));
+      await page.evaluate(() => {
+        localStorage.removeItem('slicc-os.agent-schema-by');
+        localStorage.setItem('slicc-os.agent-schema', '3');
+      });
+      await page.goto('/');
+      await ready(page);
+      await agentUp(page);
+      assert.equal(await record(page), '2');
+      assert.deepEqual(
+        await page.evaluate(() => JSON.parse(localStorage.getItem('slicc-os.agent-schema-by'))),
+        { schema: 2, agent: pinned }
+      );
+    }
+  );
+
+  await t.test(
     'an 8.x agent records schema 2, so the 7.x agent starts after it on the same profile',
     async (t) => {
       await marker(page, null);
