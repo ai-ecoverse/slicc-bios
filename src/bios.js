@@ -292,6 +292,7 @@ await step('seed', async () => {
     'tray.js',
     'update.js',
     'updates.js',
+    'usb.js',
     'user.js',
     'users.js',
     'vault.js',

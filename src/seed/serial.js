@@ -1,4 +1,5 @@
 import { plugged, programOf, requesterOf, who } from './requests.js';
+import { USB_SWITCH, usbLive } from './usb.js';
 
 export const SERIAL_SWITCH = { key: 'serial', label: 'Serial ports' };
 export const SERIAL_LABEL = 'Serial port open';
@@ -9,15 +10,15 @@ export function serialPrompts(devices) {
   );
 }
 
-export function serialClick(clicks) {
+export function deviceClick(clicks, kind, what) {
   return (request, prompt) => {
-    if (request.kind !== 'serial.request' || !prompt) return null;
+    if (request.kind !== kind || !prompt) return null;
     const { stamp, signal } = request;
     return {
       ask: () =>
         clicks.ask({
           kind: 'device',
-          detail: { what: 'serial', program: programOf(stamp) },
+          detail: { what, program: programOf(stamp) },
           asker: requesterOf(stamp),
           title: prompt.title,
           body: prompt.body,
@@ -30,6 +31,9 @@ export function serialClick(clicks) {
     };
   };
 }
+
+export const serialClick = (clicks) => deviceClick(clicks, 'serial.request', 'serial');
+export const usbClick = (clicks) => deviceClick(clicks, 'usb.request', 'usb');
 
 export function serialLive(ports, live) {
   const shown = new Map();
@@ -56,12 +60,18 @@ export function serialLive(ports, live) {
 
 export function serialPorts({ create, switches, clicks, live }) {
   let toggle = null;
-  const devices = create({ enabled: () => toggle.on() });
+  let usb = null;
+  const devices = create({ enabled: () => toggle.on(), usbEnabled: () => usb.on() });
   toggle = switches.add({ ...SERIAL_SWITCH, off: () => devices.ports.closeAll() });
+  usb = switches.add({ ...USB_SWITCH, off: () => devices.devices.usb.closeAll() });
   serialLive(devices.ports, live);
+  usbLive(devices.devices.usb, live);
+  const serialGuard = serialClick(clicks);
+  const usbGuard = usbClick(clicks);
+  const guard = (request, prompt) => serialGuard(request, prompt) ?? usbGuard(request, prompt);
   return {
     kinds: devices.kinds,
-    handlers: plugged(devices, serialPrompts(devices), undefined, serialClick(clicks)),
+    handlers: plugged(devices, serialPrompts(devices), undefined, guard),
     devices: { open: (request) => devices.devices.open(request) },
     nodes(kernel) {
       try {

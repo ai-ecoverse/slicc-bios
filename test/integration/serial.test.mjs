@@ -543,6 +543,7 @@ test('the Serial ports switch sits beside capture’s, closes every open port wh
       { key: 'screen', label: 'Screen', on: true },
       { key: 'remote-browser', label: 'Browser control from linked devices', on: true },
       { key: 'serial', label: 'Serial ports', on: true },
+      { key: 'usb', label: 'USB devices', on: true },
     ]
   );
   await page.evaluate(() => window.grant());

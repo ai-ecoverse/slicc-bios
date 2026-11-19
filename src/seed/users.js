@@ -5,7 +5,7 @@ const MODES = ['off', 'report', 'enforce'];
 const KEY = 'slicc-os.users';
 const CONE = /^cone(-[1-9]\d*)?$/;
 const SCOOP = /^scoop-[a-z0-9][a-z0-9._-]*$/;
-export const DEVICE_GROUPS = { dialout: 20 };
+export const DEVICE_GROUPS = { dialout: 20, plugdev: 46 };
 const DEVICES = Object.keys(DEVICE_GROUPS);
 export const PRODUCTION_USERS = 'enforce';
 
