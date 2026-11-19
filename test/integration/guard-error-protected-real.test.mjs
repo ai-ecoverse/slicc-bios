@@ -4,20 +4,33 @@ import { after, test } from 'node:test';
 import { ready } from './bios.mjs';
 import { CURRENT_EXTENSION, realExtension, SEVEN } from './real-extension.mjs';
 
+const served = [];
+const REFUSING = {
+  'x-frame-options': 'DENY',
+  'content-security-policy': "frame-ancestors 'none'",
+  'content-type': 'text/html',
+};
 const site = createServer((req, res) => {
-  const frame = new URL(req.url, 'http://host.invalid').searchParams.get('frame');
-  res.writeHead(200, { 'content-type': 'text/html' });
-  res.end(
-    `<!doctype html><title>host</title><p id="mark">host</p><iframe src="${frame ?? 'about:blank'}"></iframe>`
-  );
+  const url = new URL(req.url, 'http://fixture.invalid');
+  served.push(`${req.headers.host} ${url.pathname}`);
+  if (url.pathname === '/host') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(
+      `<!doctype html><title>host</title><p id="mark">host</p><iframe src="${url.searchParams.get('frame')}"></iframe>`
+    );
+    return;
+  }
+  res.writeHead(200, REFUSING);
+  res.end('<!doctype html><title>refused frame</title><p>never framed</p>');
 });
 await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
 after(() => site.close());
-const host = (frame) =>
-  `http://127.0.0.1:${site.address().port}/host?frame=${encodeURIComponent(frame)}`;
-const ORDINARY_FAILED = 'http://unreachable.test/frame';
-const PROTECTED_FAILED = 'https://www.sliccy.ai/auth/callback?code=error-protected-secret';
-const RULES = ['MAP unreachable.test 127.0.0.1:9', 'MAP www.sliccy.ai 127.0.0.1:9'];
+const port = site.address().port;
+const FRAME_HOST = 'refusing-frames.test';
+const host = (frame) => `http://127.0.0.1:${port}/host?frame=${encodeURIComponent(frame)}`;
+const ORDINARY_FAILED = `http://${FRAME_HOST}/refused/frame`;
+const PROTECTED_FAILED = `http://${FRAME_HOST}/auth/callback?code=error-protected-secret`;
+const RULES = [`MAP ${FRAME_HOST} 127.0.0.1:${port}`];
 
 async function install() {
   globalThis.errorGuard?.close();
@@ -61,41 +74,59 @@ const guarded = (seven, method, params, sessionId) =>
     [method, params, sessionId ?? null]
   );
 
-async function rawFrames(real, url) {
-  const { targetInfos } = await real.cdp.send('Target.getTargets');
-  const target = targetInfos.find((info) => info.type === 'page' && info.url === url);
-  if (!target) return null;
-  const { sessionId } = await real.cdp.send('Target.attachToTarget', {
-    targetId: target.targetId,
-    flatten: true,
-  });
+const walk = (node) => [node.frame, ...(node.childFrames ?? []).flatMap(walk)];
+const failedFrame = (frame) =>
+  Boolean(frame?.unreachableUrl) || String(frame?.url ?? '').startsWith('chrome-error:');
+const brief = (frame) => ({
+  id: frame.id,
+  parentId: frame.parentId,
+  url: frame.url,
+  unreachableUrl: frame.unreachableUrl,
+});
+
+async function treeOf(real, targetId) {
+  const { sessionId } = await real.cdp.send('Target.attachToTarget', { targetId, flatten: true });
   try {
-    const tree = await real.cdp.send('Page.getFrameTree', {}, sessionId);
-    const { result } = await real.cdp.send(
-      'Runtime.evaluate',
-      { expression: 'document.readyState', returnByValue: true },
-      sessionId
-    );
-    return { tree: tree.frameTree, state: result.value, targets: targetInfos };
+    return (await real.cdp.send('Page.getFrameTree', {}, sessionId)).frameTree;
   } finally {
     await real.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
   }
+}
+
+async function look(real, url) {
+  const { targetInfos } = await real.cdp.send('Target.getTargets');
+  const page = targetInfos.find((info) => info.type === 'page' && info.url === url);
+  if (!page) return { page: null };
+  const local = walk(await treeOf(real, page.targetId)).slice(1);
+  const iframes = targetInfos.filter(
+    (info) => info.type === 'iframe' && info.parentId === page.targetId
+  );
+  const remote = [];
+  for (const info of iframes)
+    remote.push(
+      ...(await treeOf(real, info.targetId).then(walk, (error) => [
+        { id: info.targetId, url: `unreadable: ${error.message}` },
+      ]))
+    );
+  return {
+    page: page.targetId,
+    local: local.map(brief),
+    iframes: iframes.map(({ targetId, url }) => ({ targetId, url })),
+    remote: remote.map(brief),
+  };
 }
 
 async function errored(real, url) {
   const deadline = Date.now() + 30000;
   let last;
   while (Date.now() < deadline) {
-    last = await rawFrames(real, url);
-    const child = last?.tree?.childFrames?.[0]?.frame;
-    const remote = last?.targets?.find(
-      (info) => info.type === 'iframe' && info.url.startsWith('chrome-error:')
-    );
-    if (last?.state === 'complete' && (child?.url?.startsWith('chrome-error:') || remote))
-      return last;
+    last = await look(real, url).catch((error) => ({ error: error.message }));
+    if ([...(last.local ?? []), ...(last.remote ?? [])].some(failedFrame)) return last;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  assert.fail(`the iframe never failed: ${JSON.stringify(last)?.slice(0, 2000)}`);
+  assert.fail(
+    `the refused iframe never reached Chrome's error page within 30000 ms: saw ${JSON.stringify({ ...last, served })}`
+  );
 }
 
 async function opened(t, frame) {
