@@ -74,15 +74,18 @@ test("approvals and decide against the real agent: EACCES without Control, a pen
     );
   const list = { kind: 'agent', op: 'approvals' };
   const decide = (id, answer) => ({ kind: 'agent', op: 'decide', id, answer });
-  const grant = async (name) => {
+  const grant = async (name, before = null) => {
     const device = await page.within(
       60000,
-      (name) =>
+      (name, before) =>
         document
           .querySelector('slicc-app')
           .model.network.status()
-          .links?.devices.find((d) => d.name === name && d.state === 'connected'),
-      name
+          .links?.devices.find(
+            (d) => d.name === name && d.state === 'connected' && d.id !== before
+          ),
+      name,
+      before
     );
     await page.evaluate(
       (id) => document.querySelector('slicc-app').model.network.setAccess(id, 'control', true),
@@ -124,6 +127,113 @@ test("approvals and decide against the real agent: EACCES without Control, a pen
     code: 'EACCES',
     message: OWN_KERNEL,
   });
+  const rotated = await raw.evaluate(async (join) => {
+    const { certificateKey } = await import('/seed/leaders.js');
+    const { certificate, hubOrigin, keptFingerprints } = await import('/seed/follow.js');
+    const year = 366 * 24 * 60 * 60 * 1000;
+    await certificate(certificateKey(hubOrigin(join)), { now: () => Date.now() + year });
+    return keptFingerprints('link:');
+  }, joinUrl);
+  assert.deepEqual(
+    await open(OWN, decide(item.id, 'once')),
+    { code: 'EACCES', message: OWN_KERNEL },
+    'the own-kernel link that stayed up while its certificate was replaced'
+  );
+  assert.ok(rotated.includes(own), `the replaced certificate is gone from ${rotated}`);
+  assert.ok(
+    rotated.some((print) => print !== own),
+    `no new certificate in ${rotated}`
+  );
+  assert.equal(rotated.includes(other), false);
+  await raw.evaluate(
+    async (join, name) => {
+      const { joinKey } = await import('/seed/leaders.js');
+      const id = await joinKey(join);
+      await globalThis.nodes[name].disconnect(id);
+      await globalThis.nodes[name].reconnect(id);
+    },
+    joinUrl,
+    OWN
+  );
+  const redialled = await grant(OWN, own);
+  assert.notEqual(redialled, own, 'the reconnect dials with the new certificate');
+  assert.ok(rotated.includes(redialled), `${redialled} is not in ${rotated}`);
+  assert.deepEqual(
+    await open(OWN, decide(item.id, 'once')),
+    { code: 'EACCES', message: OWN_KERNEL },
+    'the own-kernel link dialled again after the rotation'
+  );
+  const live = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links.devices.filter((d) => d.state === 'connected')
+      .map((d) => d.id)
+  );
+  assert.ok(live.includes(redialled) && live.includes(other), JSON.stringify(live));
+  const looped = await raw.evaluate(
+    async (join, live) => {
+      const { certificateKey } = await import('/seed/leaders.js');
+      const follow = await import('/seed/follow.js');
+      const key = certificateKey(follow.hubOrigin(join));
+      const carried = () => live;
+      const print = (cert) =>
+        cert
+          .getFingerprints()
+          .find((each) => each.algorithm === 'sha-256')
+          .value.replaceAll(':', '')
+          .toLowerCase();
+      const cap = follow.RETIRED_CAP ?? 256;
+      const retired = [];
+      for (let i = 0; i < cap + 40; i += 1) {
+        retired.push(print(await follow.certificate(key, { live: carried })));
+        await follow.dropCertificate(key, { live: carried });
+      }
+      await follow.certificate(key, { live: carried });
+      const record = await new Promise((resolve, reject) => {
+        const opening = indexedDB.open('slicc-follow', 1);
+        opening.onerror = () => reject(opening.error);
+        opening.onsuccess = () => {
+          const db = opening.result;
+          const get = db
+            .transaction('certificates')
+            .objectStore('certificates')
+            .get(`retired:${key}`);
+          get.onsuccess = () => {
+            db.close();
+            resolve(get.result);
+          };
+          get.onerror = () => reject(get.error);
+        };
+      });
+      return {
+        cap,
+        retired,
+        record: Array.isArray(record) ? record.map(([each]) => each) : [],
+      };
+    },
+    joinUrl,
+    live
+  );
+  assert.equal(looped.retired[0], redialled);
+  assert.equal(
+    looped.record.length,
+    looped.cap,
+    `${looped.retired.length} re-links keep ${looped.record.length} retired prints`
+  );
+  assert.ok(looped.record.includes(redialled), 'the live link’s retired print was dropped');
+  const pruned = [own, ...looped.retired].filter((each) => !looped.record.includes(each));
+  assert.ok(pruned.includes(own), 'the oldest retired print that no live link carries goes first');
+  assert.deepEqual(
+    pruned.filter((each) => live.includes(each)),
+    [],
+    'a pruned print belonged to a live link'
+  );
+  assert.deepEqual(
+    await open(OWN, decide(item.id, 'once')),
+    { code: 'EACCES', message: OWN_KERNEL },
+    'the live own-kernel link after a loop of re-links'
+  );
   const seen = await open(OWN, list);
   assert.deepEqual(
     seen.opened?.approvals.map((entry) => entry.id),

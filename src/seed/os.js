@@ -34,14 +34,14 @@ import { denialLog, installCommand, watchProtected } from './denials.js';
 import { profileSchema } from './durable.js';
 import { createExitRouter } from './exits.js';
 import { LINK_PORT, LINK_URL, linkFacade, permitted, trayRequests } from './facade.js';
-import { deviceName, hubClient } from './follow.js';
+import { certificate, deviceName, dropCertificate, hubClient } from './follow.js';
 import { createFollowers } from './followers.js';
 import { createForwarder } from './forward.js';
 import { clearHandOff } from './handoff.js';
 import { guardOf, sweep, watchOpened, watchSignIns } from './held.js';
 import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
-import { createLeaders, proxyOf } from './leaders.js';
+import { certificateKey, createLeaders, proxyOf } from './leaders.js';
 import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { createLive } from './live.js';
 import { serveLoopback } from './loopback.js';
@@ -266,6 +266,7 @@ const links = createLinks({
   agent: {
     allowed: allowedRemotely,
     handle: (link, meta, s) => remote.handle(link, meta, s),
+    identified: (link) => remote.identified(link),
     refusal: (link) => (pairedOnly(link) ? PAIRED_CONTROL : null),
   },
   sevens: {
@@ -303,7 +304,10 @@ const links = createLinks({
 });
 const pairing = createPairing({ links });
 const hub = location.hostname.endsWith('.sliccy.ai') ? home() : localStorage.getItem(TRAY_HUB_KEY);
+const carried = () => [...links.links.values()].map((link) => link.id);
 const leaders = createLeaders({
+  cert: (hub) => certificate(certificateKey(hub), { live: carried }),
+  forget: (hub) => dropCertificate(certificateKey(hub), { live: carried }),
   post: hubClient({
     origin: proxyOf(hub, home()),
     fetch: (...args) => fetch(...args),

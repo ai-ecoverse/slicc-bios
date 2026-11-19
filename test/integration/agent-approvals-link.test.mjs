@@ -92,6 +92,7 @@ const notOwn = (link) => fromThisKernel(link, async () => [OWN]);
 
 const OWN = 'aa'.repeat(32);
 const OTHER = 'bb'.repeat(32);
+const NEW = 'cc'.repeat(32);
 
 function refused(code, sentence) {
   return Object.assign(new Error(`${code}: ${sentence}`), { code });
@@ -124,7 +125,11 @@ async function connect({ mode = 'remote', remote, id = null }) {
     router: createExitRouter(),
     makePeer: () => pagePeer,
     timers,
-    agent: { allowed: () => true, handle: (link, meta, s) => remote.handle(link, meta, s) },
+    agent: {
+      allowed: () => true,
+      handle: (link, meta, s) => remote.handle(link, meta, s),
+      identified: (link) => remote.identified(link),
+    },
   });
   const node = answerLink({
     pc: nodePeer,
@@ -203,6 +208,70 @@ test('decide is refused when the own-kernel check itself fails', async () => {
     await refusal(link.session.open({ kind: 'agent', op: 'decide', id: 'a1', answer: 'once' })),
     OWN_KERNEL
   );
+  assert.deepEqual(agent.calls, []);
+  link.close();
+});
+
+const decideOnce = (link) =>
+  link.session.open({ kind: 'agent', op: 'decide', id: 'a1', answer: 'once' });
+
+test("a link from this seven's own kernel stays refused for decide after the kept certificate is replaced while it is up, a foreign link still decides, and a link dialled with the new certificate is refused", async () => {
+  const agent = stubAgent();
+  const kept = { prints: [OWN] };
+  const remote = createRemote({
+    control: agent.control,
+    ownKernel: (link) => fromThisKernel(link, async () => kept.prints),
+  });
+  const own = await connect({ remote, id: OWN });
+  const other = await connect({ remote, id: OTHER });
+  kept.prints = [NEW];
+  assert.equal(await refusal(decideOnce(own)), OWN_KERNEL);
+  assert.deepEqual((await decideOnce(other)).info, { ok: true });
+  own.close();
+  const again = await connect({ remote, id: NEW });
+  assert.equal(await refusal(decideOnce(again)), OWN_KERNEL);
+  assert.deepEqual(agent.calls, [['decide', { id: 'a1', answer: 'once', device: OTHER }]]);
+  other.close();
+  again.close();
+});
+
+test('a foreign link whose own-kernel check failed when it was identified is refused with a sentence to reconnect, and decides once it reconnects with a working check', async () => {
+  const agent = stubAgent();
+  let broken = true;
+  const remote = createRemote({
+    control: agent.control,
+    ownKernel: async (link) => {
+      if (broken) throw new Error('IndexedDB is gone');
+      return fromThisKernel(link, async () => [OWN]);
+    },
+  });
+  const link = await connect({ remote, id: OTHER });
+  broken = false;
+  assert.equal(
+    await refusal(decideOnce(link)),
+    "EACCES: seven couldn't check this device when it linked; reconnect it to decide approvals"
+  );
+  assert.deepEqual(agent.calls, []);
+  link.close();
+  const again = await connect({ remote, id: OTHER });
+  assert.deepEqual((await decideOnce(again)).info, { ok: true });
+  assert.deepEqual(agent.calls, [['decide', { id: 'a1', answer: 'once', device: OTHER }]]);
+  again.close();
+});
+
+test('an own-kernel link whose check failed when it was identified stays refused as own', async () => {
+  const agent = stubAgent();
+  let broken = true;
+  const remote = createRemote({
+    control: agent.control,
+    ownKernel: async (link) => {
+      if (broken) throw new Error('IndexedDB is gone');
+      return fromThisKernel(link, async () => [OWN]);
+    },
+  });
+  const link = await connect({ remote, id: OWN });
+  broken = false;
+  assert.equal(await refusal(decideOnce(link)), OWN_KERNEL);
   assert.deepEqual(agent.calls, []);
   link.close();
 });
