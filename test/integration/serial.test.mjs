@@ -545,6 +545,7 @@ test('the Serial ports switch sits beside capture’s, closes every open port wh
       { key: 'serial', label: 'Serial ports', on: true },
       { key: 'usb', label: 'USB devices', on: true },
       { key: 'hid', label: 'HID devices', on: true },
+      { key: 'ble', label: 'Bluetooth devices', on: true },
     ]
   );
   await page.evaluate(() => window.grant());
