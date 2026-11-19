@@ -9,13 +9,15 @@ import { fileURLToPath } from 'node:url';
 import { fixtureServer } from '@ai-ecoverse/slicc-browsers/fixture';
 import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
+import { MIN_EXTENSION_VERSION } from '../../src/seed/extension.js';
 import { boot } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
+import { extensionFrames } from './fake-extension-frames.mjs';
 import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
-import { extensionFrames } from './guard-set-frames.mjs';
+import { CURRENT_EXTENSION } from './real-extension.mjs';
 
 const exposure = { listed: false, sample: null };
 const known = (row) => knownRow(row, exposure);
@@ -317,8 +319,21 @@ export async function guardHost(t, path, { frames = true } = {}) {
     }
     rows.get(row)?.messages.push(text);
   });
-  await seven.expose('extensionFrames', ([tabId, own]) => extensionFrames(browser, tabId, own));
-  await seven.init(`() => { globalThis.sliccFakeFrames = ${frames === true}; }`);
+  let handed = false;
+  await seven.expose('guardDiag', ([path, hook]) => {
+    if (handed) return;
+    handed = true;
+    process.stdout.write(`DIAG-FRAMES hook ${path} ${JSON.stringify(hook)}\n`);
+  });
+  await seven.expose('extensionFrames', async ([id, tabId, own]) => {
+    const answer = await extensionFrames(browser, tabId, own);
+    await seven
+      .evaluate(([id, answer]) => window.extensionFramesAnswer(id, answer), [id, answer])
+      .catch(() => false);
+  });
+  await seven.init(
+    `() => { globalThis.sliccFakeFrames = ${frames === true}; globalThis.sliccFakeVersion = ${JSON.stringify(frames === true ? CURRENT_EXTENSION.version : MIN_EXTENSION_VERSION)}; }`
+  );
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
     const every = window.setInterval;
@@ -338,16 +353,26 @@ export async function guardHost(t, path, { frames = true } = {}) {
         for (const listener of listeners) listener(message);
       }
     };
+    const framesPending = new Map();
+    window.extensionFramesAnswer = (id, answer) => {
+      framesPending.get(id)?.(answer);
+      framesPending.delete(id);
+    };
     Object.defineProperty(globalThis, 'sliccExtension', {
       value: Object.freeze({
-        version: globalThis.sliccFakeFrames ? '7.12.0' : '7.10.0',
+        version: globalThis.sliccFakeVersion,
         fetch: (input, init) => fetch(input, init),
         ...(globalThis.sliccFakeFrames
           ? {
-              async frames(tabId) {
-                const answer = await window.extensionFrames([tabId, location.origin]);
-                if (answer.error) throw new Error(answer.error);
-                return answer.result;
+              frames(tabId) {
+                const id = ++next;
+                return new Promise((resolve, reject) => {
+                  framesPending.set(id, (answer) => {
+                    if (answer?.error) reject(new Error(answer.error));
+                    else resolve(answer?.result);
+                  });
+                  window.extensionFrames(JSON.stringify([id, tabId, location.origin]));
+                });
               },
             }
           : {}),
@@ -587,6 +612,12 @@ export async function guardHost(t, path, { frames = true } = {}) {
       async open(row, own, path, lag, paintDelay, capture) {
         const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
         const { tabs, route, frames } = routes[path]();
+        void window.guardDiag(
+          JSON.stringify([
+            path,
+            { route, frames: typeof frames, version: globalThis.sliccExtension?.version ?? null },
+          ])
+        );
         const connection = guardProtected(
           gated,
           [location.origin, own].flat(),
@@ -866,7 +897,7 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
-            if (current?.id === 'C3.tab-iframe-leak' && data.step)
+            if (['C3.tab-worker-leak', 'C3.tab-iframe-leak'].includes(current?.id) && data.step)
               process.stdout.write(
                 `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} ${JSON.stringify(
                   {
@@ -878,7 +909,7 @@ export function shared(path, { variants, except = [], group } = {}) {
                   }
                 )}\n`
               );
-            if (current?.id === 'C3.tab-iframe-leak' && data.events)
+            if (['C3.tab-worker-leak', 'C3.tab-iframe-leak'].includes(current?.id) && data.events)
               process.stdout.write(
                 `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} attached ${JSON.stringify(
                   data.events

@@ -727,5 +727,8 @@ export function paintWithoutFrames() {
     assert.equal(row.state, 'closed', 'paint, screencast and input are refused');
     assert.equal(row.reads.dom, 'refused', 'DOM reads are refused');
     assert.equal(row.runtime, 'shown', 'Runtime reads still work');
+    assert.equal(typeof row.gone.shot, 'number', 'screenshots work once the frame is gone');
+    assert.equal(row.gone.dom, 'shown', 'DOM reads work once the frame is gone');
+    assert.equal(row.gone.input, 'reached', 'input works once the frame is gone');
   });
 }
