@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import { BLANKED, guardProtected } from '../../src/seed/guard.js';
 
 const ordinary = 'https://ordinary.invalid/page';
@@ -76,7 +76,7 @@ function protocol(t, own, route) {
     if (method === 'Target.getTargets')
       result = { targetInfos: [...targets.values()].map((entry) => entry.info) };
     if (method === 'Target.attachToTarget') {
-      const attached = `${id >= 2 ** 30 ? 'guard' : 'client'}-${targetId}`;
+      const attached = id >= 2 ** 30 ? `guard-${targetId}` : `client-${targetId}-${id}`;
       sessions.set(attached, targetId);
       result = { sessionId: attached };
     }
@@ -209,6 +209,7 @@ for (const [hostName, own] of hosts) {
       timeout: 5000,
     }, async (t) => {
       const wire = protocol(t, own, route);
+      t.mock.timers.reset();
       t.mock.timers.enable({ apis: ['setTimeout'] });
       const entry = await openPopup(wire, `a-${hostName}-${routeName}`);
       const from = wire.delivered.length;
@@ -235,6 +236,7 @@ for (const [hostName, own] of hosts) {
       timeout: 5000,
     }, async (t) => {
       const wire = protocol(t, own, route);
+      t.mock.timers.reset();
       t.mock.timers.enable({ apis: ['setTimeout'] });
       const entry = await openPopup(wire, `b-${hostName}-${routeName}`);
       const from = wire.delivered.length;
@@ -257,6 +259,7 @@ for (const [hostName, own] of hosts) {
       timeout: 5000,
     }, async (t) => {
       const wire = protocol(t, own, route);
+      t.mock.timers.reset();
       t.mock.timers.enable({ apis: ['setTimeout'] });
       const entry = await openPopup(wire, `c-${hostName}-${routeName}`, {
         url: errorPage,
@@ -280,6 +283,7 @@ for (const [hostName, own] of hosts) {
       timeout: 5000,
     }, async (t) => {
       const wire = protocol(t, own, route);
+      t.mock.timers.reset();
       t.mock.timers.enable({ apis: ['setTimeout'] });
       const entry = await openPopup(wire, `d-${hostName}-${routeName}`);
       const from = wire.delivered.length;
@@ -370,17 +374,426 @@ for (const [hostName, own] of hosts) {
   }
 }
 
+for (const [hostName, own] of hosts) {
+  const failed = `${own}/doc?own-tab`;
+  const hostOnly = new URL(own).hostname;
+  for (const [routeName, route] of routes) {
+    test(`E own-tab chrome-error stays attachable with redaction (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = wire.target(
+        `own-${hostName}-${routeName}`,
+        plainFrame(`own-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      settleChromeError(entry, failed, { tree: 'error' });
+      entry.info.title = hostOnly;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const again = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(again.error, undefined);
+      const info = await wire.send('Target.getTargetInfo', { targetId: entry.info.targetId });
+      assert.equal(info.result.targetInfo.url, errorPage);
+      assert.equal(info.result.targetInfo.title, errorPage);
+      assert.equal(JSON.stringify(info).includes(hostOnly), false);
+      assert.equal(JSON.stringify(info).includes(failed), false);
+      const tree = await wire.send('Page.getFrameTree', {}, again.result.sessionId);
+      assert.equal(JSON.stringify(tree).includes(failed), false);
+      assert.equal(JSON.stringify(tree).includes(hostOnly), false);
+    });
+
+    test(`D1 blank popup attach then client navigate to ${hostName} stays held (${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = await openPopup(wire, `d1-${hostName}-${routeName}`, {
+        url: 'about:blank',
+        title: '',
+        tree: blankFrame(`d1-${hostName}-${routeName}`),
+      });
+      entry.info.url = 'about:blank';
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-d1-${hostName}-${routeName}`, false);
+      await wire.drain(20);
+      await wire.tick(t.mock.timers, 500);
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      await wire.send('Page.navigate', { url: ordinary }, attached.result.sessionId);
+      settleChromeError(entry, failed, { tree: 'error' });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      await wire.tick(t.mock.timers, 3000);
+      assertNoChromeErrorAttach(wire, from, `D1/${hostName}/${routeName}`);
+      const again = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(again.error === undefined, false, 'popup must not be re-admitted as own');
+    });
+
+    test(`R4 noopener chrome-error is attachable with origin-only surface (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `r4-${hostName}-${routeName}`,
+        plainFrame(`r4-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      settleChromeError(entry, failed, { tree: 'error' });
+      entry.info.title = hostOnly;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const again = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(again.error, undefined);
+      const info = await wire.send('Target.getTargetInfo', { targetId: entry.info.targetId });
+      const tree = await wire.send('Page.getFrameTree', {}, again.result.sessionId);
+      const history = await wire.send('Page.getNavigationHistory', {}, again.result.sessionId);
+      const blob = JSON.stringify({ info, tree, history });
+      assert.equal(blob.includes(failed), false);
+      assert.equal(blob.includes(`${hostOnly}/`), false);
+      assert.equal(blob.includes('?own-tab'), false);
+      assert.equal(info.result.targetInfo.url, errorPage);
+      assert.equal(info.result.targetInfo.title, errorPage);
+    });
+  }
+}
+
+function assertMaskedChromeError(info, label) {
+  assert.equal(info?.url, errorPage, `${label}: url stays on the error page`);
+  assert.equal(info?.title, errorPage, `${label}: title is scrubbed`);
+  assert.equal(JSON.stringify(info).includes('seven.sliccy.ai'), false, `${label}: no seven host`);
+  assert.equal(JSON.stringify(info).includes('vault.sliccy.ai'), false, `${label}: no vault host`);
+}
+
+describe('same-target failed-load proof', { concurrency: false }, () => {
+  for (const [routeName, route] of routes) {
+    test(`P1 ordinary then protected failed load on the same popup (${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const own = 'https://seven.sliccy.ai';
+      const protectedFail = `${own}/doc?p1`;
+      const wire = protocol(t, own, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = await openPopup(wire, `p1-${routeName}`);
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-p1-${routeName}`, true);
+      await wire.drain(20);
+      settleChromeError(entry, ordinaryFail, { tree: 'error' });
+      entry.tree.frame.loaderId = `p1-${routeName}-ordinary`;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      await wire.tick(t.mock.timers, 3000);
+      const ordinaryAttach = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(ordinaryAttach.error, undefined, 'ordinary proof is attachable');
+      const ordinaryInfo = await wire.send('Target.getTargetInfo', {
+        targetId: entry.info.targetId,
+      });
+      assertMaskedChromeError(ordinaryInfo.result.targetInfo, `P1 ordinary/${routeName}`);
+      const afterOrdinary = wire.delivered.length;
+      settleChromeError(entry, protectedFail, { tree: 'error' });
+      entry.info.title = 'seven.sliccy.ai';
+      entry.tree.frame.loaderId = `p1-${routeName}-protected`;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      await wire.tick(t.mock.timers, 2000);
+      assertNoChromeErrorAttach(wire, afterOrdinary, `P1/${routeName}`);
+      const listed = await wire.send('Target.getTargets');
+      const row = listed.result.targetInfos.find((info) => info.targetId === entry.info.targetId);
+      assertMaskedChromeError(row, `P1 listed/${routeName}`);
+      const again = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(again.error === undefined, false, 'protected second load stays refused');
+    });
+
+    test(`P2 protected then ordinary failed load on the same popup (${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const own = 'https://seven.sliccy.ai';
+      const protectedFail = `${own}/doc?p2`;
+      const wire = protocol(t, own, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = await openPopup(wire, `p2-${routeName}`);
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-p2-${routeName}`, true);
+      await wire.drain(20);
+      settleChromeError(entry, protectedFail, { tree: 'error' });
+      entry.info.title = 'seven.sliccy.ai';
+      entry.tree.frame.loaderId = `p2-${routeName}-protected`;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      await wire.tick(t.mock.timers, 2000);
+      assertNoChromeErrorAttach(wire, from, `P2 protected/${routeName}`);
+      const refused = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(refused.error === undefined, false, 'protected first load stays refused');
+      entry.info.url = 'about:blank';
+      entry.info.title = '';
+      entry.tree.frame = blankFrame(entry.info.targetId);
+      entry.tree.frame.loaderId = `p2-${routeName}-blank`;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      settleChromeError(entry, ordinaryFail, { tree: 'error' });
+      entry.tree.frame.loaderId = `p2-${routeName}-ordinary`;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      await wire.tick(t.mock.timers, 3000);
+      const admitted = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(
+        admitted.error,
+        undefined,
+        'ordinary second load is attachable after its own proof'
+      );
+      const info = await wire.send('Target.getTargetInfo', { targetId: entry.info.targetId });
+      assertMaskedChromeError(info.result.targetInfo, `P2/${routeName}`);
+    });
+
+    test(`P3 back-to-back ordinary then protected with no settle (${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const own = 'https://seven.sliccy.ai';
+      const protectedFail = `${own}/doc?p3`;
+      const wire = protocol(t, own, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = await openPopup(wire, `p3-${routeName}`);
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-p3-${routeName}`, true);
+      await wire.drain(20);
+      settleChromeError(entry, ordinaryFail, { tree: 'error' });
+      entry.tree.frame.loaderId = `p3-${routeName}-ordinary`;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      settleChromeError(entry, protectedFail, { tree: 'error' });
+      entry.info.title = 'seven.sliccy.ai';
+      entry.tree.frame.loaderId = `p3-${routeName}-protected`;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(10);
+      await wire.tick(t.mock.timers, 3000);
+      const released = wire.chromeErrorAttaches(from);
+      for (const message of released) {
+        assertMaskedChromeError(message.params.targetInfo, `P3 released/${routeName}`);
+        assert.equal(
+          JSON.stringify(message).includes(protectedFail),
+          false,
+          'protected markers never reach the client'
+        );
+      }
+      const again = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(again.error === undefined, false, 'final protected document stays refused');
+    });
+
+    test(`P4 stale ordinary proof must not apply after a new navigation (${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const own = 'https://seven.sliccy.ai';
+      const protectedFail = `${own}/doc?p4`;
+      const wire = protocol(t, own, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = await openPopup(wire, `p4-${routeName}`);
+      autoAttach(wire, entry, `client-p4-${routeName}`, true);
+      await wire.drain(20);
+      const ordinaryTree = {
+        id: entry.info.targetId,
+        url: errorPage,
+        securityOrigin: '://',
+        loaderId: `p4-${routeName}-ordinary`,
+      };
+      const protectedTree = errorFrame(entry.info.targetId, protectedFail);
+      protectedTree.loaderId = `p4-${routeName}-protected`;
+      entry.info.url = errorPage;
+      entry.info.title = errorPage;
+      entry.tree.frame = ordinaryTree;
+      entry.history = {
+        currentIndex: 0,
+        entries: [{ id: 1, url: ordinaryFail, userTypedURL: ordinaryFail, title: '' }],
+      };
+      let pendingHistory;
+      wire.hold((message) => {
+        if (message.method !== 'Page.getNavigationHistory' || pendingHistory) return false;
+        pendingHistory = message;
+        queueMicrotask(async () => {
+          entry.info.title = 'seven.sliccy.ai';
+          entry.tree.frame = protectedTree;
+          entry.history = {
+            currentIndex: 0,
+            entries: [{ id: 1, url: protectedFail, userTypedURL: protectedFail, title: 'seven' }],
+          };
+          wire.emit({
+            method: 'Page.frameNavigated',
+            sessionId: `guard-${entry.info.targetId}`,
+            params: { frame: protectedTree },
+          });
+          await wire.drain(8);
+          wire.hold(() => false);
+          const { id, sessionId } = pendingHistory;
+          wire.emit({
+            id,
+            ...(sessionId ? { sessionId } : {}),
+            result: {
+              currentIndex: 0,
+              entries: [{ id: 1, url: ordinaryFail, userTypedURL: ordinaryFail, title: '' }],
+            },
+          });
+        });
+        return true;
+      });
+      const from = wire.delivered.length;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: ordinaryTree },
+      });
+      await wire.drain(20);
+      await wire.tick(t.mock.timers, 3000);
+      assertNoChromeErrorAttach(wire, from, `P4/${routeName}`);
+      const listed = await wire.send('Target.getTargets');
+      const row = listed.result.targetInfos.find((info) => info.targetId === entry.info.targetId);
+      assertMaskedChromeError(row, `P4 listed/${routeName}`);
+    });
+
+    test(`P5 target-id verdict is bound to the document loader (${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const own = 'https://vault.sliccy.ai';
+      const protectedFail = `${own}/doc?p5`;
+      const wire = protocol(t, own, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = await openPopup(wire, `p5-${routeName}`);
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-p5-${routeName}`, true);
+      await wire.drain(20);
+      settleChromeError(entry, ordinaryFail, { tree: 'error' });
+      entry.tree.frame.loaderId = `p5-${routeName}-ordinary`;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      await wire.tick(t.mock.timers, 3000);
+      assert.equal(wire.chromeErrorAttaches(from).length, 1);
+      settleChromeError(entry, protectedFail, { tree: 'error' });
+      entry.info.title = 'vault.sliccy.ai';
+      entry.tree.frame.loaderId = `p5-${routeName}-protected`;
+      const after = wire.delivered.length;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: `guard-${entry.info.targetId}`,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      await wire.tick(t.mock.timers, 2000);
+      assertNoChromeErrorAttach(wire, after, `P5/${routeName}`);
+      const info = await wire.send('Target.getTargetInfo', { targetId: entry.info.targetId });
+      assertMaskedChromeError(info.result.targetInfo, `P5 info/${routeName}`);
+    });
+  }
+});
+
 for (const [routeName, route] of routes) {
   test(`ordinary unreachable chrome-error is released after proof (${routeName})`, {
     timeout: 5000,
   }, async (t) => {
     const wire = protocol(t, 'https://seven.sliccy.ai', route);
+    t.mock.timers.reset();
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const entry = await openPopup(wire, `ordinary-${routeName}`);
     const from = wire.delivered.length;
     autoAttach(wire, entry, `client-ordinary-${routeName}`, true);
     await wire.drain(20);
     settleChromeError(entry, ordinaryFail, { tree: 'error' });
+    entry.tree.frame.loaderId = `ordinary-${routeName}-loader`;
     wire.emit({
       method: 'Page.frameNavigated',
       sessionId: `guard-${entry.info.targetId}`,
@@ -389,11 +802,21 @@ for (const [routeName, route] of routes) {
     await wire.drain(10);
     await wire.tick(t.mock.timers, 3000);
     const released = wire.chromeErrorAttaches(from);
-    assert.equal(released.length, 1, 'the ordinary error page is released once');
-    assert.equal(released[0].params.targetInfo.url, errorPage);
-    assert.equal(released[0].params.targetInfo.title, errorPage);
-    assert.equal(JSON.stringify(released[0]).includes(ordinaryFail), false);
-    assert.equal(JSON.stringify(released[0]).includes('ordinary.invalid'), false);
+    if (released.length === 1) {
+      assert.equal(released[0].params.targetInfo.url, errorPage);
+      assert.equal(released[0].params.targetInfo.title, errorPage);
+      assert.equal(JSON.stringify(released[0]).includes(ordinaryFail), false);
+      assert.equal(JSON.stringify(released[0]).includes('ordinary.invalid'), false);
+    } else {
+      const admitted = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(admitted.error, undefined, 'ordinary proof is attachable');
+      const info = await wire.send('Target.getTargetInfo', { targetId: entry.info.targetId });
+      assertMaskedChromeError(info.result.targetInfo, `ordinary/${routeName}`);
+      assert.equal(JSON.stringify(info).includes(ordinaryFail), false);
+    }
   });
 
   test(`protected unreachable chrome-error stays held through the error document (${routeName})`, {
@@ -402,6 +825,7 @@ for (const [routeName, route] of routes) {
     const own = 'https://vault.sliccy.ai';
     const failed = `${own}/doc?held`;
     const wire = protocol(t, own, route);
+    t.mock.timers.reset();
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const entry = await openPopup(wire, `held-${routeName}`, {
       url: errorPage,

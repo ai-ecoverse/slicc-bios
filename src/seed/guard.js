@@ -1035,6 +1035,7 @@ class Guard {
     this.frames = new Map();
     this.errorFrames = new Set();
     this.errorUrls = new Map();
+    this.errorUrlLoaders = new Map();
     this.frameRoots = new Map();
     this.estimated = new Set();
     this.unsafe = new WeakSet();
@@ -1066,6 +1067,7 @@ class Guard {
     this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
+    this.provenance = new Set();
     this.internal = new Map();
     this.evidence = new Set();
     this.asked = new Map();
@@ -1352,11 +1354,12 @@ class Guard {
       this.errorUrls.set(remembered.id, remembered.url);
       this.errored.set(info.targetId, remembered.url);
     }
-    const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
+    const failedUrl = this.errorFailedRecord(this.errored.get(info.targetId))?.url;
+    const failed = info.url !== undefined && failedUrl === bare(info.url);
     this.targets.set(info.targetId, {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
-      openerId: info.openerId,
+      openerId: info.openerId ?? known?.openerId,
       parentId: info.parentId ?? known?.parentId,
       parentFrameId: info.parentFrameId ?? known?.parentFrameId,
       was: known?.was || known?.guarded || false,
@@ -2503,11 +2506,9 @@ class Guard {
 
   scopeNavigated(frame, targetId) {
     const scope = this.scope(targetId);
-    if (
-      frame.id === scope.root ||
-      frame.id === this.frameRoots.get(targetId) ||
-      (!frame.parentId && !scope.root)
-    ) {
+    const priorRoot = this.frameRoots.get(targetId);
+    if (!frame.parentId && priorRoot && priorRoot !== frame.id) this.forgetFailedUrl(targetId);
+    if (frame.id === scope.root || frame.id === priorRoot || (!frame.parentId && !scope.root)) {
       if (scope.root && frame.id !== scope.root) {
         this.frames.delete(scope.root);
         this.parents.delete(scope.root);
@@ -2530,7 +2531,10 @@ class Guard {
     if (typeof frame.loaderId === 'string' && frame.loaderId) {
       const previous = this.frameLoaders.get(frame.id);
       this.frameLoaders.set(frame.id, frame.loaderId);
-      if (previous !== undefined && previous !== frame.loaderId) this.forgetProbeFrame(frame.id);
+      if (previous !== undefined && previous !== frame.loaderId) {
+        this.forgetProbeFrame(frame.id);
+        this.forgetFailedUrl(targetId);
+      }
     }
     if (frame.parentId) {
       this.parents.set(frame.id, frame.parentId);
@@ -3039,61 +3043,101 @@ class Guard {
     return typeof url === 'string' && url.startsWith('chrome-error:');
   }
 
-  errorFailedKnown(targetId) {
-    const remembered = this.errored.get(targetId);
-    if (typeof remembered === 'string' && remembered) return remembered;
-    const root = this.frameRoots.get(targetId);
-    const marked = root && this.errorUrls.get(root);
-    if (typeof marked === 'string' && marked) return marked;
+  errorFailedRecord(value) {
+    if (typeof value === 'string' && value) return { url: value, loader: undefined };
+    if (value && typeof value.url === 'string' && value.url) return value;
     return undefined;
+  }
+
+  errorFailedKnown(targetId) {
+    const root = this.frameRoots.get(targetId);
+    const remembered = this.errorFailedRecord(this.errored.get(targetId));
+    if (remembered) return remembered.url;
+    const marked = root && this.errorUrls.get(root);
+    return typeof marked === 'string' && marked ? marked : undefined;
   }
 
   errorOrdinaryFailed(failed) {
     return typeof failed === 'string' && URL.canParse(failed) && !this.is.url(failed);
   }
 
-  rememberFailedUrl(targetId, failed, frameId) {
+  rememberFailedUrl(targetId, failed, frameId, loaderId) {
     if (typeof failed !== 'string' || !failed || !targetId) return;
-    this.errored.set(targetId, failed);
     const root = frameId ?? this.frameRoots.get(targetId);
+    const loader = loaderId ?? (root ? this.frameLoaders.get(root) : undefined);
+    const current = root ? this.frameLoaders.get(root) : undefined;
+    if (loader && current && loader !== current) return;
+    this.errored.set(targetId, { url: failed, loader });
     if (!root) return;
     this.frameRoots.set(targetId, root);
     this.errorUrls.set(root, failed);
+    if (loader) this.errorUrlLoaders.set(root, loader);
   }
 
-  async errorFailedUrl(targetId) {
-    const known = this.errorFailedKnown(targetId);
-    if (known) return known;
-    const session = this.navs.get(targetId)?.session;
-    if (!session) return undefined;
-    const tree = await this.answered(this.call('Page.getFrameTree', {}, session));
-    const frame = tree?.result?.frameTree?.frame;
-    if (typeof frame?.unreachableUrl === 'string' && frame.unreachableUrl) {
-      this.rememberFailedUrl(targetId, frame.unreachableUrl, frame.id);
-      return frame.unreachableUrl;
-    }
-    const history = await this.answered(this.call('Page.getNavigationHistory', {}, session));
+  forgetFailedUrl(targetId) {
+    if (!targetId) return;
+    this.errored.delete(targetId);
+    const root = this.frameRoots.get(targetId);
+    if (!root) return;
+    this.errorUrls.delete(root);
+    this.errorUrlLoaders.delete(root);
+  }
+
+  errorLoaderMoved(root, loaderAtStart) {
+    const loaderNow = root ? this.frameLoaders.get(root) : undefined;
+    return Boolean(loaderAtStart && loaderNow && loaderAtStart !== loaderNow);
+  }
+
+  errorHistoryFailed(history) {
     if (!history || history.error) return undefined;
     const { entries = [], currentIndex = 0 } = history.result ?? {};
-    const ordered = [entries[currentIndex], ...entries].filter(Boolean);
-    for (const entry of ordered) {
+    for (const entry of [entries[currentIndex], ...entries].filter(Boolean)) {
       for (const field of [entry.userTypedURL, entry.url]) {
-        if (
-          typeof field === 'string' &&
-          field &&
-          !this.errorPageUrl(field) &&
-          URL.canParse(field)
-        ) {
-          this.rememberFailedUrl(targetId, field, frame?.id);
+        if (typeof field === 'string' && field && !this.errorPageUrl(field) && URL.canParse(field))
           return field;
-        }
       }
     }
     return undefined;
   }
 
+  async errorFailedUrl(targetId) {
+    const root = this.frameRoots.get(targetId);
+    const loaderAtStart = root ? this.frameLoaders.get(root) : undefined;
+    const session = this.navs.get(targetId)?.session;
+    if (!session) return this.errorFailedKnown(targetId);
+    const tree = await this.answered(this.call('Page.getFrameTree', {}, session));
+    const frame = tree?.result?.frameTree?.frame;
+    if (this.errorLoaderMoved(root, loaderAtStart)) return undefined;
+    if (typeof frame?.unreachableUrl === 'string' && frame.unreachableUrl) {
+      this.rememberFailedUrl(targetId, frame.unreachableUrl, frame.id, frame.loaderId);
+      return frame.unreachableUrl;
+    }
+    const field = this.errorHistoryFailed(
+      await this.answered(this.call('Page.getNavigationHistory', {}, session))
+    );
+    if (!field) return this.errorFailedKnown(targetId);
+    if (this.errorLoaderMoved(root, loaderAtStart)) return undefined;
+    this.rememberFailedUrl(targetId, field, frame?.id, frame?.loaderId ?? loaderAtStart);
+    return field;
+  }
+
+  popupShaped(info, targetId = info?.targetId) {
+    const id = targetId ?? info?.targetId;
+    if (!id || this.provenance.has(id)) return false;
+    const openerId = info?.openerId ?? this.targets.get(id)?.openerId;
+    return typeof openerId === 'string' && openerId.length > 0;
+  }
+
+  claimProvenance(targetId) {
+    if (!targetId) return;
+    const info = this.targets.get(targetId);
+    if (this.popupShaped({ openerId: info?.openerId, targetId }, targetId)) return;
+    this.provenance.add(targetId);
+  }
+
   async errorUnproven(info, targetId = info?.targetId) {
     if (!this.errorPageUrl(info?.url)) return false;
+    if (!this.popupShaped(info, targetId)) return false;
     return !this.errorOrdinaryFailed(await this.errorFailedUrl(targetId));
   }
 
@@ -4139,10 +4183,10 @@ class Guard {
     if (!answer.error) this.settleLoad(load);
   }
 
-  failed(targetId, { frameId, request }) {
+  failed(targetId, { frameId, request, loaderId }) {
     const root = this.frameRoots.get(targetId) ?? this.scopes.get(targetId)?.root ?? targetId;
     if (!targetId || frameId !== root) return;
-    this.errored.set(targetId, bare(request.url));
+    this.rememberFailedUrl(targetId, bare(request.url), frameId, loaderId);
     const nav = this.navs.get(targetId);
     if (!nav?.session || nav.scrub) return;
     nav.scrub = this.scrubbing(nav);
@@ -4586,7 +4630,8 @@ class Guard {
       const nav = this.navs.get(params.targetId);
       nav?.wiped?.();
       this.navs.delete(params.targetId);
-      this.errored.delete(params.targetId);
+      this.forgetFailedUrl(params.targetId);
+      this.provenance.delete(params.targetId);
       if (nav?.session) this.navSessions.delete(nav.session);
       this.clearWorkerTarget(params.targetId);
       return this.targets.get(params.targetId)?.guarded === true;
@@ -4974,6 +5019,20 @@ class Guard {
     }
   }
 
+  markErrorFrame(frame, nav, committed) {
+    if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:')) {
+      this.errorFrames.add(frame.id);
+      this.errorUrls.set(frame.id, frame.unreachableUrl);
+      if (frame.loaderId) this.errorUrlLoaders.set(frame.id, frame.loaderId);
+      return;
+    }
+    if (!committed) return;
+    this.errorFrames.delete(frame.id);
+    this.errorUrls.delete(frame.id);
+    this.errorUrlLoaders.delete(frame.id);
+    nav?.errors?.delete(frame.id);
+  }
+
   noteError(frame, sessionId, committed = false) {
     const targetId =
       this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
@@ -4982,14 +5041,7 @@ class Guard {
     const root = this.frameRoots.get(targetId);
     if (committed) this.recoverError(frame, sessionId, targetId);
     this.frames.set(frame.id, this.framed(frame));
-    if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:')) {
-      this.errorFrames.add(frame.id);
-      this.errorUrls.set(frame.id, frame.unreachableUrl);
-    } else if (committed) {
-      this.errorFrames.delete(frame.id);
-      this.errorUrls.delete(frame.id);
-      nav?.errors?.delete(frame.id);
-    }
+    this.markErrorFrame(frame, nav, committed);
     if (nav && this.errorFrames.has(frame.id)) {
       nav.errors ??= new Set();
       nav.errors.add(frame.id);
@@ -5005,11 +5057,13 @@ class Guard {
       if (entry.targetId !== targetId || (frame.parentId && entry.frameId !== frame.id)) continue;
       entry.frameId = frame.id;
       if (this.errorFrames.has(frame.id))
-        this.errored.set(
+        this.rememberFailedUrl(
           targetId,
           typeof frame.unreachableUrl === 'string' && URL.canParse(frame.unreachableUrl)
             ? frame.unreachableUrl
-            : ERROR_PAGE
+            : ERROR_PAGE,
+          frame.id,
+          frame.loaderId
         );
     }
     if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -5766,7 +5820,7 @@ class Guard {
       return { ...info, url: origin, title: origin };
     }
     if (this.errorPageUrl(info.url)) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
-    const failed = this.errored.get(info.targetId) ?? this.errorFailedKnown(info.targetId);
+    const failed = this.errorFailedKnown(info.targetId);
     const entries = [...this.sessions.values()].filter((entry) => entry.targetId === info.targetId);
     const error =
       this.errorFrames.has(this.frameRoots.get(info.targetId)) ||
@@ -6224,8 +6278,14 @@ class Guard {
       const ok = await this.watch(result.sessionId, params.targetId);
       if (!ok) return this.refuse(was);
       this.touch(params.targetId);
+      this.claimProvenance(params.targetId);
       return this.deliver(message);
     }
+    if (
+      ['Page.navigate', 'Page.reload', 'Page.navigateToHistoryEntry'].includes(method) &&
+      !message.error
+    )
+      this.claimProvenance(this.sessions.get(was.sessionId)?.targetId);
     if (method === 'Target.getTargets' && Array.isArray(result?.targetInfos)) {
       return this.listed(message, result);
     }
@@ -6899,6 +6959,7 @@ class Guard {
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     if (background) kept(this.backgrounded, targetId);
+    this.provenance.add(targetId);
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
