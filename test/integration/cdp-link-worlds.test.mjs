@@ -248,9 +248,10 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
   }
   const tools = await shell(
     page,
-    `playwright-cli webmcp-list && playwright-cli webmcp-call echo '{"value":"WEBMCP-MARK"}' && playwright-cli discover --tab ${freshId} --once http://localhost:${stand.address().port}/fresh --no-probe --json`,
+    `playwright-cli eval --tab ${freshId} 'document.modelContext.getTools()' && playwright-cli eval --tab ${freshId} 'document.modelContext.executeTool("echo", {value: "WEBMCP-MARK"})' && playwright-cli discover --tab ${freshId} --once http://localhost:${stand.address().port}/fresh --no-probe --json`,
     'tools-link'
   );
+  assert.match(tools, /\becho\b/);
   assert.match(tools, /WEBMCP-MARK/);
   assert.match(tools, /exit-0/);
   assert.doesNotMatch(tools, /slicc: refused:/);
