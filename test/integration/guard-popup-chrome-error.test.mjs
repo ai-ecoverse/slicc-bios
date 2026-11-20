@@ -1656,3 +1656,98 @@ describe('createTarget provenance races', { concurrency: false }, () => {
     }
   }
 });
+
+describe('popup opener provenance races', { concurrency: false }, () => {
+  const protectedFail = `${ownOrigin}/doc?popup-opener-race`;
+  for (const [routeName, route] of routes) {
+    test(`H6 stale createTarget claim then opener then chrome-error stays held (${routeName})`, {
+      timeout: 8000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      wire.target('opener');
+      const id = `h6-${routeName}`;
+      const entry = wire.target(id, { id, url: '', securityOrigin: '://' });
+      entry.info.url = '';
+      entry.info.title = '';
+      let heldCreate;
+      wire.hold((message) => {
+        if (message.method !== 'Target.createTarget' || message.id < 2 ** 30 || heldCreate)
+          return false;
+        heldCreate = message;
+        return true;
+      });
+      const from = wire.delivered.length;
+      const creating = wire.send('Target.createTarget', { url: ordinary, background: true });
+      await wire.drain(8);
+      assert.ok(heldCreate, 'createTarget reply is held so clientCreates stays pending');
+      autoAttach(wire, entry, `client-h6-${routeName}`, true);
+      await wire.drain(20);
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      await wire.tick(t.mock.timers, 3000);
+      assertNoChromeErrorAttach(wire, from, `H6/${routeName}`);
+      wire.hold(() => false);
+      const targetId = `created-h6-${routeName}`;
+      const made = wire.target(targetId, blankFrame(targetId));
+      made.info.url = 'about:blank';
+      wire.sessions.set(`client-${targetId}`, targetId);
+      wire.emit({ id: heldCreate.id, result: { targetId } });
+      await creating.catch(() => {});
+    });
+
+    test(`H3 opener-less intermediate clears cached opener before chrome-error check (${routeName})`, {
+      timeout: 8000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = await openPopup(wire, `h3-${routeName}`, { url: '', title: '' });
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-h3-${routeName}`, true);
+      await wire.drain(20);
+      delete entry.info.openerId;
+      entry.info.canAccessOpener = false;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      delete entry.info.openerId;
+      await wire.tick(t.mock.timers, 3000);
+      assertNoChromeErrorAttach(wire, from, `H3/${routeName}`);
+    });
+
+    test(`H5 opener learned after first chrome-error sighting stays held (${routeName})`, {
+      timeout: 8000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      wire.target('opener');
+      const id = `h5-${routeName}`;
+      const entry = wire.target(id, { id, url: '', securityOrigin: '://' });
+      entry.info.url = '';
+      entry.info.title = '';
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-h5-${routeName}`, true);
+      await wire.drain(20);
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      await wire.tick(t.mock.timers, 500);
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 2500);
+      assertNoChromeErrorAttach(wire, from, `H5/${routeName}`);
+    });
+  }
+});
