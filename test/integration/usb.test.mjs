@@ -393,13 +393,14 @@ test('the USB devices switch sits after Serial ports and before HID and Bluetoot
   const page = await seven(t);
   assert.deepEqual(
     (await page.evaluate(() => document.querySelector('slicc-app').model.switches.list())).slice(
-      -4
+      -5
     ),
     [
       { key: 'serial', label: 'Serial ports', on: true },
       { key: 'usb', label: 'USB devices', on: true },
       { key: 'hid', label: 'HID devices', on: true },
       { key: 'ble', label: 'Bluetooth devices', on: true },
+      { key: 'previews', label: 'Public previews', on: true },
     ]
   );
   await page.evaluate(() => window.grant());

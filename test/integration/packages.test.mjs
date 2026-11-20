@@ -673,6 +673,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'imagemagick available',
       'zip available',
       'xxd available',
+      'serve available',
     ]
   );
 
