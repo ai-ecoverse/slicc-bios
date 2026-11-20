@@ -124,6 +124,20 @@ export async function signalGroup(client, pgid) {
   if (status !== 0) throw new Error(stderr?.trim() || `kill exited ${status}`);
 }
 
+export async function signalPids(client, pids) {
+  const bad = pids.find((pid) => !validPgid(pid));
+  if (bad !== undefined) throw new Error(`can't stop process ${bad}`);
+  if (typeof client?.kill === 'function') {
+    const sent = await Promise.allSettled(pids.map((pid) => client.kill(pid, 'SIGTERM')));
+    const failed = sent.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    return;
+  }
+  if (typeof client?.run !== 'function') throw new Error("this client can't signal a process");
+  const { status, stderr } = await client.run(['kill', '-TERM', ...pids.map(String)]);
+  if (status !== 0) throw new Error(stderr?.trim() || `kill exited ${status}`);
+}
+
 export function tagsOf(row) {
   if (Array.isArray(row?.tags) && row.tags.length) return row.tags;
   return typeof row?.tag === 'string' ? [row.tag] : [];
