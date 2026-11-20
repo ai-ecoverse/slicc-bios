@@ -3173,12 +3173,78 @@ class Guard {
       this.clientCreates.delete(this.clientCreates.values().next().value);
     else if (!this.provenance.has(targetId)) return;
     this.provenance.add(targetId);
+    if (process.env.CI)
+      console.log(
+        'guard provenance claim',
+        JSON.stringify({
+          targetId,
+          openerInfo: info.openerId,
+          openerKnown: this.targets.get(targetId)?.openerId,
+          clientCreates: this.clientCreates.size,
+        })
+      );
+  }
+
+  attachDecision(message, info, source = message) {
+    if (!process.env.CI || message.method !== 'Target.attachedToTarget') return;
+    if (!this.errorPageUrl(info.url)) return;
+    const targetId = info.targetId;
+    const failed = this.errorFailedKnown(targetId);
+    console.log(
+      'guard attach decision',
+      JSON.stringify({
+        targetId,
+        url: info.url,
+        title: info.title,
+        waitingForDebugger: message.params.waitingForDebugger,
+        sourceWaitingForDebugger: source.params.waitingForDebugger,
+        blankForced:
+          message.params.waitingForDebugger === false && source.params.waitingForDebugger === true,
+        sessionParent: message.sessionId,
+        openerInfo: info.openerId,
+        openerKnown: this.targets.get(targetId)?.openerId,
+        popupShaped: this.popupShaped(info, targetId),
+        provenance: this.provenance.has(targetId),
+        clientCreates: this.clientCreates.size,
+        failedKnown: failed,
+        ordinaryFailed: this.errorOrdinaryFailed(failed),
+        errorFrame: this.errorFrames.has(this.frameRoots.get(targetId)),
+      })
+    );
   }
 
   async errorUnproven(info, targetId = info?.targetId) {
     if (!this.errorPageUrl(info?.url)) return false;
-    if (!this.popupShaped(info, targetId)) return false;
-    return !this.errorOrdinaryFailed(await this.errorFailedUrl(targetId));
+    const shaped = this.popupShaped(info, targetId);
+    if (!shaped) {
+      if (process.env.CI)
+        console.log(
+          'guard error release',
+          JSON.stringify({
+            reason: 'not-popup-shaped',
+            targetId,
+            openerInfo: info.openerId,
+            openerKnown: this.targets.get(targetId)?.openerId,
+            provenance: this.provenance.has(targetId),
+            clientCreates: this.clientCreates.size,
+          })
+        );
+      return false;
+    }
+    const failed = await this.errorFailedUrl(targetId);
+    const ordinary = this.errorOrdinaryFailed(failed);
+    if (process.env.CI && ordinary)
+      console.log(
+        'guard error release',
+        JSON.stringify({
+          reason: 'ordinary-failed',
+          targetId,
+          failed,
+          openerInfo: info.openerId,
+          provenance: this.provenance.has(targetId),
+        })
+      );
+    return !ordinary;
   }
 
   createdPending(info, targetId = info?.targetId) {
@@ -5830,7 +5896,10 @@ class Guard {
   }
 
   shownTarget(message, info, source = message, proof) {
-    if (message.method === 'Target.attachedToTarget') this.attachmentShown(message, info);
+    if (message.method === 'Target.attachedToTarget') {
+      this.attachmentShown(message, info);
+      this.attachDecision(message, info, source);
+    }
     if (this.unsafe.has(source) || this.eventError(source)) {
       this.deliver(this.metadataEvent(message, proof), true, source, proof);
       return;

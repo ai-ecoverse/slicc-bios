@@ -595,13 +595,14 @@ for (const [detach, lag] of DETACH) {
     sevenPages(guard.seven);
     const rows = [];
     for (const trigger of ['href', 302, 'popup', 'iframe']) {
+      if (process.env.POPUP_RACE_ONLY && trigger !== 'popup') continue;
       rows.push([VECTOR[trigger], registrations.C, trigger]);
       if (trigger !== 'popup') {
         rows.push([`${VECTOR[trigger]}-basic`, registrations.basic, trigger]);
         rows.push([`${VECTOR[trigger]}-world`, registrations.world, trigger]);
       }
     }
-    rows.push(['E1', registrations.E1, 'href']);
+    if (!process.env.POPUP_RACE_ONLY) rows.push(['E1', registrations.E1, 'href']);
     for (const [vector, setup, trigger] of rows) {
       const children = trigger === 'popup' || trigger === 'iframe';
       for (const [name, at] of Object.entries(targets())) {
