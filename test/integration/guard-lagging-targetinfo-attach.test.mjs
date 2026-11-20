@@ -5,7 +5,6 @@ import { guardProtected, PROTECTED } from '../../src/seed/guard.js';
 const SEVEN = 'https://seven.invalid';
 const SEVEN_PAGE = `${SEVEN}/os/`;
 const VAULT = 'https://vault.sliccy.ai/doc?n=lag';
-const VIEW_SOURCE_VAULT = `view-source:${VAULT}`;
 const ORDINARY = 'https://ordinary.invalid/doc?n=lag';
 const SECRET = 'lagging-attach-secret';
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -16,15 +15,27 @@ const routes = [
   ['extension', { kind: 'extension' }],
 ];
 
-const protectedPages = [
-  ['a seven page', SEVEN_PAGE],
-  ['view-source of the vault', VIEW_SOURCE_VAULT],
+const wrapped = [
+  ['view-source of the vault', `view-source:${VAULT}`],
+  ['view-source of seven', `view-source:${SEVEN_PAGE}`],
+  ['blob of the vault', `blob:${VAULT}/uuid`],
+  ['blob of seven', `blob:${SEVEN_PAGE}/uuid`],
+  ['filesystem of the vault', `filesystem:${VAULT}/temporary/x`],
+  ['filesystem of seven', `filesystem:${SEVEN_PAGE}/temporary/x`],
+];
+
+const reads = [
+  ['Runtime.evaluate', { expression: 'document.body.innerText' }],
+  ['DOM.getDocument', {}],
+  ['Page.captureScreenshot', {}],
 ];
 
 function originOf(url) {
-  if (url.startsWith('view-source:')) {
-    const inner = url.slice('view-source:'.length);
-    return URL.canParse(inner) ? new URL(inner).origin : '://';
+  for (const scheme of ['view-source:', 'blob:', 'filesystem:']) {
+    if (url.startsWith(scheme)) {
+      const inner = url.slice(scheme.length);
+      return URL.canParse(inner) ? new URL(inner).origin : '://';
+    }
   }
   return URL.canParse(url) ? new URL(url).origin : '://';
 }
@@ -195,16 +206,11 @@ function harness(t, pages, route, options) {
         command.params?.targetId === targetId &&
         command.id < 2 ** 30
     );
-  const contentReached = (targetId) =>
+  const contentReached = (targetId, methods = reads.map(([method]) => method)) =>
     raw.sent.some(
       (command) =>
         command.id < 2 ** 30 &&
-        [
-          'Runtime.evaluate',
-          'DOM.getDocument',
-          'Network.getResponseBody',
-          'Page.captureScreenshot',
-        ].includes(command.method) &&
+        methods.includes(command.method) &&
         raw.owners.get(command.sessionId) === targetId
     );
   const leaked = (...values) => values.filter((value) => JSON.stringify(got).includes(value));
@@ -226,73 +232,35 @@ function blankPage() {
 }
 
 for (const [name, route] of routes) {
-  for (const [label, url] of protectedPages) {
-    test(`on ${name}, explicit attach to another connection's target that navigated to ${label} is refused while targetInfoChanged still lags`, async (t) => {
-      const pages = { foreign: blankPage() };
-      const h = harness(t, pages, route);
-      h.created('foreign');
-      await tick();
-      h.raw.navigate('foreign', url);
-      const attached = await h.send('Target.attachToTarget', {
-        targetId: 'foreign',
-        flatten: true,
-      });
-      assert.equal(attached?.error?.message, PROTECTED, JSON.stringify(attached));
-      assert.equal(attached?.result, undefined);
-      assert.ok(!h.attachSent('foreign'));
-      assert.ok(!h.contentReached('foreign'));
-      assert.deepEqual(h.leaked(SECRET, 'vault.sliccy.ai', SEVEN_PAGE, VIEW_SOURCE_VAULT), []);
-      h.raw.announce('foreign');
-      await tick();
-      const again = await h.send('Target.attachToTarget', {
-        targetId: 'foreign',
-        flatten: true,
-      });
-      assert.equal(again?.error?.message, PROTECTED, JSON.stringify(again));
-      assert.equal(again?.result, undefined);
-      assert.ok(!h.contentReached('foreign'));
-      assert.deepEqual(h.leaked(SECRET, 'vault.sliccy.ai', SEVEN_PAGE, VIEW_SOURCE_VAULT), []);
-    });
-
-    test(`on ${name}, when getTargetInfo still reports about:blank after a navigate to ${label}, inspect refuses the attach answer before any content read`, async (t) => {
+  for (const [label, url] of wrapped) {
+    test(`on ${name}, attach admitted on blank then a first content read before targetInfoChanged of ${label} is refused`, async (t) => {
       const pages = { foreign: blankPage() };
       const h = harness(t, pages, route, { staleInfo: true });
       h.created('foreign');
       await tick();
-      h.raw.navigate('foreign', url);
       const attached = await h.send('Target.attachToTarget', {
         targetId: 'foreign',
         flatten: true,
       });
-      if (attached?.result?.sessionId) {
-        const session = attached.result.sessionId;
-        const evaluated = await h.send(
-          'Runtime.evaluate',
-          { expression: 'document.body.innerText' },
-          session
-        );
-        const body = await h.send('Network.getResponseBody', { requestId: 'r1' }, session);
-        const shot = await h.send('Page.captureScreenshot', {}, session);
-        const dom = await h.send('DOM.getDocument', {}, session);
-        assert.ok(
-          evaluated?.error && body?.error && shot?.error && dom?.error,
-          JSON.stringify({ attached, evaluated, body, shot, dom })
-        );
-        assert.ok(!h.contentReached('foreign'));
-      } else {
-        assert.ok(attached?.error, JSON.stringify(attached));
-        assert.equal(attached?.result, undefined);
+      assert.equal(attached?.error, undefined, JSON.stringify(attached));
+      assert.ok(attached?.result?.sessionId);
+      assert.ok(h.attachSent('foreign'));
+      h.raw.navigate('foreign', url);
+      const session = attached.result.sessionId;
+      for (const [method, params] of reads) {
+        const answer = await h.send(method, params, session);
+        assert.equal(answer?.error?.message, PROTECTED, JSON.stringify({ method, answer }));
+        assert.equal(answer?.result, undefined, JSON.stringify({ method, answer }));
       }
       assert.ok(!h.contentReached('foreign'));
-      assert.deepEqual(h.leaked(SECRET), []);
+      assert.deepEqual(h.leaked(SECRET, url, 'vault.sliccy.ai', SEVEN_PAGE), []);
       h.raw.announce('foreign');
       await tick();
-      const again = await h.send('Target.attachToTarget', {
-        targetId: 'foreign',
-        flatten: true,
-      });
-      assert.ok(again?.error, JSON.stringify(again));
-      assert.equal(again?.result, undefined);
+      for (const [method, params] of reads) {
+        const answer = await h.send(method, params, session);
+        assert.ok(answer?.error, JSON.stringify({ method, answer }));
+        assert.equal(answer?.result, undefined, JSON.stringify({ method, answer }));
+      }
       assert.ok(!h.contentReached('foreign'));
       assert.deepEqual(h.leaked(SECRET), []);
     });
@@ -303,13 +271,13 @@ for (const [name, route] of routes) {
     const h = harness(t, pages, route);
     h.created('foreign');
     await tick();
-    h.raw.navigate('foreign', ORDINARY);
     const attached = await h.send('Target.attachToTarget', {
       targetId: 'foreign',
       flatten: true,
     });
     assert.equal(attached?.error, undefined, JSON.stringify(attached));
     assert.ok(attached?.result?.sessionId);
+    h.raw.navigate('foreign', ORDINARY);
     const evaluated = await h.send(
       'Runtime.evaluate',
       { expression: 'document.body.innerText' },
