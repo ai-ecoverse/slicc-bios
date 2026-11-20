@@ -490,6 +490,86 @@ for (const [hostName, own] of hosts) {
       assert.equal(info.result.targetInfo.url, errorPage);
       assert.equal(info.result.targetInfo.title, errorPage);
     });
+
+    test(`N1 protected failed load blanks frame.name and history title (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `n1-${hostName}-${routeName}`,
+        plainFrame(`n1-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      settleChromeError(entry, failed, { tree: 'error' });
+      entry.tree.frame.name = hostOnly;
+      entry.history = {
+        currentIndex: 0,
+        entries: [{ id: 1, url: failed, userTypedURL: failed, title: hostOnly }],
+      };
+      const from = wire.delivered.length;
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const navigated = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.frameNavigated');
+      if (navigated) {
+        const name = navigated.params?.frame?.name;
+        assert.equal(name === undefined || name === '', true, 'frame.name is blank');
+        assert.equal(JSON.stringify(navigated).includes(hostOnly), false);
+        assert.equal(JSON.stringify(navigated).includes(failed), false);
+      }
+      const tree = await wire.send('Page.getFrameTree', {}, attached.result.sessionId);
+      const history = await wire.send('Page.getNavigationHistory', {}, attached.result.sessionId);
+      assert.equal(tree.error, undefined, JSON.stringify(tree));
+      assert.equal(history.error, undefined, JSON.stringify(history));
+      const name = tree.result.frameTree.frame.name;
+      assert.equal(name === undefined || name === '', true, 'frame.name is blank in the tree');
+      assert.equal(history.result.entries[0].title, '');
+      const blob = JSON.stringify({ tree, history });
+      assert.equal(blob.includes(hostOnly), false);
+      assert.equal(blob.includes(failed), false);
+    });
+
+    test(`N2 ordinary failed load keeps frame.name and history title (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `n2-${hostName}-${routeName}`,
+        plainFrame(`n2-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      settleChromeError(entry, ordinaryFail, { tree: 'error' });
+      entry.tree.frame.name = 'ordinary-title';
+      entry.history = {
+        currentIndex: 0,
+        entries: [
+          { id: 1, url: ordinaryFail, userTypedURL: ordinaryFail, title: 'ordinary-title' },
+        ],
+      };
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const tree = await wire.send('Page.getFrameTree', {}, attached.result.sessionId);
+      const history = await wire.send('Page.getNavigationHistory', {}, attached.result.sessionId);
+      assert.equal(tree.result.frameTree.frame.name, 'ordinary-title');
+      assert.equal(history.result.entries[0].title, 'ordinary-title');
+    });
   }
 }
 

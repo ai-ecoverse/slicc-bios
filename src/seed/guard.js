@@ -1359,7 +1359,7 @@ class Guard {
     this.targets.set(info.targetId, {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
-      openerId: info.openerId ?? known?.openerId,
+      openerId: info.openerId,
       parentId: info.parentId ?? known?.parentId,
       parentFrameId: info.parentFrameId ?? known?.parentFrameId,
       was: known?.was || known?.guarded || false,
@@ -5180,7 +5180,7 @@ class Guard {
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
       ...rest,
-      frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://' } : frame,
+      frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://', name: '' } : frame,
       ...(childFrames
         ? { childFrames: childFrames.map((child) => this.tree(child, sessionId)) }
         : {}),
@@ -7523,7 +7523,7 @@ class Guard {
     const key = requestKey(message);
     const release = this.asked.get(key) !== message && !this.answering.has(message);
     const result = TREES.has(message.method)
-      ? { frameTree: { frame: { id: '0', url: ERROR_PAGE, securityOrigin: '://' } } }
+      ? { frameTree: { frame: { id: '0', url: ERROR_PAGE, securityOrigin: '://', name: '' } } }
       : {
           currentIndex: 0,
           entries: [{ id: 0, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' }],
