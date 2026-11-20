@@ -66,6 +66,16 @@ const dialogs = [
     { url: ordinary, windowName: 'ordinary-window', windowFeatures: [], userGesture: true },
     'windowName',
   ],
+  [
+    'Page.downloadWillBegin',
+    {
+      frameId: 'dialog-owner',
+      guid: 'ordinary-download',
+      url: ordinary,
+      suggestedFilename: 'ordinary-download.bin',
+    },
+    'suggestedFilename',
+  ],
 ];
 
 for (const [method, ordinaryParams, field] of dialogs) {
@@ -150,6 +160,7 @@ for (const [method, ordinaryParams, field] of dialogs) {
       if (field === 'windowName') assert.equal(event.params.windowName, '');
       if (field === 'message') assert.equal(event.params.message, '');
       if (field === 'userInput') assert.equal(event.params.userInput, '');
+      if (field === 'suggestedFilename') assert.equal(event.params.suggestedFilename, '');
     });
   }
 }

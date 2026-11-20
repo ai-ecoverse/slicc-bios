@@ -119,6 +119,15 @@ for (const [method, params] of [
       userGesture: false,
     },
   ],
+  [
+    'Page.downloadWillBegin',
+    {
+      frameId: 'named-unsafe',
+      guid: 'named-download',
+      url: 'synthetic-unsafe-event',
+      suggestedFilename: 'synthetic-unsafe-event',
+    },
+  ],
   ['Page.frameAttached', { frameId: 'named-safe', parentFrameId: 'named-unsafe' }],
   [
     'Runtime.executionContextCreated',
@@ -154,11 +163,14 @@ for (const [method, params] of [
     } else if (
       method === 'Page.windowOpen' ||
       method === 'Page.javascriptDialogOpening' ||
-      method === 'Page.javascriptDialogClosed'
+      method === 'Page.javascriptDialogClosed' ||
+      method === 'Page.downloadWillBegin'
     ) {
       assert.ok(metadata, `${method} is scrubbed metadata on an error document`);
       if (metadata.params.windowName !== undefined) assert.equal(metadata.params.windowName, '');
       if (metadata.params.message !== undefined) assert.equal(metadata.params.message, '');
+      if (metadata.params.suggestedFilename !== undefined)
+        assert.equal(metadata.params.suggestedFilename, '');
     } else assert.equal(metadata, undefined);
     assert.equal(
       JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-unsafe-event'),

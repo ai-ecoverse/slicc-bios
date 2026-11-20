@@ -87,9 +87,12 @@ function protocol(t, own, route) {
         entries: [{ id: 1, url: target.info.url, userTypedURL: target.info.url, title: '' }],
       };
     if (method === 'DOM.getDocument')
-      result = { root: { nodeId: 1, nodeName: '#document', children: [] } };
+      result = target?.document ?? {
+        root: { nodeId: 1, nodeName: '#document', children: [] },
+      };
     if (method === 'Runtime.evaluate')
-      result = { result: { type: 'string', value: 'synthetic-content' } };
+      result = target?.evaluate ?? { result: { type: 'string', value: 'synthetic-content' } };
+    if (method === 'Accessibility.getFullAXTree') result = target?.ax ?? { nodes: [] };
     if (method === 'Page.captureScreenshot') result = { data: 'c3ludGhldGlj' };
     emit({ id, ...(sessionId ? { sessionId } : {}), ...(payload ?? { result }) });
   }
@@ -780,6 +783,211 @@ for (const [hostName, own] of hosts) {
       assert.deepEqual(dialog.params, dialogParams);
       assert.ok(closed);
       assert.deepEqual(closed.params, closedParams);
+    });
+
+    test(`D1 protected failed load blanks suggestedFilename (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `d1-${hostName}-${routeName}`,
+        plainFrame(`d1-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      await wire.send('Page.enable', {}, attached.result.sessionId);
+      settleChromeError(entry, failed, { tree: 'error' });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const from = wire.delivered.length;
+      wire.emit({
+        method: 'Page.downloadWillBegin',
+        sessionId: attached.result.sessionId,
+        params: {
+          frameId: entry.info.targetId,
+          guid: 'dl-protected',
+          url: ordinary,
+          suggestedFilename: hostOnly,
+        },
+      });
+      await wire.drain(10);
+      const download = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.downloadWillBegin');
+      assert.ok(download);
+      assert.equal(download.params.suggestedFilename, '');
+      assert.equal(download.params.frameId, entry.info.targetId);
+      assert.equal(JSON.stringify(download).includes(hostOnly), false);
+      assert.equal(JSON.stringify(download).includes(failed), false);
+    });
+
+    test(`D1b unproven failed load blanks suggestedFilename (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `d1b-${hostName}-${routeName}`,
+        plainFrame(`d1b-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      await wire.send('Page.enable', {}, attached.result.sessionId);
+      const unproven = 'synthetic-unproven-download-url';
+      settleChromeError(entry, unproven, { tree: 'error' });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const from = wire.delivered.length;
+      wire.emit({
+        method: 'Page.downloadWillBegin',
+        sessionId: attached.result.sessionId,
+        params: {
+          frameId: entry.info.targetId,
+          guid: 'dl-unproven',
+          url: ordinary,
+          suggestedFilename: 'ordinary-download.bin',
+        },
+      });
+      await wire.drain(10);
+      const download = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.downloadWillBegin');
+      assert.ok(download);
+      assert.equal(download.params.suggestedFilename, '');
+      assert.equal(JSON.stringify(download).includes(unproven), false);
+    });
+
+    test(`D2 ordinary failed load keeps suggestedFilename (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `d2-${hostName}-${routeName}`,
+        plainFrame(`d2-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      await wire.send('Page.enable', {}, attached.result.sessionId);
+      settleChromeError(entry, ordinaryFail, { tree: 'error' });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const from = wire.delivered.length;
+      const params = {
+        frameId: entry.info.targetId,
+        guid: 'dl-ordinary',
+        url: ordinary,
+        suggestedFilename: 'ordinary-download.bin',
+      };
+      wire.emit({
+        method: 'Page.downloadWillBegin',
+        sessionId: attached.result.sessionId,
+        params,
+      });
+      await wire.drain(10);
+      const download = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.downloadWillBegin');
+      assert.ok(download);
+      assert.deepEqual(download.params, params);
+    });
+
+    test(`positive ordinary page keeps protected host in AX/DOM/Runtime names (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `pos-${hostName}-${routeName}`,
+        plainFrame(`pos-${hostName}-${routeName}`)
+      );
+      const linkName = hostOnly;
+      entry.ax = {
+        nodes: [
+          {
+            nodeId: '1',
+            ignore: false,
+            role: { type: 'role', value: 'link' },
+            name: { type: 'computedString', value: linkName },
+          },
+        ],
+      };
+      entry.document = {
+        root: {
+          nodeId: 1,
+          nodeName: 'A',
+          localName: 'a',
+          nodeValue: '',
+          attributes: ['href', '#', 'name', linkName],
+          children: [],
+        },
+      };
+      entry.evaluate = {
+        result: { type: 'string', value: `open ${linkName} in a new tab` },
+      };
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      await wire.send('Page.enable', {}, attached.result.sessionId);
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const runtime = await wire.send(
+        'Runtime.evaluate',
+        { expression: 'document.title' },
+        attached.result.sessionId
+      );
+      assert.equal(runtime.error, undefined, JSON.stringify(runtime));
+      assert.equal(runtime.result.result.value, `open ${linkName} in a new tab`);
+      if (routeName !== 'extension') {
+        const ax = await wire.send('Accessibility.getFullAXTree', {}, attached.result.sessionId);
+        const dom = await wire.send('DOM.getDocument', {}, attached.result.sessionId);
+        assert.equal(ax.error, undefined, JSON.stringify(ax));
+        assert.equal(ax.result.nodes[0].name.value, linkName);
+        assert.equal(dom.error, undefined, JSON.stringify(dom));
+        assert.deepEqual(dom.result.root.attributes, ['href', '#', 'name', linkName]);
+      }
+      const from = wire.delivered.length;
+      const downloadParams = {
+        frameId: entry.info.targetId,
+        guid: 'dl-live',
+        url: ordinary,
+        suggestedFilename: `${hostOnly}-report.pdf`,
+      };
+      wire.emit({
+        method: 'Page.downloadWillBegin',
+        sessionId: attached.result.sessionId,
+        params: downloadParams,
+      });
+      await wire.drain(10);
+      const download = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.downloadWillBegin');
+      assert.ok(download);
+      assert.deepEqual(download.params, downloadParams);
     });
   }
 }

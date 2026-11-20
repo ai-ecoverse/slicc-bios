@@ -440,8 +440,8 @@ const ERROR_METADATA = new Set([
   'Page.windowOpen',
   'Page.javascriptDialogOpening',
   'Page.javascriptDialogClosed',
+  'Page.downloadWillBegin',
 ]);
-const PAGE_NAMES = new Set(['name', 'windowName', 'title']);
 const requestKey = ({ id, sessionId }) => JSON.stringify([sessionId ?? null, id]);
 const RENDERED = new Set([
   'Page.printToPDF',
@@ -835,16 +835,6 @@ export function redacting(is) {
     const out = {};
     const before = changed.length;
     for (const [key, item] of Object.entries(value)) {
-      if (
-        PAGE_NAMES.has(key) &&
-        typeof item === 'string' &&
-        item &&
-        (protectedAuthority(item) || is.url(`https://${item}/`) || is.url(`http://${item}/`))
-      ) {
-        out[key] = '';
-        changed.push(path);
-        continue;
-      }
       out[text(key)] = walk(item, ANSWERED.has(key) ? [...path, key] : path, changed);
     }
     const sibling = Object.entries(value).some(
@@ -1161,6 +1151,7 @@ class Guard {
       'sessionId',
       'openerId',
       'browserContextId',
+      'guid',
     ])
       if (typeof value[key] === 'string' && /^[\w-]{1,256}$/.test(value[key]))
         safe[key] = value[key];
@@ -1175,7 +1166,14 @@ class Guard {
           : ERROR_PAGE;
     }
     if (value.title !== undefined) safe.title = safe.url ?? ERROR_PAGE;
-    for (const key of ['name', 'windowName', 'message', 'defaultPrompt', 'userInput'])
+    for (const key of [
+      'name',
+      'windowName',
+      'suggestedFilename',
+      'message',
+      'defaultPrompt',
+      'userInput',
+    ])
       if (typeof value[key] === 'string') safe[key] = '';
     if (Array.isArray(value.windowFeatures)) safe.windowFeatures = value.windowFeatures;
     for (const key of [
@@ -5150,7 +5148,11 @@ class Guard {
   }
 
   eventFrames(method) {
-    if (!/^Page\.(?:javascriptDialogOpening|javascriptDialogClosed|windowOpen)$/.test(method))
+    if (
+      !/^Page\.(?:javascriptDialogOpening|javascriptDialogClosed|windowOpen|downloadWillBegin)$/.test(
+        method
+      )
+    )
       return this.errorFrames;
     return new Set([
       ...this.errorFrames,
