@@ -21,6 +21,17 @@ export const errorFrame = (id, parentId) => ({
 });
 export const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+export function rejectingTree(frame) {
+  let reads = 0;
+  return {
+    get frameTree() {
+      reads += 1;
+      if (reads <= 2) return { frame };
+      throw new Error('stranded rejected');
+    },
+  };
+}
+
 export function protocol(t, protect = guardProtected) {
   const targets = new Map();
   const sessions = new Map();
@@ -31,6 +42,7 @@ export function protocol(t, protect = guardProtected) {
   const delivered = [];
   let next = 0;
   let hold = () => false;
+  let inflate = null;
   const raw = {
     send(text) {
       const message = JSON.parse(text);
@@ -41,6 +53,22 @@ export function protocol(t, protect = guardProtected) {
     close() {},
   };
   const guard = protect(raw, protectedOrigin);
+  const receive = raw.onmessage;
+  raw.onmessage = (text) => {
+    if (!inflate) return receive(text);
+    const rewrite = inflate;
+    inflate = null;
+    const orig = JSON.parse;
+    JSON.parse = (value, reviver) => {
+      JSON.parse = orig;
+      return rewrite(orig(value, reviver));
+    };
+    try {
+      return receive(text);
+    } finally {
+      JSON.parse = orig;
+    }
+  };
   guard.onmessage = (text) => {
     const message = JSON.parse(text);
     delivered.push(message);
@@ -49,7 +77,7 @@ export function protocol(t, protect = guardProtected) {
   };
   t.after(() => guard.close());
   const emit = (message) => raw.onmessage(JSON.stringify(message));
-  function respond(message, payload) {
+  function respond(message, payload, live = false) {
     const { id, method, params = {}, sessionId } = message;
     const targetId = params.targetId ?? sessions.get(sessionId);
     const target = targets.get(targetId);
@@ -73,7 +101,24 @@ export function protocol(t, protect = guardProtected) {
     if (method === 'DOM.getDocument')
       result = { root: { nodeId: 1, nodeName: '#document', children: [] } };
     if (method === 'Page.captureScreenshot') result = { data: 'c3ludGhldGlj' };
-    emit({ id, ...(sessionId ? { sessionId } : {}), ...(payload ?? { result }) });
+    const answer = payload ?? { result };
+    if (live) {
+      inflate = (parsed) => {
+        const next = { ...parsed };
+        if ('result' in answer)
+          Object.defineProperty(next, 'result', {
+            value: answer.result,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
+        if ('error' in answer) next.error = answer.error;
+        return next;
+      };
+      emit({ id, ...(sessionId ? { sessionId } : {}), result: {} });
+      return;
+    }
+    emit({ id, ...(sessionId ? { sessionId } : {}), ...answer });
   }
   function request(method, params = {}, sessionId, id = ++next) {
     const answer = new Promise((resolve) => pending.set(key(id, sessionId), resolve));
@@ -107,10 +152,10 @@ export function protocol(t, protect = guardProtected) {
     await flush();
     return answer.result.sessionId;
   }
-  function release(message, payload) {
+  function release(message, payload, live = false) {
     assert.ok(message, 'a protocol answer is pending');
     held.splice(held.indexOf(message), 1);
-    respond(message, payload);
+    respond(message, payload, live);
   }
   return {
     targets,
