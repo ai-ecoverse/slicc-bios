@@ -333,7 +333,7 @@ export function createPreviews({
     for (const listener of [...entry.listeners]) listener(reason);
     if (hub && entry.previewToken)
       revoke(entry.previewToken).catch((error) =>
-        warn(`serve: revoking ${entry.previewToken}: ${error.message}`)
+        warn(`serve: revoking the preview of ${entry.servedRoot}: ${error.message}`)
       );
     return true;
   }
@@ -415,7 +415,7 @@ export function createPreviews({
     );
     for (const preview of orphans)
       await revoke(preview.previewToken).catch((error) =>
-        warn(`serve: revoking ${preview.previewToken}: ${error.message}`)
+        warn(`serve: revoking the preview of ${preview.servedRoot}: ${error.message}`)
       );
   }
 
