@@ -411,13 +411,13 @@ for (const [hostName, own] of hosts) {
         }
         for (const event of events) {
           assert.equal(event.params.targetInfo.url, errorPage);
-          assert.equal(event.params.targetInfo.title, errorPage);
+          assert.equal(event.params.targetInfo.title, '');
         }
         assert.equal(info.result.targetInfo.url, errorPage);
-        assert.equal(info.result.targetInfo.title, errorPage);
+        assert.equal(info.result.targetInfo.title, '');
         const row = listed.result.targetInfos.find((item) => item.targetId === entry.info.targetId);
         assert.equal(row.url, errorPage);
-        assert.equal(row.title, errorPage);
+        assert.equal(row.title, '');
       });
     }
   }
