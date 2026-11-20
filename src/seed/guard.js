@@ -1084,6 +1084,7 @@ class Guard {
     this.held = new Map();
     this.provenance = new Set();
     this.exactProvenance = new Set();
+    this.clientCreates = new Set();
     this.internal = new Map();
     this.evidence = new Set();
     this.asked = new Map();
@@ -1363,6 +1364,7 @@ class Guard {
     this.blankReads.delete(key);
     if (release && this.commands.get(key) === command) this.commands.delete(key);
     this.pendingContent.delete(command);
+    this.clientCreates.delete(command);
     const { id, sessionId } = command;
     this.deliver(
       { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } },
@@ -1387,12 +1389,6 @@ class Guard {
       typeof info.openerId === 'string' && info.openerId.length > 0
         ? info.openerId
         : known?.openerId;
-    if (
-      typeof openerId === 'string' &&
-      openerId.length > 0 &&
-      !this.exactProvenance.has(info.targetId)
-    )
-      this.provenance.delete(info.targetId);
     this.targets.set(info.targetId, {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
@@ -3179,6 +3175,18 @@ class Guard {
     this.provenance.add(targetId);
   }
 
+  claimCreatedTarget(info, message) {
+    const targetId = info?.targetId;
+    if (!targetId) return;
+    const openerId = info?.openerId ?? this.targets.get(targetId)?.openerId;
+    if (typeof openerId === 'string' && openerId.length > 0) return;
+    if (message) this.clientCreates.delete(message);
+    else if (this.clientCreates.size > 0)
+      this.clientCreates.delete(this.clientCreates.values().next().value);
+    else if (!this.provenance.has(targetId)) return;
+    this.provenance.add(targetId);
+  }
+
   async errorUnproven(info, targetId = info?.targetId) {
     if (!this.errorPageUrl(info?.url)) return false;
     if (!this.popupShaped(info, targetId)) return false;
@@ -3999,7 +4007,6 @@ class Guard {
     for (let waited = 0; waited < BLANK_MS; waited += POLL_MS) {
       const info = (await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo;
       if (!info) return null;
-      this.learn(info);
       if (info.url) {
         if (await this.errorUnproven(info, targetId)) {
           await new Promise((resolve) => setTimeout(resolve, POLL_MS));
@@ -4660,6 +4667,7 @@ class Guard {
     this.rejudgeWorkers(rejudge);
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
+      this.claimCreatedTarget(info);
       this.notePageUnderTab(message);
       if (await this.skippedAttachment(message)) return true;
       if (params.waitingForDebugger) void this.resumeArmed(info, params.sessionId, sessionId);
@@ -4674,6 +4682,7 @@ class Guard {
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
+      if (method === 'Target.targetCreated') this.claimCreatedTarget(params.targetInfo);
       void this.targetHint(message).catch(() => {
         for (const [id, ticket] of this.quarantined) if (ticket.hint === message) this.cut(id);
       });
@@ -4685,7 +4694,6 @@ class Guard {
       this.navs.delete(params.targetId);
       this.forgetFailedUrl(params.targetId);
       this.provenance.delete(params.targetId);
-      this.exactProvenance.delete(params.targetId);
       if (nav?.session) this.navSessions.delete(nav.session);
       this.clearWorkerTarget(params.targetId);
       return this.targets.get(params.targetId)?.guarded === true;
@@ -7029,6 +7037,7 @@ class Guard {
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     if (background) kept(this.backgrounded, targetId);
     this.claimCreatedReply(targetId);
+    this.clientCreates.delete(message);
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
@@ -7759,6 +7768,7 @@ class Guard {
         if (this.callerIds.has(key)) return this.refuse(message, FAILED, false);
         this.callerIds.set(key, message);
       }
+      if (message.method === 'Target.createTarget') this.clientCreates.add(message);
       this.commands.set(key, message);
       this.arrivals.set(message, ++this.clock);
       if (

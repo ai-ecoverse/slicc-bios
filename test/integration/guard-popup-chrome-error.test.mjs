@@ -1749,5 +1749,41 @@ describe('popup opener provenance races', { concurrency: false }, () => {
       await wire.tick(t.mock.timers, 11000);
       assertNoChromeErrorAttach(wire, from, `H5/${routeName}`);
     });
+
+    test(`H7 attach provenance then opener then chrome-error stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      wire.target('opener');
+      const id = `h7-${routeName}`;
+      const entry = wire.target(id, blankFrame(id));
+      entry.info.url = 'about:blank';
+      entry.info.title = '';
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: id,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined, JSON.stringify(attached));
+      await wire.drain(20);
+      entry.info.url = '';
+      entry.info.title = '';
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-h7-${routeName}`, true);
+      await wire.drain(20);
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `H7/${routeName}`);
+    });
   }
 });
