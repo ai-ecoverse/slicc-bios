@@ -1,6 +1,7 @@
 export const SUDO_RUN_PROTOCOL = Object.freeze([1, 16]);
 export const RUNS_DIR = '.slicc/sudo-runs';
 export const RUN_TAG = 'sudo-run:';
+export const RUN_POLL_MS = 1000;
 const MINUTE = 60_000;
 export const DEFAULT_MAX_AGE = 1440;
 
@@ -17,6 +18,11 @@ export const RUN_REASONS = Object.freeze({
   off: 'Run now is off.',
   kernel: `Needs slicc-kernel protocol ${SUDO_RUN_PROTOCOL.join('.')} or later.`,
   missing: 'This request no longer has what Run now needs.',
+});
+
+export const RUN_ERRORS = Object.freeze({
+  unseen: "The kernel's process list isn't available, so it can't be stopped.",
+  interrupted: 'The tab that started it closed before it ran.',
 });
 
 export function tooOld(minutes) {
@@ -116,6 +122,46 @@ export async function signalGroup(client, pgid) {
     throw new Error("this client can't signal a process group");
   const { status, stderr } = await client.run(['kill', '-TERM', `-${pgid}`]);
   if (status !== 0) throw new Error(stderr?.trim() || `kill exited ${status}`);
+}
+
+export function tagsOf(row) {
+  if (Array.isArray(row?.tags) && row.tags.length) return row.tags;
+  return typeof row?.tag === 'string' ? [row.tag] : [];
+}
+
+export async function uidOf(client, user = 'root') {
+  if (user === 'root') return 0;
+  let passwd = '';
+  try {
+    passwd = await client.fs.readText('/etc/passwd');
+  } catch {
+    return undefined;
+  }
+  const field = String(passwd)
+    .split('\n')
+    .find((line) => line.startsWith(`${user}:`))
+    ?.split(':')[2];
+  return /^\d+$/.test(field ?? '') ? Number(field) : undefined;
+}
+
+export async function runRows(client, id, target) {
+  if (typeof client?.ps !== 'function') return null;
+  let rows;
+  try {
+    rows = await client.ps();
+  } catch {
+    return null;
+  }
+  const uid = await uidOf(client, target);
+  if (!Array.isArray(rows) || uid === undefined) return null;
+  const tag = runTag(id);
+  return rows
+    .filter((row) => row?.state !== 'Z' && row?.uid === uid && tagsOf(row).includes(tag))
+    .sort((a, b) => a.pid - b.pid);
+}
+
+export function leaderOf(rows) {
+  return rows.find((row) => row.pid === row.pgid) ?? rows[0];
 }
 
 export const NOTICE_ID_MAX = 128;
