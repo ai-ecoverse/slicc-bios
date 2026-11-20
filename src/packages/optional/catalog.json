@@ -160,5 +160,17 @@
   "@ai-ecoverse/wasm-xxd": {
     "id": "xxd",
     "label": "xxd"
+  },
+  "@ai-ecoverse/slicc-serve": {
+    "id": "serve",
+    "label": "serve (public previews)",
+    "source": {
+      "repo": "ai-ecoverse/slicc-serve",
+      "workflow": [".github/workflows/ci.yml"]
+    },
+    "notes": [
+      "serve DIR publishes a folder at a public URL through seven's tray hub while it runs; seven asks first unless you typed it in a terminal.",
+      "Visitors get GET requests only, without the query string."
+    ]
   }
 }

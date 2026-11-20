@@ -189,6 +189,9 @@ export const KINDS = {
   'audio.voices': {},
   'audio.record': {},
   'audio.transcribe': {},
+  'serve.publish': {},
+  'serve.list': {},
+  'serve.stop': {},
 };
 
 export function pageRequests({
