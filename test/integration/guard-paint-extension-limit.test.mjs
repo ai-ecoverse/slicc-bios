@@ -165,14 +165,27 @@ async function measure(t, { frames, childOrigin }) {
       };
     }, outer.href);
     const layout = `${frames ? 'frames' : 'frameless'} ${childOrigin ? 'protected' : 'ordinary'}`;
+    const childPath = new URL(child).pathname;
+    const fixtureHits = real.requests.filter((path) => path === childPath);
+    const frontHits = real.front.filter((url) => url === child);
+    const childRequested = fixtureHits.length > 0 && frontHits.length > 0;
     const shown = {
       ...row,
       screenshot: row.screenshot?.error ?? (row.screenshot?.result ? 'answered' : null),
+      child,
+      childRequested,
+      fixtureHits,
+      frontHits,
     };
     process.stdout.write(
       `GUARD-PAINT extension-${CURRENT_EXTENSION.version} ${layout} ${JSON.stringify({ control, ...shown })}\n`
     );
-    return { control, row, clicks: await plain.evaluate(() => globalThis.clicks) };
+    return {
+      control,
+      row,
+      clicks: await plain.evaluate(() => globalThis.clicks),
+      childRequested,
+    };
   } finally {
     await seven.evaluate(() => globalThis.frameLimit.close()).catch(() => {});
   }
@@ -236,11 +249,25 @@ test('slicc-extension with frames() keeps a page with a protected cross-site fra
     'function',
     `slicc-extension ${CURRENT_EXTENSION.version} offers frames()`
   );
-  if (measured.row.attached)
+  if (measured.row.attached) {
     assert.match(
       measured.row.attached.error?.message ?? '',
       /^slicc: refused:/,
       'the page that holds the protected frame is refused at attach'
     );
-  else stayedClosed(measured, 'a protected remote owner', 'protected');
+    if (!measured.childRequested) {
+      const loaded = await measure(t, { frames: true, childOrigin: SEVEN });
+      controlPassed(loaded.control, 'protected');
+      assert.ok(loaded.childRequested, 'child never requested');
+      assert.equal(
+        loaded.row.attached,
+        undefined,
+        'the parent attaches so the protected frame is loaded and refused'
+      );
+      stayedClosed(loaded, 'a protected remote owner', 'protected');
+    }
+  } else {
+    assert.ok(measured.childRequested, 'child never requested');
+    stayedClosed(measured, 'a protected remote owner', 'protected');
+  }
 });
