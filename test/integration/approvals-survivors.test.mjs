@@ -275,45 +275,74 @@ test('browser: a Run now whose script leaves a background process shows it as a 
     return id;
   });
 
-  const left = await page.within(
-    60_000,
-    async (id) => {
-      const run = globalThis.sliccApprovals.port
-        .history()
-        .find((entry) => entry.approval.id === id)?.run;
-      if (run?.state !== 'done' || !run.survivors?.length) return null;
-      const client = await globalThis.sliccKernelClient();
-      const rows = await client.ps();
-      return {
+  const left = await page.evaluate(async (id) => {
+    const runOf = () =>
+      globalThis.sliccApprovals.port.history().find((entry) => entry.approval.id === id)?.run;
+    const client = await globalThis.sliccKernelClient();
+    const deadline = Date.now() + 60_000;
+    let seen = null;
+    while (Date.now() < deadline) {
+      const run = runOf();
+      const rows = run?.survivors?.length ? await client.ps() : [];
+      const shown = (run?.survivors ?? []).map((pid) => {
+        const found = rows.find((entry) => entry.pid === pid);
+        return found
+          ? {
+              pid,
+              ppid: found.ppid,
+              pgid: found.pgid,
+              uid: found.uid,
+              argv: found.argv,
+              tags: found.tags ?? (found.tag ? [found.tag] : []),
+            }
+          : { pid };
+      });
+      seen = {
         run,
-        argv: run.survivors.map((pid) => rows.find((entry) => entry.pid === pid)?.argv ?? null),
+        shown,
         notice: (globalThis.survivorNotices ?? []).find(
           (notice) => notice.id === id && notice.phase === 'end'
         ),
       };
-    },
-    made
-  );
+      const sleeping = shown.some((entry) => /\bsleep 600$/.test(entry.argv?.join(' ') ?? ''));
+      if (run?.state === 'done' && sleeping && seen.notice) return { ...seen, ready: true };
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return { ...seen, ready: false };
+  }, made);
+  t.diagnostic(`survivors: ${JSON.stringify(left.shown)}`);
+  assert.equal(left.ready, true, `a sleep 600 survivor: ${JSON.stringify(left)}`);
   assert.equal(left.run.status, 0);
-  assert.equal(left.run.survivors.length, 1);
-  assert.match(left.argv[0]?.join(' ') ?? '', /sleep 600/);
-  assert.deepEqual(left.notice?.survivors, left.run.survivors);
+  for (const entry of left.shown) {
+    assert.ok(entry.tags?.includes(`sudo-run:${made}`), JSON.stringify(entry));
+    assert.equal(entry.uid, 0, JSON.stringify(entry));
+    assert.notEqual(entry.pid, left.run.pid);
+  }
+  assert.ok(left.notice.survivors?.length, JSON.stringify(left.notice));
+  for (const pid of left.notice.survivors) assert.ok(left.run.survivors.includes(pid));
 
   await page.evaluate((id) => globalThis.sliccApprovals.port.stopRun(id), made);
-  const cleared = await page.within(
-    60_000,
-    async ({ id, pid }) => {
-      const run = globalThis.sliccApprovals.port
-        .history()
-        .find((entry) => entry.approval.id === id)?.run;
-      if (run?.survivors) return null;
+  const cleared = await page.evaluate(
+    async ({ id, pids }) => {
+      const runOf = () =>
+        globalThis.sliccApprovals.port.history().find((entry) => entry.approval.id === id)?.run;
       const client = await globalThis.sliccKernelClient();
-      const rows = await client.ps();
-      return { run, alive: rows.some((entry) => entry.pid === pid && entry.state !== 'Z') };
+      const deadline = Date.now() + 60_000;
+      let seen = null;
+      while (Date.now() < deadline) {
+        const rows = await client.ps();
+        const alive = rows
+          .filter((entry) => pids.includes(entry.pid) && entry.state !== 'Z')
+          .map((entry) => ({ pid: entry.pid, argv: entry.argv }));
+        seen = { run: runOf(), alive };
+        if (!seen.run?.survivors && !alive.length) return { ...seen, ready: true };
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return { ...seen, ready: false };
     },
-    { id: made, pid: left.run.survivors[0] }
+    { id: made, pids: left.run.survivors }
   );
+  assert.equal(cleared.ready, true, `Stop to end the survivors: ${JSON.stringify(cleared)}`);
   assert.equal(cleared.run.state, 'done');
-  assert.equal(cleared.alive, false);
   assert.deepEqual(page.errors, []);
 });
