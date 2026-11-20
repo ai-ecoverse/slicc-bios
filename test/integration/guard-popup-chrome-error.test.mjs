@@ -1668,9 +1668,15 @@ describe('popup opener provenance races', { concurrency: false }, () => {
       t.mock.timers.enable({ apis: ['setTimeout'] });
       wire.target('opener');
       const id = `h6-${routeName}`;
-      const entry = wire.target(id, { id, url: '', securityOrigin: '://' });
-      entry.info.url = '';
+      const entry = wire.target(id, blankFrame(id));
+      entry.info.url = 'about:blank';
       entry.info.title = '';
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: id,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined, JSON.stringify(attached));
+      await wire.drain(20);
       let heldCreate;
       wire.hold((message) => {
         if (message.method !== 'Target.createTarget' || message.id < 2 ** 30 || heldCreate)
@@ -1678,10 +1684,12 @@ describe('popup opener provenance races', { concurrency: false }, () => {
         heldCreate = message;
         return true;
       });
-      const from = wire.delivered.length;
       const creating = wire.send('Target.createTarget', { url: ordinary, background: true });
       await wire.drain(8);
       assert.ok(heldCreate, 'createTarget reply is held so a stale claim window stays open');
+      entry.info.url = '';
+      entry.info.title = '';
+      const from = wire.delivered.length;
       autoAttach(wire, entry, `client-h6-${routeName}`, true);
       await wire.drain(20);
       entry.info.openerId = 'opener';
@@ -1689,6 +1697,11 @@ describe('popup opener provenance races', { concurrency: false }, () => {
       settleChromeError(entry, protectedFail, { tree: 'blank' });
       entry.info.openerId = 'opener';
       entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
       await wire.tick(t.mock.timers, 11000);
       assertNoChromeErrorAttach(wire, from, `H6/${routeName}`);
       wire.hold(() => false);

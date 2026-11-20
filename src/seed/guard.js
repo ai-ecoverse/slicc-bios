@@ -1084,7 +1084,6 @@ class Guard {
     this.held = new Map();
     this.provenance = new Set();
     this.exactProvenance = new Set();
-    this.clientCreates = new Set();
     this.internal = new Map();
     this.evidence = new Set();
     this.asked = new Map();
@@ -1364,7 +1363,6 @@ class Guard {
     this.blankReads.delete(key);
     if (release && this.commands.get(key) === command) this.commands.delete(key);
     this.pendingContent.delete(command);
-    this.clientCreates.delete(command);
     const { id, sessionId } = command;
     this.deliver(
       { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } },
@@ -1393,6 +1391,7 @@ class Guard {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
       openerId,
+      openerVerdict: this.recordedOpenerVerdict(openerId, known?.openerVerdict),
       parentId: info.parentId ?? known?.parentId,
       parentFrameId: info.parentFrameId ?? known?.parentFrameId,
       was: known?.was || known?.guarded || false,
@@ -1486,12 +1485,35 @@ class Guard {
     return found?.guarded || this.recalled.has(ancestor.targetId) ? 'protected' : 'unprotected';
   }
 
+  recordedOpenerVerdict(openerId, prior) {
+    if (!openerId) return prior;
+    const opener = this.targets.get(openerId);
+    if (!opener) return prior;
+    if (isHeld(openerId) || opener.guarded || this.is.target(opener)) return 'protected';
+    if (ORDINARY.test(opener.url) && !this.is.url(opener.url)) return 'unprotected';
+    return prior;
+  }
+
+  openerGoneUnsettled(found, blank = false) {
+    return (
+      blank ||
+      this.errorPageUrl(found.url) ||
+      INHERITING.test(found.url) ||
+      !ORDINARY.test(found.url) ||
+      this.is.url(found.url)
+    );
+  }
+
   async crossOpener(targetId, found) {
     if (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)) return false;
     const previous = this.targets.get(found.openerId);
     const known = previous?.info;
     const first = await this.openerInfo(found.openerId);
-    if (!first) return previous && (previous.guarded || this.is.target(previous)) ? null : false;
+    if (!first) {
+      if (this.openerGoneUnsettled(found))
+        return found.openerVerdict === 'unprotected' ? false : null;
+      return false;
+    }
     if (first.type !== 'page' || !/^https?:/i.test(first.url) || !this.ownUrl(first.url)) {
       this.learn(first);
       return false;
@@ -1578,10 +1600,29 @@ class Guard {
     );
   }
 
+  rememberOpenerVerdict(targetId, found, opener) {
+    if (opener !== 'protected' && opener !== 'unprotected') return;
+    found.openerVerdict = opener;
+    const entry = this.targets.get(targetId);
+    if (entry) entry.openerVerdict = opener;
+  }
+
   async openerVerdict(targetId, found, cross, depth, seen, framedBlank) {
     const blank = this.inheritingBlank(found, framedBlank);
     const crossed = cross && !blank;
-    const opener = crossed ? undefined : await this.opener(found.openerId, depth, seen, blank);
+    let opener;
+    if (crossed) opener = undefined;
+    else if (found.openerId) {
+      const live = await this.openerInfo(found.openerId);
+      if (live) {
+        opener = await this.opener(found.openerId, depth, seen, blank);
+        this.rememberOpenerVerdict(targetId, found, opener);
+      } else
+        opener =
+          this.openerGoneUnsettled(found, blank) && found.openerVerdict !== 'unprotected'
+            ? 'protected'
+            : 'unprotected';
+    }
     const lent = found.type === 'page' && !crossed && !emptyNoAccess(found.info);
     if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
       hold(targetId);
@@ -3175,18 +3216,6 @@ class Guard {
     this.provenance.add(targetId);
   }
 
-  claimCreatedTarget(info, message) {
-    const targetId = info?.targetId;
-    if (!targetId) return;
-    const openerId = info?.openerId ?? this.targets.get(targetId)?.openerId;
-    if (typeof openerId === 'string' && openerId.length > 0) return;
-    if (message) this.clientCreates.delete(message);
-    else if (this.clientCreates.size > 0)
-      this.clientCreates.delete(this.clientCreates.values().next().value);
-    else if (!this.provenance.has(targetId)) return;
-    this.provenance.add(targetId);
-  }
-
   async errorUnproven(info, targetId = info?.targetId) {
     if (!this.errorPageUrl(info?.url)) return false;
     if (!this.popupShaped(info, targetId)) return false;
@@ -4667,7 +4696,6 @@ class Guard {
     this.rejudgeWorkers(rejudge);
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
-      this.claimCreatedTarget(info);
       this.notePageUnderTab(message);
       if (await this.skippedAttachment(message)) return true;
       if (params.waitingForDebugger) void this.resumeArmed(info, params.sessionId, sessionId);
@@ -4682,7 +4710,6 @@ class Guard {
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
-      if (method === 'Target.targetCreated') this.claimCreatedTarget(params.targetInfo);
       void this.targetHint(message).catch(() => {
         for (const [id, ticket] of this.quarantined) if (ticket.hint === message) this.cut(id);
       });
@@ -7037,7 +7064,6 @@ class Guard {
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     if (background) kept(this.backgrounded, targetId);
     this.claimCreatedReply(targetId);
-    this.clientCreates.delete(message);
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
@@ -7768,7 +7794,6 @@ class Guard {
         if (this.callerIds.has(key)) return this.refuse(message, FAILED, false);
         this.callerIds.set(key, message);
       }
-      if (message.method === 'Target.createTarget') this.clientCreates.add(message);
       this.commands.set(key, message);
       this.arrivals.set(message, ++this.clock);
       if (
