@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -183,6 +183,8 @@ function eventsOf() {
   const events = [];
   const waiters = new Set();
   const push = (message) => {
+    if (process.env.GUARD_REFUSED6_PROBE && message && typeof message === 'object')
+      message.__at = Date.now();
     events.push(message);
     for (const waiter of waiters) {
       if (!waiter.predicate(message)) continue;
@@ -893,6 +895,43 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
+            if (
+              process.env.GUARD_REFUSED6_PROBE &&
+              data.side === 'control' &&
+              current?.id === 'C3.popup-on-redirect-302' &&
+              data.step?.cdp === 'Page.setBypassCSP'
+            ) {
+              const error = data.out?.ok
+                ? null
+                : String(data.out?.error?.message ?? data.out?.error ?? '');
+              const refused =
+                data.gone !== true && data.out?.ok === false && /refused/.test(error ?? '');
+              const line = JSON.stringify({
+                probe: 'refused.6',
+                rep: process.env.GUARD_REFUSED6_REP ?? null,
+                path,
+                target,
+                variant,
+                side: data.side,
+                ok: data.out?.ok === true,
+                error,
+                gone: data.gone === true,
+                replyAt: data.replyAt ?? null,
+                detachAt: data.detachAt ?? null,
+                detachMinusReplyMs:
+                  data.detachAt != null && data.replyAt != null
+                    ? data.detachAt - data.replyAt
+                    : null,
+                refused,
+                childUrl: data.childUrl ?? null,
+                session: data.session ?? null,
+              });
+              process.stdout.write(`REFUSED6 ${line}\n`);
+              const logPath =
+                process.env.GUARD_REFUSED6_LOG ||
+                join(process.env.RUNNER_TEMP || tmpdir(), 'refused6-probe.ndjson');
+              appendFileSync(logPath, `${line}\n`);
+            }
             if (current?.id === 'C3.tab-worker-leak' && data.step)
               process.stdout.write(
                 `GUARD-STEP ${path} ${current.id} ${target} ${variant} ${data.side} ${JSON.stringify(
