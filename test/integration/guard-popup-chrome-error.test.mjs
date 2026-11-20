@@ -989,6 +989,132 @@ for (const [hostName, own] of hosts) {
       assert.ok(download);
       assert.deepEqual(download.params, downloadParams);
     });
+
+    const oauthUrl = `${own}/oauth?code=SECRETCODE`;
+    const carriers = [
+      [
+        'Page.windowOpen',
+        {
+          url: oauthUrl,
+          windowName: 'vault-oauth',
+          windowFeatures: ['popup'],
+          userGesture: true,
+        },
+      ],
+      [
+        'Page.downloadWillBegin',
+        {
+          frameId: `drop-${hostName}-${routeName}`,
+          guid: 'drop-dl',
+          url: oauthUrl,
+          suggestedFilename: `${hostOnly}-secret.bin`,
+        },
+      ],
+      [
+        'Page.javascriptDialogOpening',
+        {
+          url: oauthUrl,
+          message: hostOnly,
+          type: 'alert',
+          hasBrowserHandler: true,
+        },
+      ],
+      [
+        'Page.frameNavigated',
+        {
+          frame: {
+            id: `drop-${hostName}-${routeName}`,
+            url: errorPage,
+            securityOrigin: '://',
+            unreachableUrl: failed,
+            loaderId: 'drop-err',
+            name: hostOnly,
+          },
+        },
+      ],
+    ];
+
+    for (const [method, params] of carriers) {
+      test(`drop ${method} on guard session never delivers (${hostName}, ${routeName})`, {
+        timeout: 5000,
+      }, async (t) => {
+        const wire = protocol(t, own, route);
+        const id = `drop-guard-${method.split('.').pop()}-${hostName}-${routeName}`;
+        const entry = wire.target(id, plainFrame(id));
+        const attached = await wire.send('Target.attachToTarget', {
+          targetId: entry.info.targetId,
+          flatten: true,
+        });
+        assert.equal(attached.error, undefined);
+        await wire.send('Page.enable', {}, attached.result.sessionId);
+        await wire.drain(20);
+        const guardSession = `guard-${entry.info.targetId}`;
+        assert.equal(
+          wire.sessions.has(guardSession) ||
+            wire.sent.some(
+              (message) =>
+                message.method === 'Target.attachToTarget' &&
+                message.id >= 2 ** 30 &&
+                message.params?.targetId === entry.info.targetId
+            ),
+          true,
+          'guard session exists'
+        );
+        const from = wire.delivered.length;
+        const shaped =
+          method === 'Page.downloadWillBegin'
+            ? { ...params, frameId: entry.info.targetId }
+            : method === 'Page.frameNavigated'
+              ? { frame: { ...params.frame, id: entry.info.targetId } }
+              : params;
+        wire.emit({ method, sessionId: guardSession, params: shaped });
+        await wire.drain(10);
+        const leaked = wire.delivered.slice(from).filter((message) => message.method === method);
+        assert.deepEqual(leaked, [], `${method} on guard session must not reach the client`);
+        assert.equal(JSON.stringify(wire.delivered.slice(from)).includes('SECRETCODE'), false);
+        assert.equal(JSON.stringify(wire.delivered.slice(from)).includes(hostOnly), false);
+      });
+
+      test(`drop ${method} on blocked session never delivers (${hostName}, ${routeName})`, {
+        timeout: 5000,
+      }, async (t) => {
+        const wire = protocol(t, own, route);
+        const id = `drop-blocked-${method.split('.').pop()}-${hostName}-${routeName}`;
+        const entry = wire.target(id, plainFrame(id));
+        const attached = await wire.send('Target.attachToTarget', {
+          targetId: entry.info.targetId,
+          flatten: true,
+        });
+        assert.equal(attached.error, undefined);
+        await wire.send('Page.enable', {}, attached.result.sessionId);
+        await wire.drain(10);
+        wire.emit({
+          method: 'Page.frameNavigated',
+          sessionId: attached.result.sessionId,
+          params: {
+            frame: {
+              id: entry.info.targetId,
+              url: `${own}/vault`,
+              securityOrigin: own,
+              loaderId: 'cut',
+            },
+          },
+        });
+        await wire.drain(10);
+        const from = wire.delivered.length;
+        const shaped =
+          method === 'Page.downloadWillBegin'
+            ? { ...params, frameId: entry.info.targetId }
+            : method === 'Page.frameNavigated'
+              ? { frame: { ...params.frame, id: entry.info.targetId } }
+              : params;
+        wire.emit({ method, sessionId: attached.result.sessionId, params: shaped });
+        await wire.drain(10);
+        const leaked = wire.delivered.slice(from).filter((message) => message.method === method);
+        assert.deepEqual(leaked, [], `${method} on blocked session must not reach the client`);
+        assert.equal(JSON.stringify(wire.delivered.slice(from)).includes('SECRETCODE'), false);
+      });
+    }
   }
 }
 
