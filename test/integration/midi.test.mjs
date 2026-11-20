@@ -170,6 +170,18 @@ const faux = () => {
     window.runs.push(started);
     return index;
   };
+  window.interrupt = async (...tail) => {
+    const client = await globalThis.sliccRequestsClient();
+    try {
+      const found = (await client.ps()).filter(({ argv = [] }) =>
+        tail.every((arg, at) => argv.at(at - tail.length) === arg)
+      );
+      for (const { pid } of found) await client.kill(pid, 'SIGINT');
+      return found.map(({ argv }) => argv.slice(-tail.length));
+    } finally {
+      await client.close();
+    }
+  };
 };
 
 async function seven(t) {
@@ -305,8 +317,9 @@ test('the chip goes when a midi receive ends, whether interrupted or by --count,
   assert.match(chip, /MIDI port open · midi1 \(IAC Driver Bus 1\) · cone · \d+:\d\d/);
   await page.evaluate(() => window.play([0x90, 0x3c, 0x7f]));
   await page.until((index) => window.streamed[index] === '90 3c 7f\n', interrupted);
-  const sent = await asCone(page, `pkill -INT -f 'midi[^ ]* receive midi1$'; echo "sent $?"`);
-  assert.match(sent.stdout, /sent 0/, sent.stderr);
+  assert.deepEqual(await page.evaluate(() => window.interrupt('receive', 'midi1')), [
+    ['receive', 'midi1'],
+  ]);
   const stopped = await finished(page, interrupted);
   assert.match(stopped.stdout, /^90 3c 7f\ninterrupted 130$/m, stopped.stderr);
   await page.until(() => window.chips().length === 0);
