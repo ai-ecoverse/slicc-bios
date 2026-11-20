@@ -3,6 +3,7 @@ import test from 'node:test';
 import { browserHook, browserHosts } from '../../src/seed/cdp.js';
 import { guardProtected } from '../../src/seed/guard.js';
 import { watchSignIns } from '../../src/seed/held.js';
+import { guardRoute } from './guard-route.mjs';
 
 const SEVEN = 'https://seven.invalid';
 const MARK = 'CUT-SIGN-IN-BODY';
@@ -306,7 +307,7 @@ test('an ordinary page naming https://www.sliccy.ai alone in its query is hidden
   );
   const open = browser(infos);
   const devtools = await client(async () =>
-    guardProtected(await open(), [SEVEN], new Map(), undefined)
+    guardProtected(await open(), [SEVEN], new Map(), guardRoute('devtools'))
   );
   try {
     const onLink = await reach(link, 'refers');

@@ -14,7 +14,12 @@ async function rig() {
   const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const connection = guardProtected(
     extensionConnection(globalThis.sliccExtension.cdp),
-    self.origin
+    self.origin,
+    new Map(),
+    { kind: 'extension', version: globalThis.sliccExtension.version },
+    typeof globalThis.sliccExtension.frames === 'function'
+      ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+      : undefined
   );
   const pending = new Map();
   const events = [];

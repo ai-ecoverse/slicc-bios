@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { extensionConnection } from '../../src/seed/cdp.js';
 import { ordinary, plainFrame, protectedOrigin } from './guard-ordering-fixture.mjs';
+import { guardRoute } from './guard-route.mjs';
 
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
@@ -84,7 +85,9 @@ function createdProtocol(t, transport, securityOrigin, destination = ordinary) {
   const off = cdp.on((message) => raw.onmessage?.(JSON.stringify(message)));
   const guard = guardProtected(
     transport === 'extension' ? extensionConnection(cdp) : raw,
-    protectedOrigin
+    protectedOrigin,
+    new Map(),
+    guardRoute(transport === 'extension' ? 'extension' : 'devtools')
   );
   guard.onmessage = (text) => {
     const message = JSON.parse(text);
