@@ -277,6 +277,7 @@ await step('seed', async () => {
     'scrub-receipts.js',
     'secrets.js',
     'serial.js',
+    'serve.js',
     'site.js',
     'six.js',
     'skills.js',

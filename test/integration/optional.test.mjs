@@ -66,6 +66,14 @@ test('the optional catalog lists packages and pins none: no package.json or lock
       repo: 'ai-ecoverse/gh-upskill',
       workflow: ['.github/workflows/ci.yml'],
     },
+    ...Object.fromEntries(
+      ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'].map(
+        (platform) => [
+          `@ai-ecoverse/slicc-serve-${platform}`,
+          { repo: 'ai-ecoverse/slicc-serve', workflow: ['.github/workflows/ci.yml'] },
+        ]
+      )
+    ),
   });
   const publishers = [
     ...Object.entries(catalog)
@@ -96,6 +104,7 @@ test('the optional catalog lists packages and pins none: no package.json or lock
         'ai-ecoverse/slicc-cdp .github/workflows/publish-sliccy-browser.yml or .github/workflows/ci.yml',
       '@ai-ecoverse/mcpcat':
         'ai-ecoverse/mcpcat .github/workflows/release.yml or .github/workflows/ci.yml',
+      '@ai-ecoverse/slicc-serve': 'ai-ecoverse/slicc-serve .github/workflows/ci.yml',
     },
     'every other package is homescoop’s, from its ladder at main'
   );

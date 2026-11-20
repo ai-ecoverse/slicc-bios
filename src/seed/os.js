@@ -98,6 +98,7 @@ import {
 } from './requests.js';
 import { entersInFrame, showsSecrets, withSecrets } from './secrets.js';
 import { serialPorts } from './serial.js';
+import { publicPreviews } from './serve.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -321,6 +322,7 @@ const tray = hub
       page: home(),
       onWebhook: (name, delivery) => deliverWebhook(owner, name, delivery),
       onGuest: (seat, stream) => bridgeAgent(owner, stream, { guest: seat }),
+      previews: () => served.control(),
     })
   : null;
 tray?.on(() => cdpIn.revoked());
@@ -441,6 +443,7 @@ const remoteBrowser = switches.add({
   off: () => cdpIn.off(),
 });
 const serial = serialPorts({ create: createDevices, switches, clicks, live });
+const served = publicPreviews({ tray, kernel: () => kernel, switches, live });
 const displays = displayer();
 const recorder = composerCapture({
   audio: personal(audio, guarded),
@@ -478,6 +481,7 @@ const requests = pageRequests({
     ),
     ...plugged(audio, audioPrompts, undefined, guarded),
     ...serial.handlers,
+    ...served.handlers,
   },
   kinds: { ...KINDS, ...serial.kinds },
 });

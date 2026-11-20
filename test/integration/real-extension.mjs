@@ -71,7 +71,11 @@ export async function certificate() {
 }
 
 async function front(upstream) {
+  const requests = [];
   const server = createServer(await certificate(), (req, res) => {
+    const host = (req.headers.host ?? '').split(':')[0];
+    const path = new URL(req.url ?? '/', 'https://seven.sliccy.ai').pathname;
+    requests.push(`https://${host}${path}`);
     const up = request(
       {
         host: upstream.url.hostname,
@@ -91,6 +95,7 @@ async function front(upstream) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {
     port: server.address().port,
+    requests,
     close: () => {
       server.closeAllConnections();
       server.close();
@@ -160,6 +165,8 @@ export async function realExtension({
   }
   upstream.url = new URL(chrome.url);
   const close = chrome.close;
+  const page = chrome.page;
+  chrome.front = tls.requests;
   chrome.close = async (...rest) => {
     tls.close();
     try {
@@ -167,6 +174,10 @@ export async function realExtension({
     } finally {
       undisplay();
     }
+  };
+  chrome.page = async (t) => {
+    tls.requests.length = 0;
+    return page(t);
   };
   return chrome;
 }

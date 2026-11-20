@@ -4,9 +4,7 @@ import { ready } from './bios.mjs';
 import { markerPixels } from './guard-paint-pixels.mjs';
 import { CURRENT_EXTENSION, realExtension, SEVEN } from './real-extension.mjs';
 
-test('an extension without child attachment keeps an ordinary cross-site frame page closed', {
-  timeout: 10 * 60 * 1000,
-}, async (t) => {
+async function measure(t, { frames, childOrigin }) {
   const real = await realExtension({
     extension: CURRENT_EXTENSION,
     args: ['--site-per-process'],
@@ -16,7 +14,7 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
   await seven.goto(SEVEN);
   await ready(seven);
   const plain = await seven.tab();
-  const child = new URL('/ordinary-child.html', real.url).href;
+  const child = new URL('/ordinary-child.html', childOrigin ?? real.url).href;
   const outer = new URL('/ordinary-parent.html', real.url);
   outer.hostname = 'localhost';
   real.overrides.set(
@@ -33,7 +31,7 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
   const infos = (await real.cdp.send('Target.getTargets', { filter: [{}] })).targetInfos;
   assert.ok(
     infos.some((info) => info.type === 'iframe' && info.url === child),
-    'the ordinary child is cross-process'
+    `the ${childOrigin ? 'protected' : 'ordinary'} child is cross-process`
   );
   const info = infos.find((info) => info.type === 'page' && info.url === outer.href);
   assert.ok(info, 'the ordinary parent exists');
@@ -78,12 +76,15 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
     });
   await plain.within(10000, () => globalThis.clicks === 1);
   control.input = await plain.evaluate(() => globalThis.clicks);
-  await seven.evaluate(async () => {
+  await seven.evaluate(async (handFrames) => {
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const connection = guardProtected(
       extensionConnection(globalThis.sliccExtension.cdp),
-      location.origin
+      location.origin,
+      new Map(),
+      { kind: 'extension', version: globalThis.sliccExtension.version },
+      handFrames ? (targetId) => globalThis.sliccExtension.frames(Number(targetId)) : undefined
     );
     const pending = new Map();
     const events = [];
@@ -115,7 +116,7 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
           );
         }),
     };
-  });
+  }, frames);
   try {
     const row = await seven.evaluate(async (url) => {
       const client = globalThis.frameLimit;
@@ -127,7 +128,7 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
         flatten: true,
       });
       const session = attached.result?.sessionId;
-      if (!session) return { attached };
+      if (!session) return { attached, hook: typeof globalThis.sliccExtension.frames };
       let capability;
       try {
         await globalThis.sliccExtension.cdp.send(
@@ -153,32 +154,120 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
         [screenshot, cast, input].every((answer) =>
           answer.error?.message?.startsWith('slicc: refused:')
         ) && frames === 0;
-      return { capability, screenshot, cast, input, frames, state: closed ? 'closed' : 'failed' };
+      return {
+        capability,
+        hook: typeof globalThis.sliccExtension.frames,
+        screenshot,
+        cast,
+        input,
+        frames,
+        state: closed ? 'closed' : 'failed',
+      };
     }, outer.href);
+    const layout = `${frames ? 'frames' : 'frameless'} ${childOrigin ? 'protected' : 'ordinary'}`;
+    const childPath = new URL(child).pathname;
+    const fixtureHits = real.requests.filter((path) => path === childPath);
+    const frontHits = real.front.filter((url) => url === child);
+    const childRequested = fixtureHits.length > 0 && frontHits.length > 0;
+    const shown = {
+      ...row,
+      screenshot: row.screenshot?.error ?? (row.screenshot?.result ? 'answered' : null),
+      child,
+      childRequested,
+      fixtureHits,
+      frontHits,
+    };
     process.stdout.write(
-      `GUARD-PAINT extension-${CURRENT_EXTENSION.version} ordinary ${JSON.stringify({ control, ...row })}\n`
+      `GUARD-PAINT extension-${CURRENT_EXTENSION.version} ${layout} ${JSON.stringify({ control, ...shown })}\n`
     );
-    assert.ok(
-      control.shot > 0 && control.cast > 0 && control.input === 1,
-      'the ordinary frame paints, casts and accepts input without the guard'
-    );
-    assert.equal(
-      row.capability,
-      'slicc: refused: Target.setAutoAttach is not supported: attach to each target'
-    );
-    for (const vector of ['screenshot', 'cast', 'input'])
-      assert.match(
-        row[vector]?.error?.message ?? '',
-        /^slicc: refused:/,
-        `${vector} stays closed for an unplaced remote owner`
-      );
-    assert.equal(row.frames, 0);
-    assert.equal(
-      await plain.evaluate(() => globalThis.clicks),
-      1,
-      'guarded input never reaches the ordinary frame'
-    );
+    return {
+      control,
+      row,
+      clicks: await plain.evaluate(() => globalThis.clicks),
+      childRequested,
+    };
   } finally {
     await seven.evaluate(() => globalThis.frameLimit.close()).catch(() => {});
+  }
+}
+
+function controlPassed(control, kind) {
+  assert.ok(
+    control.shot > 0 && control.cast > 0 && control.input === 1,
+    `the ${kind} frame paints, casts and accepts input without the guard`
+  );
+}
+
+function stayedClosed({ row, clicks }, owner, kind) {
+  assert.equal(
+    row.capability,
+    'slicc: refused: Target.setAutoAttach is not supported: attach to each target'
+  );
+  for (const vector of ['screenshot', 'cast', 'input'])
+    assert.match(
+      row[vector]?.error?.message ?? '',
+      /^slicc: refused:/,
+      `${vector} stays closed for ${owner}`
+    );
+  assert.equal(row.frames, 0);
+  assert.equal(clicks, 1, `guarded input never reaches the ${kind} frame`);
+}
+
+test('an extension without child attachment keeps an ordinary cross-site frame page closed', {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const measured = await measure(t, { frames: false });
+  controlPassed(measured.control, 'ordinary');
+  stayedClosed(measured, 'an unplaced remote owner', 'ordinary');
+});
+
+test('slicc-extension with frames() leaves an ordinary page with an ordinary cross-site frame drivable', {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const { control, row } = await measure(t, { frames: true });
+  controlPassed(control, 'ordinary');
+  assert.equal(
+    row.hook,
+    'function',
+    `slicc-extension ${CURRENT_EXTENSION.version} offers frames()`
+  );
+  assert.equal(row.screenshot?.error, undefined, 'the screenshot is answered');
+  assert.ok(
+    markerPixels(row.screenshot.result.data) > 0,
+    'the answered screenshot shows the ordinary frame'
+  );
+  assert.equal(row.input?.error, undefined, 'input is accepted');
+});
+
+test('slicc-extension with frames() keeps a page with a protected cross-site frame closed', {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const measured = await measure(t, { frames: true, childOrigin: SEVEN });
+  controlPassed(measured.control, 'protected');
+  assert.equal(
+    measured.row.hook,
+    'function',
+    `slicc-extension ${CURRENT_EXTENSION.version} offers frames()`
+  );
+  if (measured.row.attached) {
+    assert.match(
+      measured.row.attached.error?.message ?? '',
+      /^slicc: refused:/,
+      'the page that holds the protected frame is refused at attach'
+    );
+    if (!measured.childRequested) {
+      const loaded = await measure(t, { frames: true, childOrigin: SEVEN });
+      controlPassed(loaded.control, 'protected');
+      assert.ok(loaded.childRequested, 'child never requested');
+      assert.equal(
+        loaded.row.attached,
+        undefined,
+        'the parent attaches so the protected frame is loaded and refused'
+      );
+      stayedClosed(loaded, 'a protected remote owner', 'protected');
+    }
+  } else {
+    assert.ok(measured.childRequested, 'child never requested');
+    stayedClosed(measured, 'a protected remote owner', 'protected');
   }
 });

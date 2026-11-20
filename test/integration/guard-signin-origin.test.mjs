@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { browserHook } from '../../src/seed/cdp.js';
 import { guardProtected, signsIn } from '../../src/seed/guard.js';
+import { guardRoute } from './guard-route.mjs';
 
 const SEVEN = 'https://seven.invalid';
 const MARK = 'ORIGIN-SIGN-IN-BODY';
@@ -137,9 +138,10 @@ async function reach(agent, targetId) {
 
 const ROUTES = {
   link: (open) => browserHook((connection) => connection, linked(open), [SEVEN]),
-  devtools: (open) => async () => guardProtected(await open(), [SEVEN], new Map(), undefined),
+  devtools: (open) => async () =>
+    guardProtected(await open(), [SEVEN], new Map(), guardRoute('devtools')),
   extension: (open) => async () =>
-    guardProtected(await open(), [SEVEN], new Map(), { kind: 'extension' }, async () => []),
+    guardProtected(await open(), [SEVEN], new Map(), guardRoute('extension'), async () => []),
 };
 
 const HELD = {

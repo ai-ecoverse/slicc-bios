@@ -531,7 +531,12 @@ for (const extension of EXTENSIONS.filter(
       const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
       const connection = guardProtected(
         extensionConnection(globalThis.sliccExtension.cdp),
-        location.origin
+        location.origin,
+        new Map(),
+        { kind: 'extension', version: globalThis.sliccExtension.version },
+        typeof globalThis.sliccExtension.frames === 'function'
+          ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+          : undefined
       );
       const pending = new Map();
       let next = 0;
@@ -1168,7 +1173,12 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const connection = guardProtected(
       extensionConnection(globalThis.sliccExtension.cdp),
-      location.origin
+      location.origin,
+      new Map(),
+      { kind: 'extension', version: globalThis.sliccExtension.version },
+      typeof globalThis.sliccExtension.frames === 'function'
+        ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+        : undefined
     );
     const pending = new Map();
     const events = [];
@@ -1446,7 +1456,12 @@ test('a browser extension’s hidden world stays out of reach through the guard 
       const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
       const connection = guardProtected(
         extensionConnection(globalThis.sliccExtension.cdp),
-        location.origin
+        location.origin,
+        new Map(),
+        { kind: 'extension', version: globalThis.sliccExtension.version },
+        typeof globalThis.sliccExtension.frames === 'function'
+          ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+          : undefined
       );
       const pending = new Map();
       const events = [];
@@ -1565,7 +1580,9 @@ test('headed, on the link path: a tab created through the guard with an empty UR
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const connection = guardProtected(
       await globalThis.sliccLinkedBrowsers()[0].open(),
-      location.origin
+      location.origin,
+      new Map(),
+      globalThis.sliccLinkedBrowsers()[0].route
     );
     const pending = new Map();
     let next = 0;
@@ -1679,7 +1696,9 @@ test('a browser extension’s hidden world stays out of reach through the guard 
       const { guardProtected } = await import(new URL('guard.js', location.href).href);
       const connection = guardProtected(
         await globalThis.sliccLinkedBrowsers()[0].open(),
-        location.origin
+        location.origin,
+        new Map(),
+        globalThis.sliccLinkedBrowsers()[0].route
       );
       const pending = new Map();
       const events = [];

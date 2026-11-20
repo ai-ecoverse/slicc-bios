@@ -80,7 +80,12 @@ async function rig({ port, client, signing, drivable }) {
   const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const connection = guardProtected(
     extensionConnection(globalThis.sliccExtension.cdp),
-    self.origin
+    self.origin,
+    new Map(),
+    { kind: 'extension', version: globalThis.sliccExtension.version },
+    typeof globalThis.sliccExtension.frames === 'function'
+      ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+      : undefined
   );
   const pending = new Map();
   let next = 0;
@@ -240,7 +245,12 @@ test('after a reload, seven’s last sign-in client id still makes its authorize
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const connection = guardProtected(
       extensionConnection(globalThis.sliccExtension.cdp),
-      self.origin
+      self.origin,
+      new Map(),
+      { kind: 'extension', version: globalThis.sliccExtension.version },
+      typeof globalThis.sliccExtension.frames === 'function'
+        ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+        : undefined
     );
     return new Promise((resolve) => {
       connection.onmessage = (text) => {
@@ -270,7 +280,12 @@ test('a fresh profile that has never signed in still treats seven’s built-in s
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const connection = guardProtected(
       extensionConnection(globalThis.sliccExtension.cdp),
-      self.origin
+      self.origin,
+      new Map(),
+      { kind: 'extension', version: globalThis.sliccExtension.version },
+      typeof globalThis.sliccExtension.frames === 'function'
+        ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+        : undefined
     );
     return new Promise((resolve) => {
       connection.onmessage = (text) => {
@@ -300,7 +315,12 @@ test('a sign-in tab already open before the client connects is neither listed no
       const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
       const connection = guardProtected(
         extensionConnection(globalThis.sliccExtension.cdp),
-        self.origin
+        self.origin,
+        new Map(),
+        { kind: 'extension', version: globalThis.sliccExtension.version },
+        typeof globalThis.sliccExtension.frames === 'function'
+          ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+          : undefined
       );
       const pending = new Map();
       const seen = [];
@@ -370,7 +390,12 @@ test('a sign-in through the extension records its client id, so that id’s auth
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const connection = guardProtected(
       extensionConnection(globalThis.sliccExtension.cdp),
-      self.origin
+      self.origin,
+      new Map(),
+      { kind: 'extension', version: globalThis.sliccExtension.version },
+      typeof globalThis.sliccExtension.frames === 'function'
+        ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+        : undefined
     );
     return new Promise((resolve) => {
       connection.onmessage = (text) => {

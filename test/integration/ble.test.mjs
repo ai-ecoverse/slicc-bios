@@ -356,7 +356,7 @@ test('the Bluetooth devices switch sits after HID devices and before MIDI device
   const page = await seven(t);
   assert.deepEqual(
     (await page.evaluate(() => document.querySelector('slicc-app').model.switches.list())).slice(
-      -5
+      -6
     ),
     [
       { key: 'serial', label: 'Serial ports', on: true },
@@ -364,6 +364,7 @@ test('the Bluetooth devices switch sits after HID devices and before MIDI device
       { key: 'hid', label: 'HID devices', on: true },
       { key: 'ble', label: 'Bluetooth devices', on: true },
       { key: 'midi', label: 'MIDI devices', on: true },
+      { key: 'previews', label: 'Public previews', on: true },
     ]
   );
   await page.evaluate(() => window.grant());

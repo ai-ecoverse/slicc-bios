@@ -477,6 +477,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       { key: 'hid', label: 'HID devices', on: true },
       { key: 'ble', label: 'Bluetooth devices', on: true },
       { key: 'midi', label: 'MIDI devices', on: true },
+      { key: 'previews', label: 'Public previews', on: true },
     ]
   );
   await run(page, 'screencapture -V 60 /tmp/cut.webm; echo "cut $?"');
@@ -540,6 +541,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       ['hid', true],
       ['ble', true],
       ['midi', true],
+      ['previews', true],
     ]
   );
   await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
@@ -566,6 +568,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       ['hid', 'HID devices', true],
       ['ble', 'Bluetooth devices', true],
       ['midi', 'MIDI devices', true],
+      ['previews', 'Public previews', true],
     ]
   );
   await shoot(page, 'capture-switches', { show: 'settings', target: '[data-section="switches"]' });
