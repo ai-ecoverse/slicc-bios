@@ -2,6 +2,48 @@ import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'jso
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 
 const UNSETTLED = 'slicc: refused: unsettled frame list';
+export const ERROR_PROTECTED_FROM = '7.15.0';
+const SIGN_IN_MARKERS = ['redirect_uri=', 'client_id=', '/auth/callback'];
+const DECODE_ROUNDS = 8;
+
+export const sendsErrorProtected = (version) => {
+  const have = String(version ?? '')
+    .split('.')
+    .map(Number);
+  const want = ERROR_PROTECTED_FROM.split('.').map(Number);
+  for (let index = 0; index < want.length; index++) {
+    if (!Number.isSafeInteger(have[index])) return false;
+    if (have[index] !== want[index]) return have[index] > want[index];
+  }
+  return true;
+};
+
+function signInMarked(text) {
+  let current = text;
+  for (let round = 0; ; round += 1) {
+    const lower = current.toLowerCase();
+    if (SIGN_IN_MARKERS.some((marker) => lower.includes(marker))) return true;
+    let next;
+    try {
+      next = decodeURIComponent(current);
+    } catch {
+      return true;
+    }
+    if (next === current) return false;
+    if (round === DECODE_ROUNDS) return true;
+    current = next;
+  }
+}
+
+function errorUrlProtected(text, is) {
+  if (typeof text !== 'string' || /[\s\\\u0000-\u001f\u007f]/.test(text) || !URL.canParse(text))
+    return true;
+  const url = new URL(text);
+  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password)
+    return true;
+  if (is.url(text)) return true;
+  return signInMarked(text) || signInMarked(url.href);
+}
 const WAIT = 2000;
 let revision = 0;
 let diagnosed = 0;
@@ -49,7 +91,7 @@ function kindOf(frame, is) {
   return 'ordinary';
 }
 
-async function snapshot(cdp, targetId) {
+async function snapshot(cdp, targetId, errors) {
   const refuse = (why) => {
     const error = new Error(UNSETTLED);
     error.why = why;
@@ -97,6 +139,7 @@ async function snapshot(cdp, targetId) {
     parentFrameId: frame.parentId === undefined ? -1 : (numbers.get(frame.parentId) ?? -2),
     documentId: frame.loaderId,
     url: frame.url,
+    failed: frame.unreachableUrl,
     errorOccurred: Boolean(frame.unreachableUrl),
     documentLifecycle: 'active',
   }));
@@ -109,7 +152,7 @@ async function snapshot(cdp, targetId) {
         !frame.documentId ||
         typeof frame.url !== 'string' ||
         !frame.url ||
-        frame.errorOccurred === true ||
+        (frame.errorOccurred === true && (!errors || frame.frameId === 0)) ||
         frame.parentFrameId === -2
     )
   )
@@ -131,9 +174,18 @@ async function snapshot(cdp, targetId) {
   };
 }
 
-function reply(snap, is) {
+function reply(snap, is, errors) {
   const kinds = snap.frames.map((frame) => kindOf(frame, is));
-  const ordinary = kinds.every((kind) => kind === 'ordinary');
+  const taint = snap.frames.some(
+    (frame, index) => kinds[index] === 'error' && errorUrlProtected(frame.failed, is)
+  );
+  const errorProtected = snap.frames.map(
+    (frame, index) => kinds[index] === 'error' && (taint || errorUrlProtected(frame.failed, is))
+  );
+  const ordinary = kinds.every(
+    (kind, index) =>
+      kind === 'ordinary' || (errors && kind === 'error' && errorProtected[index] === false)
+  );
   return {
     version: 2,
     revision: snap.revision,
@@ -142,6 +194,7 @@ function reply(snap, is) {
     frames: snap.frames.map((frame, index) => ({
       ...(ordinary ? { frameId: frame.frameId, parentFrameId: frame.parentFrameId } : {}),
       kind: kinds[index],
+      ...(errors && kinds[index] === 'error' ? { errorProtected: errorProtected[index] } : {}),
     })),
     localFrames: ordinary ? [...snap.localFrames] : [],
     remoteOwners: ordinary
@@ -150,14 +203,15 @@ function reply(snap, is) {
   };
 }
 
-export async function extensionFrames(browser, targetId, own) {
+export async function extensionFrames(browser, targetId, own, version) {
+  const errors = sendsErrorProtected(version);
   const is = protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
   const cdp = connect(browser);
   let timer;
   try {
     await cdp.opened;
     const snap = await Promise.race([
-      snapshot(cdp, targetId),
+      snapshot(cdp, targetId, errors),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
           const error = new Error(UNSETTLED);
@@ -166,7 +220,7 @@ export async function extensionFrames(browser, targetId, own) {
         }, WAIT);
       }),
     ]);
-    const result = reply(snap, is);
+    const result = reply(snap, is, errors);
     const checks = {
       version: result.version === 2,
       revision: Number.isSafeInteger(result.revision),

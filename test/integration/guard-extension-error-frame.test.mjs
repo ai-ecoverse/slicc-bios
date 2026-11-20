@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { test } from 'node:test';
-import { guardHost, targets } from './guard-set.mjs';
+import { guardHost, OLDER_FAKE, targets } from './guard-set.mjs';
+import { CURRENT_EXTENSION } from './real-extension.mjs';
 
 const REFUSED = /^slicc: refused:/;
 async function closedPort() {
@@ -52,14 +53,12 @@ async function measure(client, session) {
   };
 }
 
-test('the documented limit: on the extension route an ordinary page with an error iframe stays locked for DOM, paint and input while the error frame exists, Runtime reads still work, and it is drivable once the frame is gone', {
-  timeout: 10 * 60 * 1000,
-}, async (t) => {
-  const clientFactory = await guardHost(t, 'extension');
+async function framedError(t, extension, path = '/') {
+  const clientFactory = await guardHost(t, 'extension', { extension });
   const { client, unguarded, close } = await clientFactory('extension')({});
   t.after(() => close());
   const tag = `error-frame-${Date.now()}`;
-  const FAILED = `${new URL(targets.ordinary).protocol}//${new URL(targets.ordinary).hostname}:${await closedPort()}/`;
+  const FAILED = `${new URL(targets.ordinary).protocol}//${new URL(targets.ordinary).hostname}:${await closedPort()}${path}`;
   const url = `${targets.ordinary}/framed?tag=${tag}&url=${encodeURIComponent(FAILED)}&log=${encodeURIComponent(targets.log)}`;
   const { targetId } = await unguarded.send('Target.createTarget', { url });
   t.after(() => outcome(unguarded.send('Target.closeTarget', { targetId })));
@@ -86,6 +85,13 @@ test('the documented limit: on the extension route an ordinary page with an erro
   const attached = await client.send('Target.attachToTarget', { targetId, flatten: true });
   const session = attached.sessionId;
   await outcome(client.send('Page.enable', {}, session));
+  return { client, unguarded, raw, session, errorFrame };
+}
+
+test(`the documented limit: with the fake extension ${OLDER_FAKE} (before errorProtected), an ordinary page with an error iframe stays locked for DOM, paint and input while the error frame exists, Runtime reads still work, and it is drivable once the frame is gone`, {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const { client, unguarded, raw, session, errorFrame } = await framedError(t, OLDER_FAKE);
   const present = await measure(client, session);
   await unguarded.send(
     'Runtime.evaluate',
@@ -98,7 +104,7 @@ test('the documented limit: on the extension route an ordinary page with an erro
     return row.dom === 'answered' ? row : null;
   }, 10000);
   process.stdout.write(
-    `GUARD-ERROR-FRAME extension ${JSON.stringify({ present, gone: gone ?? (await measure(client, session)) })}\n`
+    `GUARD-ERROR-FRAME extension ${OLDER_FAKE} ${JSON.stringify({ present, gone: gone ?? (await measure(client, session)) })}\n`
   );
   assert.equal(present.dom, 'refused', 'DOM reads are refused while the error frame exists');
   assert.equal(present.shot, 'refused', 'screenshots are refused while the error frame exists');
@@ -107,4 +113,45 @@ test('the documented limit: on the extension route an ordinary page with an erro
   assert.ok(gone, 'the page answers DOM reads once the error frame is gone');
   assert.equal(gone.shot, 'answered', 'screenshots work once the error frame is gone');
   assert.equal(gone.input, 'answered', 'input works once the error frame is gone');
+});
+
+test(`with the fake extension ${CURRENT_EXTENSION.version}, an ordinary page whose iframe failed at an ordinary address is drivable for DOM, paint and input`, {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const { client, session } = await framedError(t, CURRENT_EXTENSION.version);
+  const row = await until(async () => {
+    const now = await measure(client, session);
+    return now.dom === 'answered' ? now : null;
+  }, 10000);
+  const seen = row ?? (await measure(client, session));
+  process.stdout.write(
+    `GUARD-ERROR-FRAME extension ${CURRENT_EXTENSION.version} ordinary ${JSON.stringify(seen)}\n`
+  );
+  assert.equal(seen.dom, 'answered', 'DOM reads work next to an ordinary error iframe');
+  assert.equal(seen.shot, 'answered', 'screenshots work next to an ordinary error iframe');
+  assert.equal(seen.input, 'answered', 'input works next to an ordinary error iframe');
+  assert.equal(seen.runtime, 'answered', 'Runtime reads work');
+});
+
+test(`with the fake extension ${CURRENT_EXTENSION.version}, an ordinary page whose iframe failed at a sign-in callback address stays locked for DOM, paint and input`, {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const { client, session } = await framedError(
+    t,
+    CURRENT_EXTENSION.version,
+    '/auth/callback?code=error-frame-secret'
+  );
+  const rows = [];
+  for (let n = 0; n < 5; n++) {
+    rows.push(await measure(client, session));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  process.stdout.write(
+    `GUARD-ERROR-FRAME extension ${CURRENT_EXTENSION.version} protected ${JSON.stringify(rows)}\n`
+  );
+  for (const row of rows) {
+    assert.equal(row.dom, 'refused', 'DOM reads stay refused next to a protected error iframe');
+    assert.equal(row.shot, 'refused', 'screenshots stay refused next to a protected error iframe');
+    assert.equal(row.input, 'refused', 'input stays refused next to a protected error iframe');
+  }
 });
