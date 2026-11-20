@@ -88,7 +88,7 @@ async function framedError(t, extension, path = '/') {
   return { client, unguarded, raw, session, errorFrame };
 }
 
-test(`the documented limit: with the fake extension ${OLDER_FAKE} (before errorProtected), an ordinary page with an error iframe stays locked for DOM, paint and input while the error frame exists, Runtime reads still work, and it is drivable once the frame is gone`, {
+test(`fake ${OLDER_FAKE}: an error iframe locks the page until it is gone`, {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const { client, unguarded, raw, session, errorFrame } = await framedError(t, OLDER_FAKE);
@@ -115,7 +115,7 @@ test(`the documented limit: with the fake extension ${OLDER_FAKE} (before errorP
   assert.equal(gone.input, 'answered', 'input works once the error frame is gone');
 });
 
-test(`with the fake extension ${CURRENT_EXTENSION.version}, an ordinary page whose iframe failed at an ordinary address is drivable for DOM, paint and input`, {
+test(`fake ${CURRENT_EXTENSION.version}: an ordinary error iframe leaves the page drivable`, {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const { client, session } = await framedError(t, CURRENT_EXTENSION.version);
@@ -133,7 +133,7 @@ test(`with the fake extension ${CURRENT_EXTENSION.version}, an ordinary page who
   assert.equal(seen.runtime, 'answered', 'Runtime reads work');
 });
 
-test(`with the fake extension ${CURRENT_EXTENSION.version}, an ordinary page whose iframe failed at a sign-in callback address stays locked for DOM, paint and input`, {
+test(`fake ${CURRENT_EXTENSION.version}: a sign-in-callback error iframe keeps the page locked`, {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const { client, session } = await framedError(
