@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
-import { boot, ready, run, screen, shows } from './bios.mjs';
+import { boot, pressDeep, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
@@ -179,20 +179,6 @@ const asCone = async (page, command) => finished(page, await started(page, comma
 
 const hidSwitch = (page, on) =>
   page.evaluate((on) => document.querySelector('slicc-app').model.switches.set('hid', on), on);
-
-async function pressDeep(page, selector) {
-  await page.until((selector) => {
-    const box = window.deep(selector)?.getBoundingClientRect();
-    return !!box && box.width > 0;
-  }, selector);
-  await new Promise((resolve) => setTimeout(resolve, 800));
-  const { x, y } = await page.evaluate((selector) => {
-    const box = window.deep(selector).getBoundingClientRect();
-    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  }, selector);
-  for (const type of ['mousePressed', 'mouseReleased'])
-    await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
-}
 
 test('hid is installed with the base set, a cone in plugdev lists and requests a device typed in a terminal with the chooser opening at once, and an open device shows a chip whose Close closes it, as unplugging does', async (t) => {
   const page = await seven(t);
