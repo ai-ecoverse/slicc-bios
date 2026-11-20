@@ -918,6 +918,17 @@ export function protection(own, { cut = false } = {}) {
   return { ...matcher, url: web, target };
 }
 
+export function ordinaryFailedUrl(failed, is) {
+  if (typeof failed !== 'string' || !failed) return false;
+  if (/[\t\n\r\\]/.test(failed)) return false;
+  if (!URL.canParse(failed)) return false;
+  const parsed = new URL(failed);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  if (!parsed.hostname) return false;
+  if (parsed.username || parsed.password) return false;
+  return !is.url(failed);
+}
+
 const registrable = (host) => host.split('.').slice(-2).join('.');
 
 export function credentials(listed = CREDENTIALS?.origins ?? []) {
@@ -3075,7 +3086,7 @@ class Guard {
   }
 
   errorOrdinaryFailed(failed) {
-    return typeof failed === 'string' && URL.canParse(failed) && !this.is.url(failed);
+    return ordinaryFailedUrl(failed, this.is);
   }
 
   rememberFailedUrl(targetId, failed, frameId, loaderId) {

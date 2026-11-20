@@ -1,11 +1,45 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { BLANKED, guardProtected } from '../../src/seed/guard.js';
+import { BLANKED, guardProtected, ordinaryFailedUrl, protection } from '../../src/seed/guard.js';
 
 const ordinary = 'https://ordinary.invalid/page';
 const ordinaryFail = 'https://ordinary.invalid/unreachable';
 const errorPage = 'chrome-error://chromewebdata/';
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+const ownOrigin = 'https://seven.sliccy.ai';
+const ordinaryIs = protection(ownOrigin);
+
+const ordinaryFailedForms = [
+  ['plain', 'https://ordinary.invalid/page', true],
+  ['uppercase host', 'https://ORDINARY.INVALID/page', true],
+  ['trailing dot', 'https://ordinary.invalid./page', true],
+  ['https :443', 'https://ordinary.invalid:443/page', true],
+  ['http :80', 'http://ordinary.invalid:80/page', true],
+  ['https :0', 'https://ordinary.invalid:0/page', true],
+  ['IDN host', 'https://例子.invalid/page', true],
+  ['punycode host', 'https://xn--fsq.invalid/page', true],
+  ['percent-encoded host', 'https://%6frdinary.invalid/page', true],
+  ['very long URL', `https://${'a'.repeat(2000)}.invalid/page`, true],
+  ['userinfo seven@ordinary', 'https://seven@ordinary.invalid/page', false],
+  ['userinfo ordinary@seven', 'https://ordinary@seven.sliccy.ai/page', false],
+  ['backslash https:\\\\seven', 'https:\\\\seven.sliccy.ai/doc', false],
+  ['tab in host', 'https://ord\tinary.invalid/page', false],
+  ['newline in host', 'https://ord\ninary.invalid/page', false],
+  ['tab in scheme', 'htt\tps://ordinary.invalid/page', false],
+  ['blob ordinary', 'blob:https://ordinary.invalid/uuid', false],
+  ['blob protected', 'blob:https://seven.sliccy.ai/uuid', false],
+  ['filesystem ordinary', 'filesystem:https://ordinary.invalid/temporary/x', false],
+  ['filesystem protected', 'filesystem:https://seven.sliccy.ai/temporary/x', false],
+  ['view-source ordinary', 'view-source:https://ordinary.invalid/page', false],
+  ['view-source protected', 'view-source:https://seven.sliccy.ai/page', false],
+  ['about:blank', 'about:blank', false],
+  ['about:srcdoc', 'about:srcdoc', false],
+  ['data:', 'data:text/html,hi', false],
+  ['javascript:', 'javascript:alert(1)', false],
+  ['ws:', 'ws://ordinary.invalid/socket', false],
+  ['ftp:', 'ftp://ordinary.invalid/file', false],
+  ['protected https', `${ownOrigin}/doc`, false],
+];
 
 const hosts = [
   ['seven', 'https://seven.sliccy.ai'],
@@ -1565,6 +1599,14 @@ for (const [routeName, route] of routes) {
     assertNoChromeErrorAttach(wire, from, `held/${routeName}`);
   });
 }
+
+describe('ordinary failed-URL judge', { concurrency: false }, () => {
+  for (const [label, failed, ordinary] of ordinaryFailedForms) {
+    test(`ordinaryFailedUrl ${label} is ${ordinary ? 'ordinary' : 'unproven'}`, () => {
+      assert.equal(ordinaryFailedUrl(failed, ordinaryIs), ordinary, label);
+    });
+  }
+});
 
 describe('createTarget provenance races', { concurrency: false }, () => {
   for (const [order, label] of [
