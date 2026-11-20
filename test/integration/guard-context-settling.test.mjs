@@ -175,7 +175,10 @@ test('real-clock smoke: persistent refusal becomes hidden within one second and 
     CONTEXT_SETTLE_ATTEMPTS,
     1 + Math.floor(spent / CONTEXT_SETTLE_POLL_MS)
   );
-  assert.ok(attempts() >= 2 && attempts() <= maxAttempts);
+  assert.ok(
+    attempts() >= 2 && attempts() <= maxAttempts,
+    `${attempts()} attempts, at most ${maxAttempts}, in ${spent} ms`
+  );
   assert.equal(
     p.delivered.some(({ params }) => params?.context?.uniqueId === context.uniqueId),
     false

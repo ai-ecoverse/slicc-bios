@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { extensionConnection } from '../../src/seed/cdp.js';
 import { BLANKED, INHERITED, PROTECTED } from '../../src/seed/guard.js';
+import { ownerSnapshot, treeDocument } from './guard-owner-snapshot.mjs';
 import { guardRoute } from './guard-route.mjs';
 import { errorFrame, flush, guardProtected, ordinary, plainFrame } from './guard-state-fixture.mjs';
 
@@ -45,6 +46,8 @@ function catalogProtocol(t) {
       if (method === 'Page.getFrameTree') return { frameTree: { frame } };
       if (method === 'Page.getNavigationHistory')
         return { currentIndex: 0, entries: [{ id: 1, url: info.url, title: info.title }] };
+      if (method === 'DOMSnapshot.captureSnapshot')
+        return ownerSnapshot(treeDocument({ frame }), frame.id);
       if (method === 'DOM.getDocument')
         return { root: { nodeId: 1, nodeName: '#document', children: [] } };
       if (method === 'Page.navigate') {
