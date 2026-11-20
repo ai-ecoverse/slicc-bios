@@ -14,5 +14,29 @@
   "@ai-ecoverse/gh-upskill": {
     "repo": "ai-ecoverse/gh-upskill",
     "workflow": [".github/workflows/ci.yml"]
+  },
+  "@ai-ecoverse/slicc-serve-darwin-arm64": {
+    "repo": "ai-ecoverse/slicc-serve",
+    "workflow": [".github/workflows/ci.yml"]
+  },
+  "@ai-ecoverse/slicc-serve-darwin-x64": {
+    "repo": "ai-ecoverse/slicc-serve",
+    "workflow": [".github/workflows/ci.yml"]
+  },
+  "@ai-ecoverse/slicc-serve-linux-arm64": {
+    "repo": "ai-ecoverse/slicc-serve",
+    "workflow": [".github/workflows/ci.yml"]
+  },
+  "@ai-ecoverse/slicc-serve-linux-x64": {
+    "repo": "ai-ecoverse/slicc-serve",
+    "workflow": [".github/workflows/ci.yml"]
+  },
+  "@ai-ecoverse/slicc-serve-win32-arm64": {
+    "repo": "ai-ecoverse/slicc-serve",
+    "workflow": [".github/workflows/ci.yml"]
+  },
+  "@ai-ecoverse/slicc-serve-win32-x64": {
+    "repo": "ai-ecoverse/slicc-serve",
+    "workflow": [".github/workflows/ci.yml"]
   }
 }

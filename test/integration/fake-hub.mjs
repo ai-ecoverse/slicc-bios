@@ -173,21 +173,157 @@ function biscotti(hub, followers) {
   };
 }
 
+const segments = (value) =>
+  typeof value === 'string' &&
+  value.length > 0 &&
+  !value.startsWith('/') &&
+  !value.split('/').some((part) => !part || part === '.' || part === '..');
+
+function previewRecords(hub) {
+  const records = new Map();
+  const pending = new Map();
+  hub.previews = records;
+  hub.minting = [];
+  let made = 0;
+  let asked = 0;
+  const leaderOf = (tray) => hub.sockets.findLast((s) => s.path.startsWith(`/controller/c${tray}`));
+  const add = (tray, body, extra = {}) => {
+    made += 1;
+    const entryRel = body.entryPath?.startsWith(`${body.servedRoot}/`)
+      ? body.entryPath.slice(body.servedRoot.length + 1)
+      : null;
+    const record = {
+      previewToken: `t${tray}.p${made}`,
+      tray,
+      servedRoot: body.servedRoot,
+      entryPath: body.entryPath,
+      entryRel,
+      allowLive: body.allowLive,
+      mode: 'live',
+      state: 'ready',
+      createdAt: new Date().toISOString(),
+      url: `http://p${made}.preview.test/${entryRel}`,
+      ...extra,
+    };
+    records.set(record.previewToken, record);
+    return record;
+  };
+  hub.addPreview = add;
+  hub.answered = (message) => pending.get(message.reqId)?.(message);
+  hub.ask = (tray, message) =>
+    new Promise((resolve) => {
+      asked += 1;
+      const reqId = `q${asked}`;
+      const chunks = new Map();
+      const timer = setTimeout(() => {
+        pending.delete(reqId);
+        resolve({ ok: false, status: 504, reason: 'leader timeout' });
+      }, 30_000);
+      pending.set(reqId, (chunk) => {
+        if (!chunk.ok || chunks.size + 1 === (chunk.totalChunks ?? 1)) {
+          clearTimeout(timer);
+          pending.delete(reqId);
+        }
+        if (!chunk.ok) return resolve(chunk);
+        chunks.set(chunk.chunkIndex ?? 0, chunk);
+        if (chunks.size !== (chunk.totalChunks ?? 1)) return;
+        const ordered = [...chunks.keys()].sort((a, b) => a - b).map((k) => chunks.get(k));
+        const body = Buffer.concat(
+          ordered.map((c) => Buffer.from(c.content, c.encoding === 'base64' ? 'base64' : 'utf8'))
+        );
+        resolve({ ...chunk, chunks: ordered.length, body });
+      });
+      leaderOf(tray)?.socket.send(JSON.stringify({ type: 'preview.request', reqId, ...message }));
+    });
+  hub.visit = (previewToken, path = '/', range) => {
+    const record = records.get(previewToken);
+    if (!record) return Promise.resolve({ ok: false, status: 404, reason: 'Preview not found' });
+    const vfsPath = path === '/' ? record.entryPath : `${record.servedRoot}${path}`;
+    const asText = /\.(html?|css|js|mjs|json|svg|txt|xml|md)$/i.test(vfsPath);
+    return hub.ask(record.tray, {
+      servedRoot: record.servedRoot,
+      vfsPath,
+      asText,
+      ...(range ? { range } : {}),
+    });
+  };
+  const stop = (tray, token) => {
+    const record = records.get(token);
+    if (!record || record.tray !== tray) return false;
+    records.delete(token);
+    leaderOf(tray)?.socket.send(JSON.stringify({ type: 'preview.revoked', previewToken: token }));
+    return true;
+  };
+  hub.revoke = (token) => stop(records.get(token)?.tray, token);
+  return (request, url, body) => {
+    const route = /^\/api\/tray\/t(\d+)\/(preview|preview\/stop|previews)$/.exec(url.pathname);
+    if (!route) return null;
+    const tray = route[1];
+    if (request.headers.authorization !== `Bearer c${tray}`)
+      return [403, { error: 'Invalid controller capability' }];
+    if (route[2] === 'previews' && request.method === 'GET')
+      return [
+        200,
+        {
+          previews: [...records.values()]
+            .filter((record) => record.tray === tray)
+            .map(
+              ({
+                previewToken,
+                url,
+                servedRoot,
+                entryPath,
+                allowLive,
+                createdAt,
+                mode,
+                state,
+              }) => ({
+                previewToken,
+                url,
+                servedRoot,
+                entryPath,
+                allowLive,
+                createdAt,
+                mode,
+                state,
+              })
+            ),
+        },
+      ];
+    if (request.method !== 'POST') return [405, { error: 'method not allowed' }];
+    if (route[2] === 'preview/stop') {
+      hub.stops = [...(hub.stops ?? []), body.previewToken];
+      return [200, { revoked: stop(tray, body.previewToken) }];
+    }
+    hub.minting.push(body);
+    if (hub.mintFails) return hub.mintFails;
+    const entryRel = body.entryPath?.startsWith(`${body.servedRoot}/`)
+      ? body.entryPath.slice(body.servedRoot.length + 1)
+      : null;
+    if (!segments(body.servedRoot?.slice(1)) || !segments(entryRel))
+      return [400, { error: 'invalid preview entry path' }];
+    const record = add(tray, body);
+    return [200, { previewToken: record.previewToken, url: record.url }];
+  };
+}
+
 export function startHub() {
   const hub = { trays: 0, sockets: [], fromLeader: [], waiters: [] };
   const followers = bootstraps(hub);
   const guests = biscotti(hub, followers);
+  const previews = previewRecords(hub);
   const server = createServer(async (request, response) => {
     const cors = {
       'access-control-allow-origin': '*',
       'access-control-allow-headers': 'content-type, authorization',
-      'access-control-allow-methods': 'POST, OPTIONS',
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
       'content-type': 'application/json',
     };
     if (request.method === 'OPTIONS') return response.writeHead(204, cors).end();
     const url = new URL(request.url, hub.url);
-    const api = url.pathname.startsWith('/api/tray/')
-      ? await guests.api(request, url, await body(request))
+    const sent = url.pathname.startsWith('/api/tray/') ? await body(request) : null;
+    const api = sent
+      ? (previews(request, url, sent) ?? (await guests.api(request, url, sent)))
       : null;
     if (api) return response.writeHead(api[0], cors).end(JSON.stringify(api[1]));
     const seated = /^\/join\/(g\d+)$/.exec(url.pathname);
@@ -226,6 +362,7 @@ export function startHub() {
     socket.on('message', (data) => {
       const message = JSON.parse(data);
       if (message.type === 'ping') return;
+      if (message.type === 'preview.response') return hub.answered(message);
       followers.fromLeader(message);
       hub.fromLeader.push(message);
       for (const wake of hub.waiters.splice(0)) wake();
