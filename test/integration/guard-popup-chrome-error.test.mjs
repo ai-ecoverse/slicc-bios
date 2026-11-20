@@ -1661,7 +1661,7 @@ describe('popup opener provenance races', { concurrency: false }, () => {
   const protectedFail = `${ownOrigin}/doc?popup-opener-race`;
   for (const [routeName, route] of routes) {
     test(`H6 stale createTarget claim then opener then chrome-error stays held (${routeName})`, {
-      timeout: 8000,
+      timeout: 15000,
     }, async (t) => {
       const wire = protocol(t, ownOrigin, route);
       t.mock.timers.reset();
@@ -1681,7 +1681,7 @@ describe('popup opener provenance races', { concurrency: false }, () => {
       const from = wire.delivered.length;
       const creating = wire.send('Target.createTarget', { url: ordinary, background: true });
       await wire.drain(8);
-      assert.ok(heldCreate, 'createTarget reply is held so clientCreates stays pending');
+      assert.ok(heldCreate, 'createTarget reply is held so a stale claim window stays open');
       autoAttach(wire, entry, `client-h6-${routeName}`, true);
       await wire.drain(20);
       entry.info.openerId = 'opener';
@@ -1689,7 +1689,7 @@ describe('popup opener provenance races', { concurrency: false }, () => {
       settleChromeError(entry, protectedFail, { tree: 'blank' });
       entry.info.openerId = 'opener';
       entry.info.canAccessOpener = true;
-      await wire.tick(t.mock.timers, 3000);
+      await wire.tick(t.mock.timers, 11000);
       assertNoChromeErrorAttach(wire, from, `H6/${routeName}`);
       wire.hold(() => false);
       const targetId = `created-h6-${routeName}`;
@@ -1701,7 +1701,7 @@ describe('popup opener provenance races', { concurrency: false }, () => {
     });
 
     test(`H3 opener-less intermediate clears cached opener before chrome-error check (${routeName})`, {
-      timeout: 8000,
+      timeout: 15000,
     }, async (t) => {
       const wire = protocol(t, ownOrigin, route);
       t.mock.timers.reset();
@@ -1719,12 +1719,12 @@ describe('popup opener provenance races', { concurrency: false }, () => {
       await wire.drain(8);
       settleChromeError(entry, protectedFail, { tree: 'blank' });
       delete entry.info.openerId;
-      await wire.tick(t.mock.timers, 3000);
+      await wire.tick(t.mock.timers, 11000);
       assertNoChromeErrorAttach(wire, from, `H3/${routeName}`);
     });
 
     test(`H5 opener learned after first chrome-error sighting stays held (${routeName})`, {
-      timeout: 8000,
+      timeout: 15000,
     }, async (t) => {
       const wire = protocol(t, ownOrigin, route);
       t.mock.timers.reset();
@@ -1746,7 +1746,7 @@ describe('popup opener provenance races', { concurrency: false }, () => {
         params: { targetInfo: { ...entry.info, attached: true } },
       });
       await wire.drain(8);
-      await wire.tick(t.mock.timers, 2500);
+      await wire.tick(t.mock.timers, 11000);
       assertNoChromeErrorAttach(wire, from, `H5/${routeName}`);
     });
   }
