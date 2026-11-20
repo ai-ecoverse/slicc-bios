@@ -434,6 +434,51 @@ Seven keeps its secrets in the vault, a separate origin (`@ai-ecoverse/slicc-vau
 - **Egress:** token refreshes use the same selected transport with a manual redirect policy, never a native-fetch fallback. An incapable route or redirect is refused; the response returns only to the vault. A `GET` or `HEAD` (GitHub Copilot's token exchange) goes out without a body. Request bodies are zeroed after use, and requests are not logged.
 - **Adobe IMS:** with agent ≥ 4.0.0, `login('adobe', …)` opens its popup before anything else, then seals the token as `{ kind: 'model', provider: 'adobe', name: 'ADOBE_IMS_TOKEN', source: 'oauth:adobe', expiresAt }` (the redirect's `expires_in` is in seconds, 86399 for a day) and resolves `{ sealed: true }`, so the token never reaches spectrum or the agent. IMS gives no refresh token: an expired token means signing in again, which replaces the record and keeps its placeholder. Agents before 4.0.0 get the token as before.
 
+## Devices
+
+Seven can talk to hardware you plug in or pair: serial ports (Arduino, ESP32, routers), USB devices, HID devices (vendor keyboards, sensors, macro pads) and Bluetooth Low Energy devices. It works in Chromium-based desktop browsers (Chrome, Edge, Opera); Firefox, Safari and every browser on iOS answer `ENOTSUP` for these commands. You and your agents use the same commands, and nothing needs setting up: the groups and switches below are in place from the first boot. How each kind is wired, with its kinds, policies and exact messages, is under [Requests from programs](#requests-from-programs-devembedder), and every command's flags are in [slicc-devices' README](https://github.com/ai-ecoverse/slicc-devices#readme).
+
+### What each device kind does
+
+- **Serial** (`serial`, and the device files `/dev/ttyUSB*` and `/dev/ttyACM*`): talk to a board or modem: `serial request`, `serial open serial1 --baud 115200`, `serial read`, `serial write`, `serial console`. Programs such as `cat`, `stty`, `screen`, `picocom` and Python's pyserial use the same port through its device file.
+- **ESP flashing** (`esptool`): read chip info from ESP32 and ESP8266 boards and flash them.
+- **USB** (`usb`): raw USB: `usb request`, `usb open`, `usb claim`, bulk and interrupt transfers (`usb transfer-in`, `usb transfer-out`) and control transfers (`usb control-in`, `usb control-out`). Chrome keeps its protected interface classes, such as HID and audio, to itself.
+- **HID** (`hid`): vendor-defined HID devices: `hid request`, `hid watch` (input reports), `hid send` (output reports), `hid query`, and feature reports (`hid feature-send`, `hid feature-get`). Chrome refuses keyboards, mice and its other protected usages.
+- **Bluetooth LE** (`ble`): seven is a GATT client: `ble request --service heart_rate`, `ble services`, `ble read`, `ble notify`, `ble write`. There is no scanning, no peripheral role and no Bluetooth Classic, and after a page reload a device may have to be chosen again.
+
+### Choosing a device
+
+The only prompt is the browser's own device chooser. When you type `serial request` (or `usb request`, `hid request`, `ble request`) in a seven terminal, the chooser opens right away. When an agent or a script asks, seven shows "Choose a serial port" (or a USB, HID or Bluetooth device), and the chooser opens when you click **Choose…**. Cancel, or no click within 5 minutes, refuses the request. While seven's tab is in the background, its title starts with `● `. Once a device is chosen, using it asks nothing more: the groups below decide the rest.
+
+### Groups and sudo
+
+Devices follow the Linux rule: members of the device's group read, and writing needs root, which for an agent means `sudo`.
+- **`dialout`** (serial ports and their device files): members list, choose, open, read, read the modem lines and close a port, and open its device file for reading (`stty -F` included). `sudo` is needed to write, to set DTR, RTS or break, to open the device file for writing (as `screen`, `picocom` and pyserial do) and for `esptool`.
+- **`plugdev`** (USB and HID): members list, choose, open and close a device, claim and release a USB interface, and read (`usb transfer-in`, `hid watch`). `sudo` is needed for anything sent to a device: `usb transfer-out`, `usb control-in`, `usb control-out`, `usb select-config`, `usb reset`, `usb clear-halt`, `hid send`, `hid query`, `hid feature-send` and `hid feature-get`.
+- **`bluetooth`** (Bluetooth LE): members list, choose, connect, disconnect, read services and values, and follow notifications. `sudo` is needed for `ble write`.
+
+Your own terminals are root. Agents, the cone and its scoops, are in all three groups, so they can look and read by default. To write, an agent runs `sudo usb transfer-out …` (and so on), and sudo's judge decides, as for any other command. Scoops have no `sudo`, so they read and can't write.
+
+A USB claim belongs to whoever made it, even across `sudo`: when an agent claims an interface and then runs `sudo usb transfer-out`, the transfer is that agent's. Two agents can't hold the same interface at once; the second is told who holds it, and `usb claim --wait` queues for it.
+
+### Settings switches and the chip
+
+Seven's Settings has one switch per kind, next to Camera, Microphone and Screen: **Serial ports**, **USB devices**, **HID devices** and **Bluetooth devices**, all on by default. Turning one off refuses every command of that kind (`USB devices are off in seven's settings`, and so on), closes whatever is open (a serial port is hung up, a USB or HID device closed, a Bluetooth device disconnected, a running `esptool` stopped), and ends reads, watches and notifications that were running.
+
+While a device is open, the live list shows a chip such as "Serial port open" with `serial1`, "USB device open" with `usb1 (0x2341:0x0043 Arduino Uno)`, "HID device open" or "Bluetooth device connected" with `ble1 (Polar H10)`, with who is using it (the cone, a terminal or a program) and for how long. **Close** on the chip closes the device at once: a running read ends, and later requests fail with an error that says it was closed in seven.
+
+### Errors you may see
+
+- **`EACCES`:** you aren't in the device's group, the command writes and needs `sudo`, the chooser was cancelled or nobody clicked, the switch is off, or Chrome refused a protected device or service.
+- **`EBUSY`:** a USB or HID device is open in another tab or program, a USB interface is claimed by someone else, a serial port is in use by `esptool` or held by its device file and the `serial` command at once, or a Bluetooth characteristic already has a notifier.
+- **`ENOTSUP`:** this browser has no Web Serial, WebUSB, WebHID or Web Bluetooth, or the Bluetooth adapter is off.
+- **`ENOENT`:** the handle (`serial9`, `usb9`, …) isn't one this tab knows.
+- **`EIO`:** the device went away, it was closed in seven, a serial port is open in another tab or program, or the browser reported a transfer error, whose message is the browser's own.
+
+### What is not included
+
+Device files for USB (`/dev/bus/usb`, so libusb) and HID (`/dev/hidraw*`) and for Bluetooth, Bluetooth scanning and Bluetooth Classic, MIDI, and using a linked machine's devices from seven.
+
 ## Requests from programs (`/dev/embedder`)
 
 Programs ask seven's page for what only a page can do through the kernel's `/dev/embedder` (slicc-kernel ≥ 1.153.0, #1527). `src/seed/requests.js`'s `pageRequests()` is the one hook seven gives the kernel. Seven owns the list of kinds and their policies (`KINDS`), and every answer goes through the checks seven owns, whoever wrote the handler.
