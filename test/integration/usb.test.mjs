@@ -509,8 +509,8 @@ test('turning USB devices off while a usb open is still in flight closes the dev
   await page.evaluate(() => window.release('open'));
   await shows(page, 'pending 1');
   assert.match(await screen(page), /usb: USB devices are off in seven's settings\s+pending 1/);
+  await page.until(() => window.usbLog.closed === 1);
   assert.equal(await page.evaluate(() => window.usbLog.opened), 1);
-  assert.equal(await page.evaluate(() => window.usbLog.closed), 1);
   assert.equal(await page.evaluate(() => window.usbOpen()), false);
   assert.deepEqual(await page.evaluate(() => window.chips()), []);
 
