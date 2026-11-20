@@ -47,6 +47,8 @@ function protocol(t, own, route) {
   const delivered = [];
   const pending = new Map();
   let next = 0;
+  let createSeq = 0;
+  let createOrder = 'reply-then-events';
   let hold = () => false;
   const key = (id, sessionId) => JSON.stringify([sessionId ?? null, id]);
   const raw = {
@@ -69,10 +71,42 @@ function protocol(t, own, route) {
   const emit = (message) => raw.onmessage(JSON.stringify(message));
   function respond(message, payload) {
     const { id, method, params = {}, sessionId } = message;
+    if (method === 'Target.createTarget') {
+      const targetId = `created-${++createSeq}-${id}`;
+      const entry = target(targetId, blankFrame(targetId));
+      entry.info.url = 'about:blank';
+      entry.info.title = '';
+      const info = { ...entry.info, attached: true };
+      const reply = { id, ...(sessionId ? { sessionId } : {}), result: { targetId } };
+      const created = { method: 'Target.targetCreated', params: { targetInfo: { ...entry.info } } };
+      const attached = {
+        method: 'Target.attachedToTarget',
+        params: {
+          sessionId: `client-${targetId}`,
+          targetInfo: info,
+          waitingForDebugger: false,
+        },
+      };
+      sessions.set(`client-${targetId}`, targetId);
+      if (createOrder === 'events-then-reply') {
+        emit(created);
+        emit(attached);
+        emit(reply);
+      } else if (createOrder === 'attach-race') {
+        emit(attached);
+        emit(reply);
+        emit(created);
+      } else {
+        emit(reply);
+        emit(created);
+        emit(attached);
+      }
+      return;
+    }
     const targetId = params.targetId ?? sessions.get(sessionId);
-    const target = targets.get(targetId);
+    const targetEntry = targets.get(targetId);
     let result = {};
-    if (method === 'Target.getTargetInfo') result = { targetInfo: target.info };
+    if (method === 'Target.getTargetInfo') result = { targetInfo: targetEntry.info };
     if (method === 'Target.getTargets')
       result = { targetInfos: [...targets.values()].map((entry) => entry.info) };
     if (method === 'Target.attachToTarget') {
@@ -80,19 +114,28 @@ function protocol(t, own, route) {
       sessions.set(attached, targetId);
       result = { sessionId: attached };
     }
-    if (method === 'Page.getFrameTree') result = { frameTree: target.tree };
+    if (method === 'Page.getFrameTree') result = { frameTree: targetEntry.tree };
     if (method === 'Page.getNavigationHistory')
-      result = target.history ?? {
+      result = targetEntry.history ?? {
         currentIndex: 0,
-        entries: [{ id: 1, url: target.info.url, userTypedURL: target.info.url, title: '' }],
+        entries: [
+          {
+            id: 1,
+            url: targetEntry.info.url,
+            userTypedURL: targetEntry.info.url,
+            title: '',
+          },
+        ],
       };
     if (method === 'DOM.getDocument')
-      result = target?.document ?? {
+      result = targetEntry?.document ?? {
         root: { nodeId: 1, nodeName: '#document', children: [] },
       };
     if (method === 'Runtime.evaluate')
-      result = target?.evaluate ?? { result: { type: 'string', value: 'synthetic-content' } };
-    if (method === 'Accessibility.getFullAXTree') result = target?.ax ?? { nodes: [] };
+      result = targetEntry?.evaluate ?? { result: { type: 'string', value: 'synthetic-content' } };
+    if (method === 'Accessibility.getFullAXTree') result = targetEntry?.ax ?? { nodes: [] };
+    if (method === 'DOMSnapshot.captureSnapshot')
+      result = targetEntry?.snapshot ?? { documents: [], strings: [] };
     if (method === 'Page.captureScreenshot') result = { data: 'c3ludGhldGlj' };
     emit({ id, ...(sessionId ? { sessionId } : {}), ...(payload ?? { result }) });
   }
@@ -119,6 +162,9 @@ function protocol(t, own, route) {
     send,
     request,
     target,
+    setCreateOrder(order) {
+      createOrder = order;
+    },
     hold(fn) {
       hold = fn;
     },
@@ -911,7 +957,7 @@ for (const [hostName, own] of hosts) {
       assert.deepEqual(download.params, params);
     });
 
-    test(`positive ordinary page keeps protected host in AX/DOM/Runtime names (${hostName}, ${routeName})`, {
+    test(`positive ordinary page keeps protected host in AX/DOM/Runtime/Network/DOMSnapshot (${hostName}, ${routeName})`, {
       timeout: 5000,
     }, async (t) => {
       const wire = protocol(t, own, route);
@@ -920,6 +966,7 @@ for (const [hostName, own] of hosts) {
         plainFrame(`pos-${hostName}-${routeName}`)
       );
       const linkName = hostOnly;
+      const mention = `see ${hostOnly}/docs for help`;
       entry.ax = {
         nodes: [
           {
@@ -941,7 +988,16 @@ for (const [hostName, own] of hosts) {
         },
       };
       entry.evaluate = {
-        result: { type: 'string', value: `open ${linkName} in a new tab` },
+        result: {
+          type: 'object',
+          className: 'String',
+          description: mention,
+          value: mention,
+        },
+      };
+      entry.snapshot = {
+        documents: [{ nodes: { nodeName: [1], textValue: [2] } }],
+        strings: ['#document', linkName],
       };
       const attached = await wire.send('Target.attachToTarget', {
         targetId: entry.info.targetId,
@@ -949,28 +1005,61 @@ for (const [hostName, own] of hosts) {
       });
       assert.equal(attached.error, undefined);
       await wire.send('Page.enable', {}, attached.result.sessionId);
+      await wire.send('Network.enable', {}, attached.result.sessionId);
       wire.emit({
         method: 'Page.frameNavigated',
         sessionId: attached.result.sessionId,
         params: { frame: entry.tree.frame },
       });
       await wire.drain(10);
+      if (routeName !== 'extension') {
+        const ax = await wire.send('Accessibility.getFullAXTree', {}, attached.result.sessionId);
+        const dom = await wire.send('DOM.getDocument', {}, attached.result.sessionId);
+        const snap = await wire.send(
+          'DOMSnapshot.captureSnapshot',
+          { computedStyles: [] },
+          attached.result.sessionId
+        );
+        assert.equal(ax.error, undefined, JSON.stringify(ax));
+        assert.equal(ax.result.nodes[0].name.value, linkName);
+        assert.equal(dom.error, undefined, JSON.stringify(dom));
+        assert.deepEqual(dom.result.root.attributes, ['href', '#', 'name', linkName]);
+        assert.equal(snap.error, undefined, JSON.stringify(snap));
+        assert.deepEqual(snap.result.strings, ['#document', linkName]);
+      }
       const runtime = await wire.send(
         'Runtime.evaluate',
         { expression: 'document.title' },
         attached.result.sessionId
       );
       assert.equal(runtime.error, undefined, JSON.stringify(runtime));
-      assert.equal(runtime.result.result.value, `open ${linkName} in a new tab`);
-      if (routeName !== 'extension') {
-        const ax = await wire.send('Accessibility.getFullAXTree', {}, attached.result.sessionId);
-        const dom = await wire.send('DOM.getDocument', {}, attached.result.sessionId);
-        assert.equal(ax.error, undefined, JSON.stringify(ax));
-        assert.equal(ax.result.nodes[0].name.value, linkName);
-        assert.equal(dom.error, undefined, JSON.stringify(dom));
-        assert.deepEqual(dom.result.root.attributes, ['href', '#', 'name', linkName]);
-      }
+      assert.equal(runtime.result.result.value, mention);
+      assert.equal(runtime.result.result.description, mention);
       const from = wire.delivered.length;
+      const networkParams = {
+        requestId: `req-${hostName}`,
+        loaderId: 'loader',
+        documentURL: ordinary,
+        request: {
+          url: ordinary,
+          method: 'GET',
+          headers: { Referer: `https://ordinary.invalid/?from=${hostOnly}` },
+        },
+        timestamp: 1,
+        wallTime: 1,
+        initiator: { type: 'other' },
+      };
+      wire.emit({
+        method: 'Network.requestWillBeSent',
+        sessionId: attached.result.sessionId,
+        params: networkParams,
+      });
+      await wire.drain(10);
+      const network = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Network.requestWillBeSent');
+      assert.ok(network, 'ordinary Network.requestWillBeSent is delivered');
+      assert.equal(network.params.request.headers.Referer, networkParams.request.headers.Referer);
       const downloadParams = {
         frameId: entry.info.targetId,
         guid: 'dl-live',
@@ -1476,3 +1565,52 @@ for (const [routeName, route] of routes) {
     assertNoChromeErrorAttach(wire, from, `held/${routeName}`);
   });
 }
+
+describe('createTarget provenance races', { concurrency: false }, () => {
+  for (const [order, label] of [
+    ['events-then-reply', 'C8a events before createTarget reply'],
+    ['reply-then-events', 'C8b reply before target events'],
+    ['attach-race', 'C8c attachedToTarget racing the reply'],
+  ]) {
+    for (const [routeName, route] of routes) {
+      test(`${label} admits createTarget without an opener at once (${routeName})`, {
+        timeout: 5000,
+      }, async (t) => {
+        const wire = protocol(t, 'https://seven.sliccy.ai', route);
+        wire.setCreateOrder(order);
+        t.mock.timers.reset();
+        t.mock.timers.enable({ apis: ['setTimeout'] });
+        const from = wire.delivered.length;
+        const created = await wire.send('Target.createTarget', {
+          url: ordinary,
+          background: true,
+        });
+        await wire.drain(20);
+        await wire.tick(t.mock.timers, 500);
+        assert.equal(created.error, undefined, JSON.stringify(created));
+        assert.ok(created.result?.targetId, 'createTarget returns a targetId');
+        const attaches = wire
+          .clientAttaches(from)
+          .filter((message) => message.params?.targetInfo?.targetId === created.result.targetId);
+        assert.ok(attaches.length >= 1, `${label}: auto-attach is delivered`);
+        assert.equal(
+          attaches.every(
+            (message) => !String(message.params.targetInfo.url).startsWith('chrome-error:')
+          ),
+          true,
+          `${label}: createTarget attach is not held on chrome-error`
+        );
+        const again = await wire.send('Target.attachToTarget', {
+          targetId: created.result.targetId,
+          flatten: true,
+        });
+        assert.equal(again.error, undefined, `${label}: re-attach is admitted`);
+        const info = await wire.send('Target.getTargetInfo', {
+          targetId: created.result.targetId,
+        });
+        assert.equal(info.error, undefined);
+        assert.equal(info.result.targetInfo.openerId, undefined);
+      });
+    }
+  }
+});

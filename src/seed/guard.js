@@ -1072,6 +1072,7 @@ class Guard {
     this.requests = new Map();
     this.held = new Map();
     this.provenance = new Set();
+    this.clientCreates = new Set();
     this.internal = new Map();
     this.evidence = new Set();
     this.asked = new Map();
@@ -1174,7 +1175,7 @@ class Guard {
       'defaultPrompt',
       'userInput',
     ])
-      if (typeof value[key] === 'string') safe[key] = '';
+      if (Object.hasOwn(value, key) && typeof value[key] === 'string') safe[key] = '';
     if (Array.isArray(value.windowFeatures)) safe.windowFeatures = value.windowFeatures;
     for (const key of [
       'attached',
@@ -1358,6 +1359,7 @@ class Guard {
     this.blankReads.delete(key);
     if (release && this.commands.get(key) === command) this.commands.delete(key);
     this.pendingContent.delete(command);
+    this.clientCreates.delete(command);
     const { id, sessionId } = command;
     this.deliver(
       { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } },
@@ -3157,6 +3159,18 @@ class Guard {
     this.provenance.add(targetId);
   }
 
+  claimCreatedTarget(info, message) {
+    const targetId = info?.targetId;
+    if (!targetId) return;
+    const openerId = info?.openerId ?? this.targets.get(targetId)?.openerId;
+    if (typeof openerId === 'string' && openerId.length > 0) return;
+    if (message) this.clientCreates.delete(message);
+    else if (this.clientCreates.size > 0)
+      this.clientCreates.delete(this.clientCreates.values().next().value);
+    else if (!this.provenance.has(targetId)) return;
+    this.provenance.add(targetId);
+  }
+
   async errorUnproven(info, targetId = info?.targetId) {
     if (!this.errorPageUrl(info?.url)) return false;
     if (!this.popupShaped(info, targetId)) return false;
@@ -4629,6 +4643,7 @@ class Guard {
     this.rejudgeWorkers(rejudge);
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
+      this.claimCreatedTarget(info);
       this.notePageUnderTab(message);
       if (await this.skippedAttachment(message)) return true;
       if (params.waitingForDebugger) void this.resumeArmed(info, params.sessionId, sessionId);
@@ -4643,6 +4658,7 @@ class Guard {
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
+      if (method === 'Target.targetCreated') this.claimCreatedTarget(params.targetInfo);
       void this.targetHint(message).catch(() => {
         for (const [id, ticket] of this.quarantined) if (ticket.hint === message) this.cut(id);
       });
@@ -5206,7 +5222,14 @@ class Guard {
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
       ...rest,
-      frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://', name: '' } : frame,
+      frame: hidden
+        ? {
+            ...shown,
+            url: ERROR_PAGE,
+            securityOrigin: '://',
+            ...(typeof shown.name === 'string' ? { name: '' } : {}),
+          }
+        : frame,
       ...(childFrames
         ? { childFrames: childFrames.map((child) => this.tree(child, sessionId)) }
         : {}),
@@ -5811,11 +5834,8 @@ class Guard {
     const raw = info ?? {};
     const originOnly = message.method === 'Target.attachedToTarget' && this.fresh(proof);
     const shown = this.masked(raw, originOnly);
-    const names = (value) => {
-      if (typeof value !== 'string' || !value) return false;
-      if (value.includes('://')) return this.is.url(value);
-      return this.is.url(`https://${value}/`) || this.is.url(`http://${value}/`);
-    };
+    const names = (value) =>
+      typeof value === 'string' && value.includes('://') && this.is.url(value);
     const origin = originOnly && this.is.url(raw.url) && shown.url === shown.title;
     if ([raw.url, raw.title, shown.url, shown.title].some(names) && !origin) return;
     this.deliver(
@@ -5845,12 +5865,20 @@ class Guard {
       const { origin } = new URL(info.url);
       return { ...info, url: origin, title: origin };
     }
-    if (this.errorPageUrl(info.url)) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
     const failed = this.errorFailedKnown(info.targetId);
     const entries = [...this.sessions.values()].filter((entry) => entry.targetId === info.targetId);
     const error =
       this.errorFrames.has(this.frameRoots.get(info.targetId)) ||
       entries.some((entry) => this.errorFrames.has(entry.frameId));
+    const frameOnError = entries.some((entry) =>
+      this.frames.get(entry.frameId)?.startsWith('chrome-error:')
+    );
+    if (this.errorPageUrl(info.url)) {
+      if (error || frameOnError) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
+      if (info.title === undefined) return { ...info, url: ERROR_PAGE };
+      if (info.title === '') return { ...info, url: ERROR_PAGE, title: '' };
+      return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
+    }
     if (error) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
     if (info.url === undefined || failed === undefined) return info;
     if (![failed, '', ERROR_PAGE].includes(bare(info.url))) return info;
@@ -6985,7 +7013,8 @@ class Guard {
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     if (background) kept(this.backgrounded, targetId);
-    this.provenance.add(targetId);
+    this.claimCreatedTarget({ targetId, url: 'about:blank', type: 'page' });
+    this.clientCreates.delete(message);
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
@@ -7549,7 +7578,7 @@ class Guard {
     const key = requestKey(message);
     const release = this.asked.get(key) !== message && !this.answering.has(message);
     const result = TREES.has(message.method)
-      ? { frameTree: { frame: { id: '0', url: ERROR_PAGE, securityOrigin: '://', name: '' } } }
+      ? { frameTree: { frame: { id: '0', url: ERROR_PAGE, securityOrigin: '://' } } }
       : {
           currentIndex: 0,
           entries: [{ id: 0, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' }],
@@ -7716,6 +7745,7 @@ class Guard {
         if (this.callerIds.has(key)) return this.refuse(message, FAILED, false);
         this.callerIds.set(key, message);
       }
+      if (message.method === 'Target.createTarget') this.clientCreates.add(message);
       this.commands.set(key, message);
       this.arrivals.set(message, ++this.clock);
       if (
