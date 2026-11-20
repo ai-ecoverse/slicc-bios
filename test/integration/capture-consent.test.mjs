@@ -476,6 +476,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       { key: 'usb', label: 'USB devices', on: true },
       { key: 'hid', label: 'HID devices', on: true },
       { key: 'ble', label: 'Bluetooth devices', on: true },
+      { key: 'midi', label: 'MIDI devices', on: true },
       { key: 'previews', label: 'Public previews', on: true },
     ]
   );
@@ -539,6 +540,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       ['usb', true],
       ['hid', true],
       ['ble', true],
+      ['midi', true],
       ['previews', true],
     ]
   );
@@ -565,6 +567,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       ['usb', 'USB devices', true],
       ['hid', 'HID devices', true],
       ['ble', 'Bluetooth devices', true],
+      ['midi', 'MIDI devices', true],
       ['previews', 'Public previews', true],
     ]
   );

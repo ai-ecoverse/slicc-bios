@@ -532,6 +532,7 @@ test('the Serial ports switch sits beside capture’s, closes every open port wh
       { key: 'usb', label: 'USB devices', on: true },
       { key: 'hid', label: 'HID devices', on: true },
       { key: 'ble', label: 'Bluetooth devices', on: true },
+      { key: 'midi', label: 'MIDI devices', on: true },
       { key: 'previews', label: 'Public previews', on: true },
     ]
   );
