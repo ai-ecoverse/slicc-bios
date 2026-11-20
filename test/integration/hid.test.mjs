@@ -16,7 +16,34 @@ const CLICK = 'dialog[data-kind="click"]';
 
 const faux = () => {
   globalThis.sliccKernelDebug = true;
-  window.hidLog = { chooser: [], opened: 0, closed: 0, sent: [], features: [], asked: [] };
+  window.hidLog = {
+    chooser: [],
+    opened: 0,
+    closed: 0,
+    sent: [],
+    features: [],
+    asked: [],
+    held: [],
+  };
+  const gates = {};
+  window.hold = (what) => {
+    let release = null;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    gates[what] = { gate, release };
+  };
+  window.release = (what) => {
+    const held = gates[what];
+    delete gates[what];
+    held?.release();
+  };
+  const passed = async (what) => {
+    const held = gates[what];
+    if (!held) return;
+    window.hidLog.held.push(what);
+    await held.gate;
+  };
   class FakeDevice extends EventTarget {
     constructor() {
       super();
@@ -37,6 +64,7 @@ const faux = () => {
     }
     async open() {
       if (this.opened) throw new DOMException('The device is already open.', 'InvalidStateError');
+      await passed('open');
       this.opened = true;
       window.hidLog.opened += 1;
     }
@@ -67,6 +95,7 @@ const faux = () => {
         'Must be handling a user gesture to show a permission request.',
         'SecurityError'
       );
+    await passed('chooser');
     if (!granted.includes(device)) granted.push(device);
     return [device];
   };
@@ -371,5 +400,70 @@ test('the HID devices switch sits after USB devices and before Bluetooth devices
   await hidSwitch(page, true);
   await run(page, 'hid list; echo "back on $?"');
   await shows(page, 'back on 0');
+  assert.deepEqual(page.errors, []);
+});
+
+test('turning HID devices off while a hid open is still in flight closes the device again and refuses the open with no chip, and after turning it back on the device is listed closed and opens afresh', async (t) => {
+  const page = await seven(t);
+  await page.evaluate(() => window.grant());
+  await page.evaluate(() => window.hold('open'));
+  await run(page, 'hid open hid1; echo "pending $?"');
+  await page.until(() => window.hidLog.held.includes('open'));
+  await hidSwitch(page, false);
+  await page.evaluate(() => window.release('open'));
+  await shows(page, 'pending 1');
+  assert.match(await screen(page), /hid: HID devices are off in seven's settings\s+pending 1/);
+  await page.until(() => window.hidLog.closed === 1);
+  assert.equal(await page.evaluate(() => window.hidLog.opened), 1);
+  assert.equal(await page.evaluate(() => window.hidOpen()), false);
+  assert.equal(await page.evaluate(() => window.hidListening()), 0);
+  assert.deepEqual(await page.evaluate(() => window.chips()), []);
+
+  await hidSwitch(page, true);
+  await run(page, 'hid list; echo "listed $?"; hid open hid1; echo "fresh $?"');
+  await shows(page, 'fresh 0');
+  const shown = await screen(page);
+  assert.match(shown, /hid1\s+0x320f:0x5044\s+0xff60:0x0061\s+Nano Pad\s+listed 0/);
+  assert.doesNotMatch(shown, /\[open\]/);
+  await page.until(() => window.chips().length === 1);
+  assert.equal(await page.evaluate(() => window.hidLog.opened), 2);
+  assert.deepEqual(page.errors, []);
+});
+
+test('turning HID devices off while an agent’s hid request waits on the click, or while the chooser is open, refuses the request with nothing opened and no chip, and the device the browser granted is listed closed once it is back on', async (t) => {
+  const page = await seven(t);
+  const clicked = await started(page, 'hid request; echo "click off $?"');
+  await page.until(() => window.clickItems().length === 1);
+  await hidSwitch(page, false);
+  await pressDeep(page, `${CLICK} [data-action="once"]`);
+  const refused = await finished(page, clicked);
+  assert.match(refused.stdout, /click off 1/);
+  assert.match(refused.stderr, /hid: HID devices are off in seven's settings/);
+  assert.deepEqual(await page.evaluate(() => window.hidLog.chooser), []);
+
+  await hidSwitch(page, true);
+  await page.evaluate(() => window.hold('chooser'));
+  const choosing = await started(page, 'hid request; echo "chooser off $?"');
+  await page.until(() => window.clickItems().length === 1);
+  await pressDeep(page, `${CLICK} [data-action="once"]`);
+  await page.until(() => window.hidLog.held.includes('chooser'));
+  await hidSwitch(page, false);
+  await page.evaluate(() => window.release('chooser'));
+  const late = await finished(page, choosing);
+  assert.match(late.stdout, /chooser off 1/);
+  assert.match(late.stderr, /hid: HID devices are off in seven's settings/);
+  assert.doesNotMatch(late.stdout, /hid1\s+0x320f/);
+  assert.deepEqual(await page.evaluate(() => window.hidLog.chooser), [
+    { active: true, filters: [] },
+  ]);
+  assert.equal(await page.evaluate(() => window.hidLog.opened), 0);
+
+  await hidSwitch(page, true);
+  const after = await asCone(page, 'hid list; echo "listed $?"');
+  assert.match(after.stdout, /^hid1\s+0x320f:0x5044\s+0xff60:0x0061\s+Nano Pad$/m, after.stderr);
+  assert.doesNotMatch(after.stdout, /\[open\]/);
+  assert.match(after.stdout, /listed 0/);
+  assert.equal(await page.evaluate(() => window.hidOpen()), false);
+  assert.deepEqual(await page.evaluate(() => window.chips()), []);
   assert.deepEqual(page.errors, []);
 });

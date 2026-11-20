@@ -16,7 +16,37 @@ const CLICK = 'dialog[data-kind="click"]';
 
 const faux = () => {
   globalThis.sliccKernelDebug = true;
-  window.usbLog = { chooser: [], opened: 0, closed: 0, claimed: [], out: [], control: [] };
+  window.usbLog = {
+    chooser: [],
+    opened: 0,
+    closed: 0,
+    claimed: [],
+    out: [],
+    control: [],
+    selected: [],
+    reset: 0,
+    halted: [],
+    held: [],
+  };
+  const gates = {};
+  window.hold = (what) => {
+    let release = null;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    gates[what] = { gate, release };
+  };
+  window.release = (what) => {
+    const held = gates[what];
+    delete gates[what];
+    held?.release();
+  };
+  const passed = async (what) => {
+    const held = gates[what];
+    if (!held) return;
+    window.usbLog.held.push(what);
+    await held.gate;
+  };
   class FakeDevice {
     constructor() {
       this.vendorId = 0x2341;
@@ -43,6 +73,7 @@ const faux = () => {
     }
     async open() {
       if (this.opened) throw new DOMException('The device is already open.', 'InvalidStateError');
+      await passed('open');
       this.opened = true;
       window.usbLog.opened += 1;
     }
@@ -51,9 +82,15 @@ const faux = () => {
       this.iface.claimed = false;
       window.usbLog.closed += 1;
     }
-    async selectConfiguration() {}
-    async reset() {}
-    async clearHalt() {}
+    async selectConfiguration(value) {
+      window.usbLog.selected.push(value);
+    }
+    async reset() {
+      window.usbLog.reset += 1;
+    }
+    async clearHalt(direction, endpoint) {
+      window.usbLog.halted.push([direction, endpoint]);
+    }
     async claimInterface(number) {
       this.iface.claimed = true;
       window.usbLog.claimed.push(number);
@@ -95,6 +132,7 @@ const faux = () => {
         'Must be handling a user gesture to show a permission request.',
         'SecurityError'
       );
+    await passed('chooser');
     if (!granted.includes(device)) granted.push(device);
     return device;
   };
@@ -320,6 +358,51 @@ test('a cone in plugdev opens, claims and reads a device, its transfer-out and c
   assert.deepEqual(page.errors, []);
 });
 
+test('a cone in plugdev that opened and claimed a device gets EACCES for usb select-config, clear-halt and reset before the device sees them, and sudo reaches the device with each', async (t) => {
+  const page = await seven(t);
+  await page.evaluate(() => window.grant());
+  const claimed = await asCone(page, 'usb open usb1; usb claim usb1 0; echo "claimed $?"');
+  assert.match(claimed.stdout, /claimed 0/, claimed.stderr);
+  assert.deepEqual(await page.evaluate(() => window.usbLog.claimed), [0]);
+
+  const refused = await asCone(
+    page,
+    'usb select-config usb1 1; echo "select $?"; usb clear-halt usb1 out 1; echo "halt $?"; usb reset usb1; echo "reset $?"'
+  );
+  assert.match(refused.stdout, /select 1\nhalt 1\nreset 1/, refused.stderr);
+  assert.match(
+    refused.stderr,
+    /usb: usb\.select is not allowed for this user \(needs root: sudo usb select-config usb1 1\)/
+  );
+  assert.match(
+    refused.stderr,
+    /usb: usb\.clear-halt is not allowed for this user \(needs root: sudo usb clear-halt usb1 out 1\)/
+  );
+  assert.match(
+    refused.stderr,
+    /usb: usb\.reset is not allowed for this user \(needs root: sudo usb reset usb1\)/
+  );
+  assert.deepEqual(await page.evaluate(() => window.usbLog.selected), []);
+  assert.deepEqual(await page.evaluate(() => window.usbLog.halted), []);
+  assert.equal(await page.evaluate(() => window.usbLog.reset), 0);
+
+  await run(
+    page,
+    'echo \'NOPASSWD cone Cmnd *\' > /etc/sudoers.d/cone-usb && chmod 0440 /etc/sudoers.d/cone-usb; echo "rule $?"'
+  );
+  await shows(page, 'rule 0');
+  const sudo = await asCone(
+    page,
+    'sudo -n usb select-config usb1 1; echo "select $?"; sudo -n usb clear-halt usb1 out 1; echo "halt $?"; sudo -n usb reset usb1; echo "reset $?"'
+  );
+  assert.match(sudo.stdout, /select 0\nhalt 0\nreset 0/, sudo.stderr);
+  assert.deepEqual(await page.evaluate(() => window.usbLog.selected), [1]);
+  assert.deepEqual(await page.evaluate(() => window.usbLog.halted), [['out', 1]]);
+  assert.equal(await page.evaluate(() => window.usbLog.reset), 1);
+  assert.equal(await page.evaluate(() => window.usbOpen()), true);
+  assert.deepEqual(page.errors, []);
+});
+
 test('the USB devices switch sits after Serial ports and before HID and Bluetooth devices, closes every open device when turned off, refuses every usb kind before the chooser, survives a reload, and is in no kernel file', async (t) => {
   const page = await seven(t);
   assert.deepEqual(
@@ -427,5 +510,76 @@ test('a boot on an /etc/group without plugdev adds it with gid 46 and puts every
     page.evaluate(() => globalThis.sliccAgentSource().groups.addMember('plugdev', 'scoop-site')),
     /bios refuses the group plugdev/
   );
+  assert.deepEqual(page.errors, []);
+});
+
+test('turning USB devices off while a usb open is still in flight closes the device again and refuses the open with no chip, and after turning it back on the device is listed closed and opens afresh', async (t) => {
+  const page = await seven(t);
+  await page.evaluate(() => window.grant());
+  await page.evaluate(() => window.hold('open'));
+  await run(page, 'usb open usb1; echo "pending $?"');
+  await page.until(() => window.usbLog.held.includes('open'));
+  await usbSwitch(page, false);
+  await page.evaluate(() => window.release('open'));
+  await shows(page, 'pending 1');
+  assert.match(await screen(page), /usb: USB devices are off in seven's settings\s+pending 1/);
+  assert.equal(await page.evaluate(() => window.usbLog.opened), 1);
+  assert.equal(await page.evaluate(() => window.usbLog.closed), 1);
+  assert.equal(await page.evaluate(() => window.usbOpen()), false);
+  assert.deepEqual(await page.evaluate(() => window.chips()), []);
+
+  await usbSwitch(page, true);
+  await run(
+    page,
+    'usb list; usb transfer-in usb1 2 8; echo "read $?"; usb open usb1; echo "fresh $?"'
+  );
+  await shows(page, 'fresh 0');
+  const shown = await screen(page);
+  assert.match(
+    shown,
+    /usb1\s+0x2341:0x0043\s+Arduino LLC Arduino Uno serial=UNO1\s+usb: usb1 is not open \(usb open usb1\)\s+read 1/
+  );
+  assert.doesNotMatch(shown, /\[open\]/);
+  await page.until(() => window.chips().length === 1);
+  assert.equal(await page.evaluate(() => window.usbLog.opened), 2);
+  assert.deepEqual(page.errors, []);
+});
+
+test('turning USB devices off while an agent’s usb request waits on the click, or while the chooser is open, refuses the request with nothing opened and no chip, and the device the browser granted is listed closed once it is back on', async (t) => {
+  const page = await seven(t);
+  const clicked = await started(page, 'usb request; echo "click off $?"');
+  await page.until(() => window.clickItems().length === 1);
+  await usbSwitch(page, false);
+  await pressDeep(page, `${CLICK} [data-action="once"]`);
+  const refused = await finished(page, clicked);
+  assert.match(refused.stdout, /click off 1/);
+  assert.match(refused.stderr, /usb: USB devices are off in seven's settings/);
+  assert.deepEqual(await page.evaluate(() => window.usbLog.chooser), []);
+
+  await usbSwitch(page, true);
+  await page.evaluate(() => window.hold('chooser'));
+  const choosing = await started(page, 'usb request; echo "chooser off $?"');
+  await page.until(() => window.clickItems().length === 1);
+  await pressDeep(page, `${CLICK} [data-action="once"]`);
+  await page.until(() => window.usbLog.held.includes('chooser'));
+  await usbSwitch(page, false);
+  await page.evaluate(() => window.release('chooser'));
+  const late = await finished(page, choosing);
+  assert.match(late.stdout, /chooser off 1/);
+  assert.match(late.stderr, /usb: USB devices are off in seven's settings/);
+  assert.doesNotMatch(late.stdout, /usb1\s+0x2341/);
+  assert.deepEqual(await page.evaluate(() => window.usbLog.chooser), [
+    { active: true, filters: [] },
+  ]);
+  assert.equal(await page.evaluate(() => window.usbLog.opened), 0);
+
+  await usbSwitch(page, true);
+  const after = await asCone(page, 'usb list; usb transfer-in usb1 2 8; echo "read $?"');
+  assert.match(after.stdout, /^usb1\s+0x2341:0x0043\s+Arduino LLC Arduino Uno serial=UNO1$/m);
+  assert.doesNotMatch(after.stdout, /\[open\]/);
+  assert.match(after.stdout, /read 1/);
+  assert.match(after.stderr, /usb: usb1 is not open \(usb open usb1\)/);
+  assert.equal(await page.evaluate(() => window.usbOpen()), false);
+  assert.deepEqual(await page.evaluate(() => window.chips()), []);
   assert.deepEqual(page.errors, []);
 });
