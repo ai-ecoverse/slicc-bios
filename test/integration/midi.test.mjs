@@ -150,17 +150,25 @@ const faux = () => {
     return showModal.apply(this, args);
   };
   window.runs = [];
+  window.streamed = [];
   window.background = (command, options) => {
+    const index = window.runs.length;
+    window.streamed.push('');
     const started = (async () => {
       const client = await globalThis.sliccRequestsClient();
       try {
-        return await client.run(['bash', '-c', command], options);
+        return await client.run(['bash', '-c', command], {
+          ...options,
+          onStdout: (text) => {
+            window.streamed[index] += text;
+          },
+        });
       } finally {
         await client.close();
       }
     })();
     window.runs.push(started);
-    return window.runs.length - 1;
+    return index;
   };
 };
 
@@ -291,17 +299,16 @@ test('an open MIDI port shows a chip whose Close closes it and ends a midi recei
 test('the chip goes when a midi receive ends, whether interrupted or by --count, and the next receive on that input shows it again, ended by Close or by the switch', async (t) => {
   const page = await seven(t);
   await granted(page);
-  const interrupted = await started(
-    page,
-    'timeout -s INT 5 midi receive midi1; echo "interrupted $?"'
-  );
+  const interrupted = await started(page, 'midi receive midi1; echo "interrupted $?"');
   await page.until(() => window.listening() && window.chips().length === 1);
   const [chip] = await page.evaluate(() => window.chips());
   assert.match(chip, /MIDI port open · midi1 \(IAC Driver Bus 1\) · cone · \d+:\d\d/);
   await page.evaluate(() => window.play([0x90, 0x3c, 0x7f]));
+  await page.until((index) => window.streamed[index] === '90 3c 7f\n', interrupted);
+  const sent = await asCone(page, `pkill -INT -f 'midi[^ ]* receive midi1$'; echo "sent $?"`);
+  assert.match(sent.stdout, /sent 0/, sent.stderr);
   const stopped = await finished(page, interrupted);
-  assert.match(stopped.stdout, /^90 3c 7f$/m, stopped.stderr);
-  assert.match(stopped.stdout, /interrupted (124|130)/, stopped.stderr);
+  assert.match(stopped.stdout, /^90 3c 7f\ninterrupted 130$/m, stopped.stderr);
   await page.until(() => window.chips().length === 0);
   assert.equal(await page.evaluate(() => window.inputOpen()), false);
   assert.equal(await page.evaluate(() => window.listening()), false);
