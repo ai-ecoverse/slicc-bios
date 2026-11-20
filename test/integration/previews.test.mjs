@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, ready, run, shows } from './bios.mjs';
+import { boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { startHub } from './fake-hub.mjs';
 
@@ -35,21 +35,27 @@ async function install(page) {
   }, files);
 }
 
-const home = (page, name) =>
+const read = (page, name) =>
   page.evaluate(async (name) => {
-    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
-    return dir.getFileHandle(name).then(
-      async (handle) => (await handle.getFile()).text(),
-      () => null
-    );
+    try {
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
+      return { text: await (await (await dir.getFileHandle(name)).getFile()).text() };
+    } catch (error) {
+      return { text: null, error: error.name === 'NotFoundError' ? null : error.name };
+    }
   }, name);
+
+const home = async (page, name) => (await read(page, name)).text;
 
 async function homeFile(page, name, ms = 60000) {
   const deadline = Date.now() + ms;
   for (;;) {
-    const text = await home(page, name);
+    const { text, error } = await read(page, name);
     if (text) return text;
-    assert.ok(Date.now() < deadline, `no /home/${name} within ${ms} ms`);
+    assert.ok(
+      Date.now() < deadline,
+      `no /home/${name} within ${ms} ms${error ? ` (reading it failed with ${error})` : ''}; the terminal shows: ${(await screen(page)).slice(-600)}`
+    );
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 }
@@ -229,8 +235,8 @@ test('serve.publish mints a live preview, the tray relays preview.request to the
   assert.notEqual(cone.stop[0], 0);
   assert.match(cone.stop[1], /the tray hub has no such preview/);
   assert.ok(!hub.stops.includes(held.previewToken), "a cone can't stop root's preview");
-  await run(page, 'cat /tmp/stop.json > /dev/embedder; echo "root-stop $?" > /home/root.stop');
-  assert.equal((await homeFile(page, 'root.stop')).trim(), 'root-stop 0');
+  await run(page, 'cat /tmp/stop.json > /dev/embedder; echo "root-stop-$?-$((40 + 2))"');
+  await shows(page, 'root-stop-0-42');
   assert.ok(hub.stops.includes(held.previewToken));
   assert.deepEqual(JSON.parse(await homeFile(page, 'held.rest')), {
     stopped: 'stopped with serve --stop',
