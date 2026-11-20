@@ -15,6 +15,7 @@ import {
   runRows,
   runTag,
   signalGroup,
+  signalSurvivors,
   startNotice,
   validPgid,
 } from './approvals-run.js';
@@ -170,25 +171,54 @@ function takeEndTell(held, id) {
   return true;
 }
 
-function watchEnded({
-  started,
-  id,
-  record,
-  running,
-  paths,
-  replay,
-  remember,
-  listed,
-  held,
-  runs,
-  tell,
-  now,
-}) {
+const later = (fn, ms) => setTimeout(fn, ms).unref?.();
+
+const survivorsOf = (rows, leader) => rows.map((row) => row.pid).filter((pid) => pid !== leader);
+
+function withSurvivors(run, pids) {
+  const { survivors: _before, ...rest } = run;
+  return pids.length ? { ...rest, survivors: pids } : rest;
+}
+
+async function leftOf(ctx, id, target, leader) {
+  const rows = await runRows(await ctx.procs(), id, target);
+  return rows ? survivorsOf(rows, leader) : [];
+}
+
+function linger(ctx, id, target) {
+  const { listed, remember, procs, pollMs, lingering } = ctx;
+  if (lingering.has(id)) return;
+  lingering.add(id);
+  const tick = async () => {
+    const rows = await runRows(await procs(), id, target);
+    const record = listed().find((entry) => entry.approval.id === id);
+    const run = record?.run;
+    const kept = run?.survivors ?? [];
+    const pids = rows && run ? survivorsOf(rows, run.pid) : kept;
+    if (pids.join() !== kept.join()) remember({ ...record, run: withSurvivors(run, pids) });
+    if (pids.length && !liveRun(run)) later(tick, pollMs);
+    else lingering.delete(id);
+  };
+  later(tick, pollMs);
+}
+
+function keep(ctx, record, left) {
+  if (!record?.run || liveRun(record.run) || !left.length) return;
+  ctx.remember({ ...record, run: withSurvivors(record.run, left) });
+  linger(ctx, record.approval.id, record.approval.target);
+}
+
+function watchEnded(ctx, { started, id, record, running, paths, replay }) {
+  const { listed, held, remember, runs, tell, now } = ctx;
+  const target = record.approval.target;
   void Promise.resolve(started.ended)
-    .then((exit) => {
+    .then(async (exit) => {
+      const left = await leftOf(ctx, id, target, started.pid);
       const current = listed().find((item) => item.approval.id === id);
-      if (current?.run?.state === 'stopped') return;
-      if (!takeEndTell(held, id)) return;
+      if (current?.run?.state === 'stopped' || !takeEndTell(held, id)) {
+        keep(ctx, current, left);
+        return;
+      }
       const prior = current?.run ?? running;
       const base = current ?? record;
       const status = exit?.status === undefined ? {} : { status: exit.status };
@@ -196,22 +226,26 @@ function watchEnded({
       const endedAt = now();
       const next = {
         ...base,
-        run: { ...prior, state: 'done', endedAt, ...status, ...signal },
+        run: withSurvivors({ ...prior, state: 'done', endedAt, ...status, ...signal }, left),
       };
       remember(next, { replay, pgid: started.pgid });
       runs.delete(id);
       void tell(endNotice(next, paths, { ...exit, endedAt }, { replay }));
+      if (left.length) linger(ctx, id, target);
     })
-    .catch((error) => {
+    .catch(async (error) => {
+      const left = await leftOf(ctx, id, target, started.pid);
       const current = listed().find((item) => item.approval.id === id);
-      if (current?.run?.state === 'stopped') return;
+      if (current?.run?.state === 'stopped') {
+        keep(ctx, current, left);
+        return;
+      }
       const prior = current?.run ?? running;
       const base = current ?? record;
-      remember(
-        { ...base, run: { ...prior, state: 'failed', endedAt: now(), error: messageOf(error) } },
-        { replay }
-      );
+      const failed = { ...prior, state: 'failed', endedAt: now(), error: messageOf(error) };
+      remember({ ...base, run: withSurvivors(failed, left) }, { replay });
       runs.delete(id);
+      if (left.length) linger(ctx, id, target);
     });
 }
 
@@ -276,36 +310,10 @@ async function runOwned(ctx, id) {
     void tell(startNotice({ ...record, run: running }, paths, { pid: started.pid, at, replay }));
     if (held.get(id)?.stop) {
       const stopped = await finishStop(ctx, id, record, baseRun, started, paths, replay);
-      watchEnded({
-        started,
-        id,
-        record,
-        running: stopped,
-        paths,
-        replay,
-        remember,
-        listed,
-        held,
-        runs,
-        tell,
-        now,
-      });
+      watchEnded(ctx, { started, id, record, running: stopped, paths, replay });
       return;
     }
-    watchEnded({
-      started,
-      id,
-      record,
-      running,
-      paths,
-      replay,
-      remember,
-      listed,
-      held,
-      runs,
-      tell,
-      now,
-    });
+    watchEnded(ctx, { started, id, record, running, paths, replay });
   } catch (error) {
     held.set(id, { ...(held.get(id) ?? {}), stop: false });
     remember(
@@ -346,7 +354,7 @@ function sameAsk(item, given) {
   return same ? replay : null;
 }
 
-function endGone(ctx, record) {
+function endGone(ctx, record, rows = []) {
   const { held, remember, tell, now } = ctx;
   const id = record.approval.id;
   const endedAt = now();
@@ -357,9 +365,12 @@ function endGone(ctx, record) {
     });
     return;
   }
-  const next = remember({ ...record, run: { ...record.run, state: 'done', endedAt } });
+  const left = survivorsOf(rows, record.run.pid);
+  const done = withSurvivors({ ...record.run, state: 'done', endedAt }, left);
+  const next = remember({ ...record, run: done });
   if (takeEndTell(held, id))
     void tell(endNotice(next, null, { endedAt }, { replay: held.get(id)?.replay }));
+  if (left.length) linger(ctx, id, record.approval.target);
 }
 
 function watchGone(ctx, id, pid, target) {
@@ -367,15 +378,17 @@ function watchGone(ctx, id, pid, target) {
   const tick = async () => {
     const rows = await runRows(await procs(), id, target);
     const record = listed().find((entry) => entry.approval.id === id);
-    if (record?.run?.state !== 'running' || record.run.pid !== pid) return;
-    if (rows && !rows.some((row) => row.pid === pid)) {
-      runs.delete(id);
-      endGone(ctx, record);
+    const run = record?.run;
+    if (run?.pid !== pid || (run.state !== 'running' && run.state !== 'stopped')) return;
+    if (!rows || rows.some((row) => row.pid === pid)) {
+      later(tick, pollMs);
       return;
     }
-    setTimeout(tick, pollMs);
+    runs.delete(id);
+    if (run.state === 'running') endGone(ctx, record, rows);
+    else keep(ctx, record, survivorsOf(rows, pid));
   };
-  setTimeout(tick, pollMs);
+  later(tick, pollMs);
 }
 
 async function reattach(ctx, id) {
@@ -409,14 +422,37 @@ function attach(ctx, id) {
   return found;
 }
 
+function inherit(ctx, { approval, run }) {
+  if (liveRun(run)) ctx.inherited.add(approval.id);
+  else if (run?.survivors?.length) linger(ctx, approval.id, approval.target);
+}
+
 function adoptAll(ctx) {
   return Promise.all([...ctx.inherited].map((id) => attach(ctx, id)));
 }
 
 function keepAdopting(ctx) {
   void adoptAll(ctx).then(() => {
-    if (ctx.inherited.size) setTimeout(() => keepAdopting(ctx), ctx.pollMs).unref?.();
+    if (ctx.inherited.size) later(() => keepAdopting(ctx), ctx.pollMs);
   });
+}
+
+async function stopSurvivors(ctx, record) {
+  const { kernel, procs } = ctx;
+  const { id, target } = record.approval;
+  const client = await procs();
+  const rows = await runRows(client, id, target);
+  if (!rows) throw new Error(RUN_ERRORS.unseen);
+  const listed = rows.filter(
+    (row) => row.pid !== record.run.pid && record.run.survivors.includes(row.pid)
+  );
+  linger(ctx, id, target);
+  if (!listed.length) return;
+  const killer = typeof client.kill === 'function' ? client : kernel();
+  const failure = await signalSurvivors(client, killer, id, target, listed);
+  if (!failure) return;
+  const left = await leftOf(ctx, id, target, record.run.pid);
+  if (listed.some((row) => left.includes(row.pid))) throw new Error(messageOf(failure));
 }
 
 async function stopOwned(ctx, id) {
@@ -424,6 +460,7 @@ async function stopOwned(ctx, id) {
   if (inherited.has(id) && (await attach(ctx, id)) === undefined)
     throw new Error(RUN_ERRORS.unseen);
   const record = listed().find((entry) => entry.approval.id === id);
+  if (record?.run?.survivors?.length && !liveRun(record.run)) return stopSurvivors(ctx, record);
   if (!record?.run || (record.run.state !== 'running' && record.run.state !== 'starting'))
     throw new Error("This request isn't running.");
   const tracked = runs.get(id);
@@ -617,7 +654,13 @@ export function createApprovals({
   const held = new Map();
   const mine = new Set();
   const runs = new Map();
-  const watch = { procs: safely(procs), pollMs, inherited: new Set(), attaching: new Map() };
+  const watch = {
+    procs: safely(procs),
+    pollMs,
+    inherited: new Set(),
+    attaching: new Map(),
+    lingering: new Set(),
+  };
   let shown = [];
   let past = [];
   let owning = false;
@@ -757,7 +800,7 @@ export function createApprovals({
     },
     own() {
       owning = true;
-      for (const record of past) if (liveRun(record.run)) watch.inherited.add(record.approval.id);
+      for (const record of past) inherit(ctx, record);
       publish();
       publishHistory();
       keepAdopting(ctx);

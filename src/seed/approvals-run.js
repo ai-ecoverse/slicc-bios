@@ -124,6 +124,36 @@ export async function signalGroup(client, pgid) {
   if (status !== 0) throw new Error(stderr?.trim() || `kill exited ${status}`);
 }
 
+export async function signalPid(client, pid) {
+  if (!validPgid(pid)) throw new Error(`can't stop process ${pid}`);
+  if (typeof client?.kill === 'function') {
+    await client.kill(pid, 'SIGTERM');
+    return;
+  }
+  if (typeof client?.run !== 'function') throw new Error("this client can't signal a process");
+  const { status, stderr } = await client.run(['kill', '-TERM', String(pid)]);
+  if (status !== 0) throw new Error(stderr?.trim() || `kill exited ${status}`);
+}
+
+export function sameProcess(row, seen) {
+  if (row.pid !== seen.pid || row.pgid !== seen.pgid) return false;
+  return typeof seen.started !== 'number' || row.started === seen.started;
+}
+
+export async function signalSurvivors(client, killer, id, target, listed) {
+  let failure = null;
+  for (const seen of listed) {
+    const rows = await runRows(client, id, target);
+    if (!rows?.some((row) => sameProcess(row, seen))) continue;
+    try {
+      await signalPid(killer, seen.pid);
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  return failure;
+}
+
 export function tagsOf(row) {
   if (Array.isArray(row?.tags) && row.tags.length) return row.tags;
   return typeof row?.tag === 'string' ? [row.tag] : [];
