@@ -46,13 +46,6 @@ function errorUrlProtected(text, is) {
 }
 const WAIT = 2000;
 let revision = 0;
-let diagnosed = 0;
-
-function diag(line) {
-  if (diagnosed >= 60) return;
-  diagnosed += 1;
-  process.stdout.write(`DIAG-FRAMES ${line.slice(0, 2000)}\n`);
-}
 
 function connect(browser) {
   const socket = new WebSocket(browser);
@@ -99,7 +92,7 @@ async function snapshot(cdp, targetId, errors) {
   };
   const { targetInfos } = await cdp.send('Target.getTargets');
   const byId = new Map(targetInfos.map((info) => [info.targetId, info]));
-  if (byId.get(targetId)?.type !== 'page') refuse('target is not a page');
+  if (byId.get(targetId)?.type !== 'page') refuse();
   const under = (info) => {
     const seen = new Set();
     for (let id = info.parentId; id && !seen.has(id); id = byId.get(id)?.parentId) {
@@ -118,8 +111,7 @@ async function snapshot(cdp, targetId, errors) {
   const remote = [];
   for (const info of entries) {
     const owner = await cdp.send('DOM.getFrameOwner', { frameId: info.targetId }, top);
-    if (!Number.isSafeInteger(owner?.backendNodeId) || owner.backendNodeId <= 0)
-      refuse('DOM.getFrameOwner gave no backend node');
+    if (!Number.isSafeInteger(owner?.backendNodeId) || owner.backendNodeId <= 0) refuse();
     remoteOwners.push({ frameId: info.targetId, backendNodeId: owner.backendNodeId });
     const session = await attach(info.targetId);
     remote.push(
@@ -130,10 +122,10 @@ async function snapshot(cdp, targetId, errors) {
     );
   }
   if (new Set(remoteOwners.map((owner) => owner.backendNodeId)).size !== remoteOwners.length)
-    refuse('two owners share a backend node');
+    refuse();
   const all = [...local, ...remote];
   const numbers = new Map(all.map((frame, index) => [frame.id, index]));
-  if (numbers.size !== all.length) refuse('frame ids repeat');
+  if (numbers.size !== all.length) refuse();
   const frames = all.map((frame) => ({
     frameId: numbers.get(frame.id),
     parentFrameId: frame.parentId === undefined ? -1 : (numbers.get(frame.parentId) ?? -2),
@@ -156,13 +148,13 @@ async function snapshot(cdp, targetId, errors) {
         frame.parentFrameId === -2
     )
   )
-    refuse('a frame has no document, no URL, an error or no parent');
+    refuse();
   const localFrames = local.map((frame) => frame.id);
   if (
     remoteOwners.some((owner) => localFrames.includes(owner.frameId)) ||
     localFrames.length + remoteOwners.length !== frames.length
   )
-    refuse('local and remote frames do not add up to all frames');
+    refuse();
   revision += 1;
   return {
     revision,
@@ -213,11 +205,7 @@ export async function extensionFrames(browser, targetId, own, version) {
     const snap = await Promise.race([
       snapshot(cdp, targetId, errors),
       new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          const error = new Error(UNSETTLED);
-          error.why = `no list within ${WAIT} ms`;
-          reject(error);
-        }, WAIT);
+        timer = setTimeout(() => reject(new Error(UNSETTLED)), WAIT);
       }),
     ]);
     const result = reply(snap, is, errors);
@@ -232,8 +220,7 @@ export async function extensionFrames(browser, targetId, own, version) {
     };
     diag(`reply ${targetId} ${JSON.stringify({ checks, result })}`);
     return { result };
-  } catch (error) {
-    diag(`refused ${targetId} ${String(error?.message ?? error)} at ${error?.why ?? 'unknown'}`);
+  } catch {
     return { error: UNSETTLED };
   } finally {
     clearTimeout(timer);

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { guardRoute } from './guard-route.mjs';
 import {
   errorFrame,
   failed,
@@ -156,7 +157,7 @@ function extensionGuard(raw, origin) {
     logicalIds.length = 0;
     close();
   };
-  return guardProtected(connection, origin);
+  return guardProtected(connection, origin, new Map(), guardRoute('extension'));
 }
 
 test('state extension early attach to a protected error root reaches the client as origin-only metadata', {

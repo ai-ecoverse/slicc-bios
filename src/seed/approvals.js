@@ -1,15 +1,21 @@
+import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import {
   DEFAULT_MAX_AGE,
   endNotice,
   ensureDir,
   kernelGate,
+  leaderOf,
   messageOf,
   quietUndelivered,
+  RUN_ERRORS,
+  RUN_POLL_MS,
   RUN_REASONS,
   runnable,
   runPaths,
+  runRows,
   runTag,
   signalGroup,
+  signalSurvivors,
   startNotice,
   validPgid,
 } from './approvals-run.js';
@@ -19,6 +25,7 @@ export {
   endNotice,
   kernelGate,
   quietUndelivered,
+  RUN_ERRORS,
   RUN_REASONS,
   runnable,
   runPaths,
@@ -164,25 +171,54 @@ function takeEndTell(held, id) {
   return true;
 }
 
-function watchEnded({
-  started,
-  id,
-  record,
-  running,
-  paths,
-  replay,
-  remember,
-  listed,
-  held,
-  runs,
-  tell,
-  now,
-}) {
+const later = (fn, ms) => setTimeout(fn, ms).unref?.();
+
+const survivorsOf = (rows, leader) => rows.map((row) => row.pid).filter((pid) => pid !== leader);
+
+function withSurvivors(run, pids) {
+  const { survivors: _before, ...rest } = run;
+  return pids.length ? { ...rest, survivors: pids } : rest;
+}
+
+async function leftOf(ctx, id, target, leader) {
+  const rows = await runRows(await ctx.procs(), id, target);
+  return rows ? survivorsOf(rows, leader) : [];
+}
+
+function linger(ctx, id, target) {
+  const { listed, remember, procs, pollMs, lingering } = ctx;
+  if (lingering.has(id)) return;
+  lingering.add(id);
+  const tick = async () => {
+    const rows = await runRows(await procs(), id, target);
+    const record = listed().find((entry) => entry.approval.id === id);
+    const run = record?.run;
+    const kept = run?.survivors ?? [];
+    const pids = rows && run ? survivorsOf(rows, run.pid) : kept;
+    if (pids.join() !== kept.join()) remember({ ...record, run: withSurvivors(run, pids) });
+    if (pids.length && !liveRun(run)) later(tick, pollMs);
+    else lingering.delete(id);
+  };
+  later(tick, pollMs);
+}
+
+function keep(ctx, record, left) {
+  if (!record?.run || liveRun(record.run) || !left.length) return;
+  ctx.remember({ ...record, run: withSurvivors(record.run, left) });
+  linger(ctx, record.approval.id, record.approval.target);
+}
+
+function watchEnded(ctx, { started, id, record, running, paths, replay }) {
+  const { listed, held, remember, runs, tell, now } = ctx;
+  const target = record.approval.target;
   void Promise.resolve(started.ended)
-    .then((exit) => {
+    .then(async (exit) => {
+      const left = await leftOf(ctx, id, target, started.pid);
       const current = listed().find((item) => item.approval.id === id);
-      if (current?.run?.state === 'stopped') return;
-      if (!takeEndTell(held, id)) return;
+      if (current?.run?.state === 'stopped' || !takeEndTell(held, id)) {
+        keep(ctx, current, left);
+        return;
+      }
       const prior = current?.run ?? running;
       const base = current ?? record;
       const status = exit?.status === undefined ? {} : { status: exit.status };
@@ -190,22 +226,26 @@ function watchEnded({
       const endedAt = now();
       const next = {
         ...base,
-        run: { ...prior, state: 'done', endedAt, ...status, ...signal },
+        run: withSurvivors({ ...prior, state: 'done', endedAt, ...status, ...signal }, left),
       };
       remember(next, { replay, pgid: started.pgid });
       runs.delete(id);
       void tell(endNotice(next, paths, { ...exit, endedAt }, { replay }));
+      if (left.length) linger(ctx, id, target);
     })
-    .catch((error) => {
+    .catch(async (error) => {
+      const left = await leftOf(ctx, id, target, started.pid);
       const current = listed().find((item) => item.approval.id === id);
-      if (current?.run?.state === 'stopped') return;
+      if (current?.run?.state === 'stopped') {
+        keep(ctx, current, left);
+        return;
+      }
       const prior = current?.run ?? running;
       const base = current ?? record;
-      remember(
-        { ...base, run: { ...prior, state: 'failed', endedAt: now(), error: messageOf(error) } },
-        { replay }
-      );
+      const failed = { ...prior, state: 'failed', endedAt: now(), error: messageOf(error) };
+      remember({ ...base, run: withSurvivors(failed, left) }, { replay });
       runs.delete(id);
+      if (left.length) linger(ctx, id, target);
     });
 }
 
@@ -270,36 +310,10 @@ async function runOwned(ctx, id) {
     void tell(startNotice({ ...record, run: running }, paths, { pid: started.pid, at, replay }));
     if (held.get(id)?.stop) {
       const stopped = await finishStop(ctx, id, record, baseRun, started, paths, replay);
-      watchEnded({
-        started,
-        id,
-        record,
-        running: stopped,
-        paths,
-        replay,
-        remember,
-        listed,
-        held,
-        runs,
-        tell,
-        now,
-      });
+      watchEnded(ctx, { started, id, record, running: stopped, paths, replay });
       return;
     }
-    watchEnded({
-      started,
-      id,
-      record,
-      running,
-      paths,
-      replay,
-      remember,
-      listed,
-      held,
-      runs,
-      tell,
-      now,
-    });
+    watchEnded(ctx, { started, id, record, running, paths, replay });
   } catch (error) {
     held.set(id, { ...(held.get(id) ?? {}), stop: false });
     remember(
@@ -326,9 +340,127 @@ async function peekEnded(ended) {
   return settled;
 }
 
-async function stopOwned(ctx, id) {
-  const { listed, held, runs, kernel, remember, tell, now } = ctx;
+const liveRun = (run) => run?.state === 'running' || run?.state === 'starting';
+
+function sameAsk(item, given) {
+  const replay = replayOf(given);
+  if (!replay) return null;
+  const made = approval(replay);
+  const same =
+    made.command === item.command &&
+    made.cwd === item.cwd &&
+    made.target === item.target &&
+    made.requester.name === item.requester?.name;
+  return same ? replay : null;
+}
+
+function endGone(ctx, record, rows = []) {
+  const { held, remember, tell, now } = ctx;
+  const id = record.approval.id;
+  const endedAt = now();
+  if (record.run.state === 'starting') {
+    remember({
+      ...record,
+      run: { ...record.run, state: 'failed', endedAt, error: RUN_ERRORS.interrupted },
+    });
+    return;
+  }
+  const left = survivorsOf(rows, record.run.pid);
+  const done = withSurvivors({ ...record.run, state: 'done', endedAt }, left);
+  const next = remember({ ...record, run: done });
+  if (takeEndTell(held, id))
+    void tell(endNotice(next, null, { endedAt }, { replay: held.get(id)?.replay }));
+  if (left.length) linger(ctx, id, record.approval.target);
+}
+
+function watchGone(ctx, id, pid, target) {
+  const { listed, runs, procs, pollMs } = ctx;
+  const tick = async () => {
+    const rows = await runRows(await procs(), id, target);
+    const record = listed().find((entry) => entry.approval.id === id);
+    const run = record?.run;
+    if (run?.pid !== pid || (run.state !== 'running' && run.state !== 'stopped')) return;
+    if (!rows || rows.some((row) => row.pid === pid)) {
+      later(tick, pollMs);
+      return;
+    }
+    runs.delete(id);
+    if (run.state === 'running') endGone(ctx, record, rows);
+    else keep(ctx, record, survivorsOf(rows, pid));
+  };
+  later(tick, pollMs);
+}
+
+async function reattach(ctx, id) {
+  const { listed, held, runs, remember, procs, inherited } = ctx;
   const record = listed().find((entry) => entry.approval.id === id);
+  if (!liveRun(record?.run)) {
+    inherited.delete(id);
+    return null;
+  }
+  const target = record.approval.target;
+  const rows = await runRows(await procs(), id, target);
+  if (!rows) return undefined;
+  inherited.delete(id);
+  if (!rows.length) {
+    endGone(ctx, record);
+    return null;
+  }
+  const lead = leaderOf(rows);
+  held.set(id, { ...(held.get(id) ?? {}), pgid: lead.pgid });
+  runs.set(id, { pgid: lead.pgid });
+  remember({ ...record, run: { ...record.run, state: 'running', pid: lead.pid } });
+  watchGone(ctx, id, lead.pid, target);
+  return lead.pgid;
+}
+
+function attach(ctx, id) {
+  const { attaching } = ctx;
+  if (attaching.has(id)) return attaching.get(id);
+  const found = reattach(ctx, id).finally(() => attaching.delete(id));
+  attaching.set(id, found);
+  return found;
+}
+
+function inherit(ctx, { approval, run }) {
+  if (liveRun(run)) ctx.inherited.add(approval.id);
+  else if (run?.survivors?.length) linger(ctx, approval.id, approval.target);
+}
+
+function adoptAll(ctx) {
+  return Promise.all([...ctx.inherited].map((id) => attach(ctx, id)));
+}
+
+function keepAdopting(ctx) {
+  void adoptAll(ctx).then(() => {
+    if (ctx.inherited.size) later(() => keepAdopting(ctx), ctx.pollMs);
+  });
+}
+
+async function stopSurvivors(ctx, record) {
+  const { kernel, procs } = ctx;
+  const { id, target } = record.approval;
+  const client = await procs();
+  const rows = await runRows(client, id, target);
+  if (!rows) throw new Error(RUN_ERRORS.unseen);
+  const listed = rows.filter(
+    (row) => row.pid !== record.run.pid && record.run.survivors.includes(row.pid)
+  );
+  linger(ctx, id, target);
+  if (!listed.length) return;
+  const killer = typeof client.kill === 'function' ? client : kernel();
+  const failure = await signalSurvivors(client, killer, id, target, listed);
+  if (!failure) return;
+  const left = await leftOf(ctx, id, target, record.run.pid);
+  if (listed.some((row) => left.includes(row.pid))) throw new Error(messageOf(failure));
+}
+
+async function stopOwned(ctx, id) {
+  const { listed, held, runs, kernel, remember, tell, now, inherited } = ctx;
+  if (inherited.has(id) && (await attach(ctx, id)) === undefined)
+    throw new Error(RUN_ERRORS.unseen);
+  const record = listed().find((entry) => entry.approval.id === id);
+  if (record?.run?.survivors?.length && !liveRun(record.run)) return stopSurvivors(ctx, record);
   if (!record?.run || (record.run.state !== 'running' && record.run.state !== 'starting'))
     throw new Error("This request isn't running.");
   const tracked = runs.get(id);
@@ -393,8 +525,48 @@ async function stopOwned(ctx, id) {
 
 export const APPROVALS_LAYOUT = { side: 'right', open: [] };
 
+function withRunnable(record, held, gatesOf, now) {
+  if (
+    record.state !== 'unanswered' ||
+    record.reason !== 'timeout' ||
+    record.approval.kind !== 'sudo'
+  )
+    return record;
+  return {
+    ...record,
+    runnable: runnable(record, now(), gatesOf(held.get(record.approval.id)?.replay)),
+  };
+}
+
+function safely(procs) {
+  return async () => {
+    try {
+      return await procs();
+    } catch {
+      return null;
+    }
+  };
+}
+
+function replaysOf(held, records) {
+  return records.flatMap((record) => {
+    const replay = held.get(record.approval.id)?.replay;
+    return replay ? [replay] : [];
+  });
+}
+
+function keepReplays(held, past, replays) {
+  if (!Array.isArray(replays)) return;
+  for (const given of replays) {
+    const record = past.find((entry) => entry.approval.id === biosApprovalId(given?.id));
+    const replay = record && sameAsk(record.approval, given);
+    if (replay) held.set(record.approval.id, { ...(held.get(record.approval.id) ?? {}), replay });
+  }
+}
+
 export function hostApprovals({
   kernel,
+  attach: attachClient = attachKernel,
   runner = () => ({ by: 'you' }),
   deliver = null,
   debug = globalThis,
@@ -446,7 +618,19 @@ export function hostApprovals({
       warn(`approval run notice: ${result.reason ?? 'not delivered'}`);
     }
   };
-  const approvals = createApprovals({ kernel, lick, runner, ...rest });
+  let procs = null;
+  const kernelProcs = () => {
+    const live = kernel?.();
+    if (!live) return null;
+    procs ??= Promise.resolve(live.connect())
+      .then((port) => attachClient(port))
+      .catch((error) => {
+        procs = null;
+        throw error;
+      });
+    return procs;
+  };
+  const approvals = createApprovals({ kernel, procs: kernelProcs, lick, runner, ...rest });
   if (debug.sliccKernelDebug === true) {
     debug.sliccApprovals = approvals;
     debug.sliccApprovalRunNotices = notices;
@@ -458,9 +642,11 @@ export function hostApprovals({
 export function createApprovals({
   channel = new BroadcastChannel(CHANNEL),
   kernel = () => null,
+  procs = () => null,
   lick = null,
   runner = () => ({ by: 'you' }),
   maxAgeMinutes = DEFAULT_MAX_AGE,
+  pollMs = RUN_POLL_MS,
   now = Date.now,
 } = {}) {
   const events = emitter();
@@ -468,6 +654,13 @@ export function createApprovals({
   const held = new Map();
   const mine = new Set();
   const runs = new Map();
+  const watch = {
+    procs: safely(procs),
+    pollMs,
+    inherited: new Set(),
+    attaching: new Map(),
+    lingering: new Set(),
+  };
   let shown = [];
   let past = [];
   let owning = false;
@@ -477,26 +670,14 @@ export function createApprovals({
     kernel: kernelGate(kernel()),
     replay,
   });
-  const withRunnable = (record) => {
-    if (
-      record.state !== 'unanswered' ||
-      record.reason !== 'timeout' ||
-      record.approval.kind !== 'sudo'
-    )
-      return record;
-    return {
-      ...record,
-      runnable: runnable(record, now(), gatesOf(held.get(record.approval.id)?.replay)),
-    };
-  };
   const listed = () =>
-    [...(owning ? past.map(withRunnable) : past)].sort(
+    [...(owning ? past.map((record) => withRunnable(record, held, gatesOf, now)) : past)].sort(
       (a, b) => b.approval.createdAt - a.approval.createdAt
     );
   const publishHistory = () => {
     const records = listed();
     events.emit('history', records);
-    if (owning) channel.postMessage({ history: records });
+    if (owning) channel.postMessage({ history: records, replays: replaysOf(held, records) });
     return records;
   };
   const show = (list) => {
@@ -549,7 +730,7 @@ export function createApprovals({
     });
     return next;
   };
-  const ctx = { listed, held, gatesOf, remember, kernel, runner, runs, tell, now };
+  const ctx = { listed, held, gatesOf, remember, kernel, runner, runs, tell, now, ...watch };
   const settle = (id, decision, reason) => {
     const entry = waiting.get(id);
     if (!entry) return;
@@ -584,6 +765,7 @@ export function createApprovals({
     else if (!owning && data?.ended) end(data.ended.id, data.ended.reason);
     else if (!owning && data?.history) {
       past = data.history;
+      keepReplays(held, past, data.replays);
       events.emit('history', past);
     }
   };
@@ -618,8 +800,13 @@ export function createApprovals({
     },
     own() {
       owning = true;
+      for (const record of past) inherit(ctx, record);
       publish();
       publishHistory();
+      keepAdopting(ctx);
+    },
+    async adopt() {
+      await adoptAll(ctx);
     },
     approve(req, { signal } = {}) {
       return wait(approval(req), signal, replayOf(req)).then((decision) => {

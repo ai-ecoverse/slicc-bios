@@ -66,6 +66,16 @@ const dialogs = [
     { url: ordinary, windowName: 'ordinary-window', windowFeatures: [], userGesture: true },
     'windowName',
   ],
+  [
+    'Page.downloadWillBegin',
+    {
+      frameId: 'dialog-owner',
+      guid: 'ordinary-download',
+      url: ordinary,
+      suggestedFilename: 'ordinary-download.bin',
+    },
+    'suggestedFilename',
+  ],
 ];
 
 for (const [method, ordinaryParams, field] of dialogs) {
@@ -105,19 +115,20 @@ for (const [method, ordinaryParams, field] of dialogs) {
     const mark = wire.delivered.length;
     const params = { ...ordinaryParams, [field]: unreachableUrl };
     wire.emit({ method, sessionId: session, params });
+    await flush();
+    const scrubbed = wire.delivered.slice(mark).find((message) => message.method === method);
+    assert.ok(scrubbed, `${method} is scrubbed metadata while the document is an error page`);
+    assert.equal(JSON.stringify(scrubbed).includes(unreachableUrl), false);
     wire.emit({
       method: 'Page.frameNavigated',
       sessionId: 'guard-receipt-dialog-owner',
       params: { frame: plainFrame('receipt-dialog-unsafe', 'receipt-dialog-owner') },
     });
     await flush();
-    assert.equal(
-      wire.delivered.slice(mark).some((message) => message.method === method),
-      false
-    );
+    const after = wire.delivered.length;
     wire.emit({ method, sessionId: session, params });
     await flush();
-    const event = wire.delivered.slice(mark).find((message) => message.method === method);
+    const event = wire.delivered.slice(after).find((message) => message.method === method);
     assert.ok(event);
     assert.deepEqual(event.params, params);
   });
@@ -143,11 +154,13 @@ for (const [method, ordinaryParams, field] of dialogs) {
         params: { ...ordinaryParams, [field]: unreachableUrl },
       });
       await flush();
-      assert.equal(
-        wire.delivered.slice(mark).some((message) => message.method === method),
-        false
-      );
-      assert.equal(JSON.stringify(wire.delivered.slice(mark)).includes(unreachableUrl), false);
+      const event = wire.delivered.slice(mark).find((message) => message.method === method);
+      assert.ok(event, `${method} is kept as scrubbed metadata on an error document`);
+      assert.equal(JSON.stringify(event).includes(unreachableUrl), false);
+      if (field === 'windowName') assert.equal(event.params.windowName, '');
+      if (field === 'message') assert.equal(event.params.message, '');
+      if (field === 'userInput') assert.equal(event.params.userInput, '');
+      if (field === 'suggestedFilename') assert.equal(event.params.suggestedFilename, '');
     });
   }
 }
@@ -213,17 +226,18 @@ test('state containing window open withholds protected URLs and keeps ordinary U
   };
   wire.emit({ method: 'Page.windowOpen', sessionId: session, params });
   await flush();
-  assert.equal(
-    wire.delivered.slice(mark).some((message) => message.method === 'Page.windowOpen'),
-    false
-  );
+  const withheld = wire.delivered
+    .slice(mark)
+    .find((message) => message.method === 'Page.windowOpen');
+  assert.equal(withheld, undefined, 'protected windowOpen URL is withheld by naming');
   assert.equal(JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-window-id'), false);
   assert.equal(JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-query'), false);
   assert.equal(JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-fragment'), false);
+  const after = wire.delivered.length;
   const ordinaryParams = { ...params, url: ordinary };
   wire.emit({ method: 'Page.windowOpen', sessionId: session, params: ordinaryParams });
   await flush();
-  const event = wire.delivered.slice(mark).find((message) => message.method === 'Page.windowOpen');
+  const event = wire.delivered.slice(after).find((message) => message.method === 'Page.windowOpen');
   assert.ok(event);
   assert.deepEqual(event.params, ordinaryParams);
 });

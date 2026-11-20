@@ -7,6 +7,7 @@ import { guardProtected } from '../../src/seed/guard.js';
 import { cdpConnection } from '../../src/seed/link.js';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
+import { guardRoute } from './guard-route.mjs';
 
 const RUNS = Number(process.env.BF_RUNS ?? 8);
 const READ_LAG = 2500;
@@ -325,7 +326,10 @@ async function guardPage(t) {
     window.readLag = (ms) => {
       lag = ms;
     };
-    const connection = guardProtected(raw, location.origin);
+    const connection = guardProtected(raw, location.origin, new Map(), {
+      kind: 'extension',
+      version: globalThis.sliccExtension.version,
+    });
     const pending = new Map();
     const events = [];
     let next = 0;
@@ -1151,7 +1155,7 @@ async function guardLink(t) {
       };
     },
   });
-  const connection = guardProtected(raw, SEVEN);
+  const connection = guardProtected(raw, SEVEN, new Map(), guardRoute('devtools'));
   const pending = new Map();
   const seen = [];
   let next = 0;

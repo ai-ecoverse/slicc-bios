@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { extensionConnection } from '../../src/seed/cdp.js';
 import { BLANKED, guardProtected, PROTECTED } from '../../src/seed/guard.js';
+import { guardRoute } from './guard-route.mjs';
 import { flush, ordinary, plainFrame, protectedOrigin, protocol } from './guard-state-fixture.mjs';
 
 for (const method of ['Input.dispatchKeyEvent', 'Runtime.evaluate']) {
@@ -233,7 +234,12 @@ test('restored boundary an extension connection cannot borrow or detach another 
     },
   };
   function client() {
-    const connection = guardProtected(extensionConnection(cdp), protectedOrigin);
+    const connection = guardProtected(
+      extensionConnection(cdp),
+      protectedOrigin,
+      new Map(),
+      guardRoute('extension')
+    );
     const pending = new Map();
     let next = 0;
     connection.onmessage = (text) => {

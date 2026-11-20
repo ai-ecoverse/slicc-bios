@@ -81,7 +81,12 @@ async function reads({ targetId, frameId, plain, vaultChild }) {
   const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const connection = guardProtected(
     extensionConnection(globalThis.sliccExtension.cdp),
-    self.origin
+    self.origin,
+    new Map(),
+    { kind: 'extension', version: globalThis.sliccExtension.version },
+    typeof globalThis.sliccExtension.frames === 'function'
+      ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+      : undefined
   );
   const pending = new Map();
   const seen = [];
@@ -184,7 +189,12 @@ async function fresh({ port }) {
   const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const connection = guardProtected(
     extensionConnection(globalThis.sliccExtension.cdp),
-    self.origin
+    self.origin,
+    new Map(),
+    { kind: 'extension', version: globalThis.sliccExtension.version },
+    typeof globalThis.sliccExtension.frames === 'function'
+      ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+      : undefined
   );
   const pending = new Map();
   const events = [];
@@ -307,7 +317,12 @@ async function late({ port, targetId }) {
   const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const connection = guardProtected(
     extensionConnection(globalThis.sliccExtension.cdp),
-    self.origin
+    self.origin,
+    new Map(),
+    { kind: 'extension', version: globalThis.sliccExtension.version },
+    typeof globalThis.sliccExtension.frames === 'function'
+      ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+      : undefined
   );
   const pending = new Map();
   const seen = [];
@@ -488,7 +503,12 @@ async function editors({ port }) {
   const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const connection = guardProtected(
     extensionConnection(globalThis.sliccExtension.cdp),
-    self.origin
+    self.origin,
+    new Map(),
+    { kind: 'extension', version: globalThis.sliccExtension.version },
+    typeof globalThis.sliccExtension.frames === 'function'
+      ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+      : undefined
   );
   const pending = new Map();
   let next = 0;
@@ -585,7 +605,12 @@ async function axTree({ port }) {
   const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const connection = guardProtected(
     extensionConnection(globalThis.sliccExtension.cdp),
-    self.origin
+    self.origin,
+    new Map(),
+    { kind: 'extension', version: globalThis.sliccExtension.version },
+    typeof globalThis.sliccExtension.frames === 'function'
+      ? (targetId) => globalThis.sliccExtension.frames(Number(targetId))
+      : undefined
   );
   const pending = new Map();
   const seen = [];

@@ -98,7 +98,10 @@ test(`fake ${OLDER_FAKE}: an error iframe locks the page until it is gone`, {
     { expression: "document.querySelectorAll('iframe').forEach((frame) => frame.remove())" },
     raw
   );
-  await until(async () => !(await errorFrame()), 10000);
+  assert.ok(
+    await until(async () => !(await errorFrame()), 10000),
+    'the error iframe is gone without the guard'
+  );
   const gone = await until(async () => {
     const row = await measure(client, session);
     return row.dom === 'answered' ? row : null;

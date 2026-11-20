@@ -198,6 +198,84 @@ export async function run(page, command) {
   await page.enter();
 }
 
+export async function pressDeep(page, selector, ms = 60000) {
+  const still = (selector) => {
+    const walk = (root) => {
+      const found = root.querySelector(selector);
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && walk(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const button = walk(document);
+    const box = button?.getBoundingClientRect();
+    let owner = button;
+    while (owner && typeof owner.arming !== 'number')
+      owner = owner.parentElement ?? owner.getRootNode()?.host;
+    const arming = owner?.arming ?? 500;
+    const dialog = button?.closest('dialog');
+    const buttons = dialog ? [...dialog.querySelectorAll('[slot=button]')] : button ? [button] : [];
+    const layout = JSON.stringify([
+      dialog?.dataset.approval,
+      dialog?.dataset.gone,
+      buttons.map((each) => {
+        const { left, top, width, height } = each.getBoundingClientRect();
+        return [
+          each.dataset.action,
+          each.textContent,
+          each.hasAttribute('disabled'),
+          each.hasAttribute('pending'),
+          ...[left, top, width, height].map(Math.round),
+        ];
+      }),
+    ]);
+    const x = box ? box.x + box.width / 2 : 0;
+    const y = box ? box.y + box.height / 2 : 0;
+    let hit = box?.width > 0 ? document.elementFromPoint(x, y) : null;
+    while (hit?.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    const inside = (outer, node) => {
+      for (let at = node; at; at = at.parentNode ?? at.host) if (at === outer) return true;
+      return false;
+    };
+    const on = !!hit && (inside(button, hit) || inside(hit, button));
+    const now = performance.now();
+    const seen = window.pressDeepSeen;
+    const since = seen?.layout === layout && seen.on === on ? seen.since : now;
+    const stable = now - since;
+    window.pressDeepSeen = {
+      found: !!button,
+      hit: hit?.localName ?? null,
+      on,
+      arming,
+      stable: Math.round(stable),
+      layout,
+      since,
+    };
+    return box?.width > 0 && on && stable >= arming + 100 && { x, y };
+  };
+  await page.evaluate(() => {
+    window.pressDeepSeen = null;
+  });
+  let at;
+  try {
+    at = await page.within(ms, still, selector);
+  } catch (error) {
+    if (error.fatal) throw error;
+    const seen = await page.evaluate(() => window.pressDeepSeen);
+    throw new Error(
+      `${selector} never stayed under the pointer with its dialog's buttons still for the arming time in ${ms} ms, last saw ${JSON.stringify(seen)}: ${error.message}`
+    );
+  }
+  for (const type of ['mousePressed', 'mouseReleased'])
+    await page.send('Input.dispatchMouseEvent', { type, ...at, button: 'left', clickCount: 1 });
+}
+
 export async function opfs(page) {
   return page.evaluate(async () => {
     const paths = [];

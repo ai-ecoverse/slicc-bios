@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
-import { boot, ready, run, screen, shows } from './bios.mjs';
+import { boot, pressDeep, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
@@ -262,20 +262,6 @@ const started = (page, command, options) =>
   });
 
 const finished = (page, index) => page.evaluate((index) => window.runs[index], index);
-
-async function pressDeep(page, selector) {
-  await page.until((selector) => {
-    const box = window.deep(selector)?.getBoundingClientRect();
-    return !!box && box.width > 0;
-  }, selector);
-  await new Promise((resolve) => setTimeout(resolve, 800));
-  const { x, y } = await page.evaluate((selector) => {
-    const box = window.deep(selector).getBoundingClientRect();
-    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  }, selector);
-  for (const type of ['mousePressed', 'mouseReleased'])
-    await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
-}
 
 test('serial is installed with the base set and its kinds reach slicc-devices through seven’s hook: a typed request opens the chooser at once, and an open port shows a chip whose Close ends a follow read and later writes', async (t) => {
   const page = await seven(t);
