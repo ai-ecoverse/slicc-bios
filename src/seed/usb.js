@@ -14,7 +14,7 @@ export function usbWhat(handle, info) {
   return `${handle} (${info.productName ? `${ids} ${info.productName}` : ids})`;
 }
 
-export function deviceLive(source, live, { kind, label }) {
+export function deviceLive(source, live, { kind, label, what = usbWhat }) {
   const shown = new Map();
   return source.watch((event) => {
     if (event.type !== 'open' && event.type !== 'close') return;
@@ -26,7 +26,7 @@ export function deviceLive(source, live, { kind, label }) {
       live.add({
         kind,
         label,
-        what: usbWhat(event.handle, event.info),
+        what: what(event.handle, event.info),
         asker: who(event.stamp),
         since: event.since,
         action: { label: 'Close', run: () => source.close(event.handle) },

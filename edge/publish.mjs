@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { argv, env, stdout } from 'node:process';
+import { argv, env, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { AwsClient } from 'aws4fetch';
 
@@ -126,6 +126,13 @@ export async function publishBranch(branch, { fetcher = fetch, token, parallel =
   return (await call('manifest', { method: 'PUT', body: JSON.stringify({ files: current }) })).url;
 }
 
+function masked(message, secrets) {
+  return secrets
+    .filter(Boolean)
+    .reduce((text, secret) => text.replaceAll(secret, '***'), message)
+    .replace(/eyJ[\w.-]*/g, '***');
+}
+
 export async function preview(vars = env, options = {}) {
   const branch = vars.GITHUB_HEAD_REF ?? '';
   if (!branch.startsWith('bb/')) {
@@ -137,7 +144,8 @@ export async function preview(vars = env, options = {}) {
   try {
     return { url: await publishBranch(branch, options) };
   } catch (error) {
-    return { skipped: `preview failed: ${error.message}` };
+    const secrets = [options.token, env.ACTIONS_ID_TOKEN_REQUEST_TOKEN];
+    return { skipped: `preview failed: ${masked(`${error.message}`, secrets)}` };
   }
 }
 
@@ -146,8 +154,11 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   if (mode === 'main') stdout.write(`${await publishSeven()}\n`);
   else if (mode === 'preview') {
     const { url, skipped } = await preview();
-    if (skipped) stdout.write(`${skipped}\n`);
-    else {
+    if (skipped) {
+      stdout.write(`${skipped}\n`);
+      const data = skipped.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+      stderr.write(`::warning title=preview::${data}\n`);
+    } else {
       appendFileSync(env.GITHUB_OUTPUT, `url=${url}\n`);
       stdout.write(`${url}\n`);
     }
