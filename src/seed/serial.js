@@ -1,5 +1,6 @@
 import { BLE_SWITCH, bleLive } from './ble.js';
 import { HID_SWITCH, hidLive } from './hid.js';
+import { MIDI_SWITCH, midiLive } from './midi.js';
 import { plugged, programOf, requesterOf, who } from './requests.js';
 import { USB_SWITCH, usbLive } from './usb.js';
 
@@ -67,20 +68,24 @@ export function serialPorts({ create, switches, clicks, live }) {
   let usb = null;
   let hid = null;
   let ble = null;
+  let midi = null;
   const devices = create({
     enabled: () => toggle.on(),
     usbEnabled: () => usb.on(),
     hidEnabled: () => hid.on(),
     bleEnabled: () => ble.on(),
+    midiEnabled: () => midi.on(),
   });
   toggle = switches.add({ ...SERIAL_SWITCH, off: () => devices.ports.closeAll() });
   usb = switches.add({ ...USB_SWITCH, off: () => devices.devices.usb.closeAll() });
   hid = switches.add({ ...HID_SWITCH, off: () => devices.devices.hid.closeAll() });
   ble = switches.add({ ...BLE_SWITCH, off: () => devices.devices.ble.closeAll() });
+  midi = switches.add({ ...MIDI_SWITCH, off: () => devices.devices.midi.closeAll() });
   serialLive(devices.ports, live);
   usbLive(devices.devices.usb, live);
   hidLive(devices.devices.hid, live);
   bleLive(devices.devices.ble, live);
+  midiLive(devices.devices.midi, live);
   const guards = [serialClick(clicks), usbClick(clicks), hidClick(clicks), bleClick(clicks)];
   const guard = (request, prompt) => {
     for (const each of guards) {

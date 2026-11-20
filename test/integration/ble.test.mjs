@@ -352,17 +352,18 @@ test('a cone in bluetooth lists, connects, reads services and a characteristic, 
   assert.deepEqual(page.errors, []);
 });
 
-test('the Bluetooth devices switch sits after HID devices, ends a ble notify and disconnects every device when turned off, refuses every ble kind before the chooser, survives a reload, and is in no kernel file', async (t) => {
+test('the Bluetooth devices switch sits after HID devices and before MIDI devices, ends a ble notify and disconnects every device when turned off, refuses every ble kind before the chooser, survives a reload, and is in no kernel file', async (t) => {
   const page = await seven(t);
   assert.deepEqual(
     (await page.evaluate(() => document.querySelector('slicc-app').model.switches.list())).slice(
-      -4
+      -5
     ),
     [
       { key: 'serial', label: 'Serial ports', on: true },
       { key: 'usb', label: 'USB devices', on: true },
       { key: 'hid', label: 'HID devices', on: true },
       { key: 'ble', label: 'Bluetooth devices', on: true },
+      { key: 'midi', label: 'MIDI devices', on: true },
     ]
   );
   await page.evaluate(() => window.grant());

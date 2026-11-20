@@ -254,6 +254,7 @@ await step('seed', async () => {
     'link.js',
     'live.js',
     'loopback.js',
+    'midi.js',
     'mounts.js',
     'network.js',
     'notices.js',

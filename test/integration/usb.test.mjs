@@ -389,17 +389,18 @@ test('a cone in plugdev that opened and claimed a device gets EACCES for usb sel
   assert.deepEqual(page.errors, []);
 });
 
-test('the USB devices switch sits after Serial ports and before HID and Bluetooth devices, closes every open device when turned off, refuses every usb kind before the chooser, survives a reload, and is in no kernel file', async (t) => {
+test('the USB devices switch sits after Serial ports and before HID, Bluetooth and MIDI devices, closes every open device when turned off, refuses every usb kind before the chooser, survives a reload, and is in no kernel file', async (t) => {
   const page = await seven(t);
   assert.deepEqual(
     (await page.evaluate(() => document.querySelector('slicc-app').model.switches.list())).slice(
-      -4
+      -5
     ),
     [
       { key: 'serial', label: 'Serial ports', on: true },
       { key: 'usb', label: 'USB devices', on: true },
       { key: 'hid', label: 'HID devices', on: true },
       { key: 'ble', label: 'Bluetooth devices', on: true },
+      { key: 'midi', label: 'MIDI devices', on: true },
     ]
   );
   await page.evaluate(() => window.grant());
