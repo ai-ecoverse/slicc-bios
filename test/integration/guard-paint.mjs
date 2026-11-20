@@ -393,7 +393,10 @@ async function measure(factory, unguarded, own, route, layout, { gone = false } 
             raw,
             "document.querySelectorAll('iframe').forEach((frame) => frame.remove())"
           );
-          await until(async () => (await shot(unguarded, raw)) === 0, 10000);
+          assert.ok(
+            await until(async () => (await shot(unguarded, raw)) === 0, 10000),
+            'the frames are gone without the guard'
+          );
           const input = await outcome(
             client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 300, y: 200 }, session)
           );
