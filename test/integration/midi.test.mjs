@@ -288,6 +288,52 @@ test('an open MIDI port shows a chip whose Close closes it and ends a midi recei
   assert.deepEqual(page.errors, []);
 });
 
+test('the chip goes when a midi receive ends, whether interrupted or by --count, and the next receive on that input shows it again, ended by Close or by the switch', async (t) => {
+  const page = await seven(t);
+  await granted(page);
+  const interrupted = await started(
+    page,
+    'timeout -s INT 5 midi receive midi1; echo "interrupted $?"'
+  );
+  await page.until(() => window.listening() && window.chips().length === 1);
+  const [chip] = await page.evaluate(() => window.chips());
+  assert.match(chip, /MIDI port open · midi1 \(IAC Driver Bus 1\) · cone · \d+:\d\d/);
+  await page.evaluate(() => window.play([0x90, 0x3c, 0x7f]));
+  const stopped = await finished(page, interrupted);
+  assert.match(stopped.stdout, /^90 3c 7f$/m, stopped.stderr);
+  assert.match(stopped.stdout, /interrupted (124|130)/, stopped.stderr);
+  await page.until(() => window.chips().length === 0);
+  assert.equal(await page.evaluate(() => window.inputOpen()), false);
+  assert.equal(await page.evaluate(() => window.listening()), false);
+
+  const counted = await started(page, 'midi receive midi1 --count 1; echo "counted $?"');
+  await page.until(() => window.listening() && window.chips().length === 1);
+  await page.evaluate(() => window.play([0x80, 0x3c, 0x00]));
+  const once = await finished(page, counted);
+  assert.match(once.stdout, /^80 3c 00\ncounted 0$/m, once.stderr);
+  await page.until(() => window.chips().length === 0);
+  assert.equal(await page.evaluate(() => window.inputOpen()), false);
+
+  const closing = await started(page, 'midi receive midi1; echo "closed $?"');
+  await page.until(() => window.listening() && window.chips().length === 1);
+  await page.evaluate(() => window.deep('[data-surface="live"] [data-action="live-act"]').click());
+  const closed = await finished(page, closing);
+  assert.match(closed.stdout, /closed 1/);
+  assert.match(closed.stderr, /midi: midi1 was closed in seven/);
+  await page.until(() => window.chips().length === 0);
+
+  const switching = await started(page, 'midi receive midi1; echo "switched $?"');
+  await page.until(() => window.listening() && window.chips().length === 1);
+  await midiSwitch(page, false);
+  const switched = await finished(page, switching);
+  assert.match(switched.stdout, /switched 1/);
+  assert.ok(switched.stderr.includes(OFF), switched.stderr);
+  await page.until(() => window.chips().length === 0);
+  assert.equal(await page.evaluate(() => window.inputOpen()), false);
+  assert.equal(await page.evaluate(() => window.listening()), false);
+  assert.deepEqual(page.errors, []);
+});
+
 test('the MIDI devices switch sits after Bluetooth devices, ends a midi receive and closes every open port when turned off, refuses every midi kind, survives a reload, and is in no kernel file', async (t) => {
   const page = await seven(t);
   assert.deepEqual(
