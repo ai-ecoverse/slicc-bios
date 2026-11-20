@@ -1167,14 +1167,7 @@ class Guard {
           : ERROR_PAGE;
     }
     if (value.title !== undefined) safe.title = safe.url ?? ERROR_PAGE;
-    for (const key of [
-      'name',
-      'windowName',
-      'suggestedFilename',
-      'message',
-      'defaultPrompt',
-      'userInput',
-    ])
+    for (const key of ['windowName', 'suggestedFilename', 'message', 'defaultPrompt', 'userInput'])
       if (Object.hasOwn(value, key) && typeof value[key] === 'string') safe[key] = '';
     if (Array.isArray(value.windowFeatures)) safe.windowFeatures = value.windowFeatures;
     for (const key of [
@@ -5876,8 +5869,7 @@ class Guard {
     if (this.errorPageUrl(info.url)) {
       if (error || frameOnError) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
       if (info.title === undefined) return { ...info, url: ERROR_PAGE };
-      if (info.title === '') return { ...info, url: ERROR_PAGE, title: '' };
-      return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
+      return { ...info, url: ERROR_PAGE, title: '' };
     }
     if (error) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
     if (info.url === undefined || failed === undefined) return info;
