@@ -13,7 +13,7 @@ async function until(check, what, ms = 5000) {
     if (check()) return;
     await pause(1);
   }
-  assert.fail(`waited ${ms} ms for ${what}`);
+  assert.fail(`waited ${ms} ms for ${typeof what === 'function' ? what() : what}`);
 }
 
 function tabs() {
@@ -59,13 +59,16 @@ const ask = (id) => ({
 
 function kernelOf(pid) {
   let finish;
-  const ended = new Promise((resolve) => {
+  let fail;
+  const ended = new Promise((resolve, reject) => {
     finish = resolve;
+    fail = reject;
   });
   const kernel = {
     kills: [],
     answer: async () => ({ status: 0, stdout: '', stderr: '' }),
     finish: (exit) => finish(exit),
+    fail: (error) => fail(error),
     protocol: SUDO_RUN_PROTOCOL,
     sudoRun: async () => ({ pid, pgid: pid, ended }),
     async run(argv) {
@@ -295,6 +298,171 @@ test('survivors a closed owner reported clear in the tab that takes over once it
   list = listing([]);
   await until(() => row(follower, id)?.run?.survivors === undefined, 'the survivor to clear');
   assert.equal(row(follower, id).run.state, 'done');
+});
+
+function gated() {
+  let answer;
+  const answered = new Promise((resolve) => {
+    answer = resolve;
+  });
+  return { answer: () => answer(), answered };
+}
+
+for (const [hang, procsOf] of [
+  [
+    'answer ps()',
+    (gate, rows) => () => ({
+      ps: () => gate.answered.then(() => rows.map((entry) => ({ ...entry }))),
+    }),
+  ],
+  ['connect', (gate, rows) => () => gate.answered.then(() => listing(rows))],
+]) {
+  test(`a run whose kernel client doesn't ${hang} still ends and sends its end notice, and its survivors fill in once the client answers`, async () => {
+    const told = [];
+    const kernel = kernelOf(90);
+    const rows = [];
+    const gate = gated();
+    const approvals = createApprovals({
+      channel: lone(),
+      kernel: () => kernel,
+      procs: procsOf(gate, rows),
+      pollMs: 5,
+      lick: async (notice) => {
+        told.push(notice);
+      },
+    });
+    approvals.own();
+    const id = await expire(approvals, ask(`sudo-survivors-hung-${hang.split(' ')[0]}`));
+    await approvals.port.run(id);
+    await until(() => row(approvals, id)?.run?.state === 'running', 'the run');
+    rows.push(proc(91, 90, `sudo-run:${id}`));
+    kernel.finish({ status: 0 });
+    await until(
+      () => row(approvals, id)?.run?.state === 'done',
+      () =>
+        `the run to end while its kernel client doesn't ${hang}, saw ${JSON.stringify(row(approvals, id)?.run)}`
+    );
+    assert.equal(row(approvals, id).run.status, 0);
+    assert.equal(row(approvals, id).run.survivors, undefined);
+    await until(() => told.some((notice) => notice.phase === 'end'), 'the end notice');
+    assert.equal(told.find((notice) => notice.phase === 'end').survivors, undefined);
+    gate.answer();
+    await until(
+      () => row(approvals, id)?.run?.survivors?.join() === '91',
+      'the survivor once the client answers'
+    );
+    assert.equal(row(approvals, id).run.state, 'done');
+    assert.equal(told.filter((notice) => notice.phase === 'end').length, 1);
+    rows.length = 0;
+    await until(() => row(approvals, id)?.run?.survivors === undefined, 'the survivor to clear');
+    assert.equal(row(approvals, id).run.state, 'done');
+  });
+}
+
+test("a run whose leader fails while its kernel client doesn't answer ps() still fails, and its survivors fill in once the client answers", async () => {
+  const kernel = kernelOf(120);
+  const rows = [];
+  const gate = gated();
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => kernel,
+    procs: () => ({ ps: () => gate.answered.then(() => rows.map((entry) => ({ ...entry }))) }),
+    pollMs: 5,
+    lick: async () => {},
+  });
+  approvals.own();
+  const id = await expire(approvals, ask('sudo-survivors-hung-failed'));
+  await approvals.port.run(id);
+  await until(() => row(approvals, id)?.run?.state === 'running', 'the run');
+  rows.push(proc(121, 120, `sudo-run:${id}`));
+  kernel.fail(new Error('the kernel lost the run'));
+  await until(
+    () => row(approvals, id)?.run?.state === 'failed',
+    () =>
+      `the run to fail while its kernel client doesn't answer ps(), saw ${JSON.stringify(row(approvals, id)?.run)}`
+  );
+  assert.equal(row(approvals, id).run.error, 'the kernel lost the run');
+  assert.equal(row(approvals, id).run.survivors, undefined);
+  gate.answer();
+  await until(
+    () => row(approvals, id)?.run?.survivors?.join() === '121',
+    'the survivor once the client answers'
+  );
+  assert.equal(row(approvals, id).run.state, 'failed');
+  rows.length = 0;
+  await until(() => row(approvals, id)?.run?.survivors === undefined, 'the survivor to clear');
+  assert.equal(row(approvals, id).run.state, 'failed');
+});
+
+test("a stopped run whose leader exits while its kernel client doesn't answer ps() reports its survivors once the client answers", async () => {
+  const kernel = kernelOf(110);
+  const rows = [];
+  const gate = gated();
+  let asked = 0;
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => kernel,
+    procs: () => ({
+      ps: () => {
+        asked += 1;
+        return gate.answered.then(() => rows.map((entry) => ({ ...entry })));
+      },
+    }),
+    pollMs: 5,
+    lick: async () => {},
+  });
+  approvals.own();
+  const id = await expire(approvals, ask('sudo-survivors-hung-stopped'));
+  await approvals.port.run(id);
+  await until(() => row(approvals, id)?.run?.state === 'running', 'the run');
+  await approvals.port.stopRun(id);
+  assert.equal(row(approvals, id).run.state, 'stopped');
+  rows.push(proc(111, 111, `sudo-run:${id}`));
+  kernel.finish({ status: 143, signal: 'SIGTERM' });
+  await until(
+    () => asked >= 2,
+    () => `the lookup to give up and the check to ask again, saw ${asked} ps() calls`
+  );
+  gate.answer();
+  await until(
+    () => row(approvals, id)?.run?.survivors?.join() === '111',
+    () => `the survivor once the client answers, saw ${JSON.stringify(row(approvals, id)?.run)}`
+  );
+  assert.equal(row(approvals, id).run.state, 'stopped');
+  rows.length = 0;
+  await until(() => row(approvals, id)?.run?.survivors === undefined, 'the survivor to clear');
+  assert.equal(row(approvals, id).run.state, 'stopped');
+});
+
+test('Stop on survivors says the process list is unavailable when the read before a kill fails, and kills no pid it could not read', async () => {
+  const kernel = kernelOf(100);
+  const tagged = [];
+  let reads = 0;
+  let failFrom = Number.POSITIVE_INFINITY;
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => kernel,
+    procs: () => ({
+      ps: async () => {
+        reads += 1;
+        if (reads >= failFrom) throw new Error('kernel gone');
+        return tagged.map((entry) => ({ ...entry }));
+      },
+    }),
+    pollMs: 60_000,
+    lick: async () => {},
+  });
+  approvals.own();
+  const id = await expire(approvals, ask('sudo-survivors-unread'));
+  await approvals.port.run(id);
+  await until(() => row(approvals, id)?.run?.state === 'running', 'the run');
+  tagged.push(proc(101, 101, `sudo-run:${id}`), proc(102, 102, `sudo-run:${id}`));
+  kernel.finish({ status: 0 });
+  await until(() => row(approvals, id)?.run?.survivors?.join() === '101,102', 'the survivors');
+  failFrom = reads + 3;
+  await assert.rejects(approvals.port.stopRun(id), { message: UNSEEN });
+  assert.deepEqual(kernel.kills, [['kill', '-TERM', '101']]);
+  assert.deepEqual(row(approvals, id).run.survivors, [101, 102]);
 });
 
 const ci = Boolean(process.env.CI);

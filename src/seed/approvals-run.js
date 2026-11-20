@@ -144,6 +144,7 @@ export async function signalSurvivors(client, killer, id, target, listed) {
   let failure = null;
   for (const seen of listed) {
     const rows = await runRows(client, id, target);
+    if (!rows) failure ??= new Error(RUN_ERRORS.unseen);
     if (!rows?.some((row) => sameProcess(row, seen))) continue;
     try {
       await signalPid(killer, seen.pid);
