@@ -1084,6 +1084,7 @@ class Guard {
     this.held = new Map();
     this.provenance = new Set();
     this.exactProvenance = new Set();
+    this.destroyedTargets = new Set();
     this.internal = new Map();
     this.evidence = new Set();
     this.asked = new Map();
@@ -1510,8 +1511,8 @@ class Guard {
     const known = previous?.info;
     const first = await this.openerInfo(found.openerId);
     if (!first) {
-      if (this.openerGoneUnsettled(found))
-        return found.openerVerdict === 'unprotected' ? false : null;
+      if (!this.destroyedTargets.has(found.openerId))
+        return previous && (previous.guarded || this.is.target(previous)) ? null : false;
       return false;
     }
     if (first.type !== 'page' || !/^https?:/i.test(first.url) || !this.ownUrl(first.url)) {
@@ -1613,15 +1614,15 @@ class Guard {
     let opener;
     if (crossed) opener = undefined;
     else if (found.openerId) {
-      const live = await this.openerInfo(found.openerId);
-      if (live) {
-        opener = await this.opener(found.openerId, depth, seen, blank);
-        this.rememberOpenerVerdict(targetId, found, opener);
-      } else
+      if (this.destroyedTargets.has(found.openerId))
         opener =
           this.openerGoneUnsettled(found, blank) && found.openerVerdict !== 'unprotected'
             ? 'protected'
             : 'unprotected';
+      else {
+        opener = await this.opener(found.openerId, depth, seen, blank);
+        this.rememberOpenerVerdict(targetId, found, opener);
+      }
     }
     const lent = found.type === 'page' && !crossed && !emptyNoAccess(found.info);
     if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
@@ -4721,6 +4722,7 @@ class Guard {
       this.navs.delete(params.targetId);
       this.forgetFailedUrl(params.targetId);
       this.provenance.delete(params.targetId);
+      this.destroyedTargets.add(params.targetId);
       if (nav?.session) this.navSessions.delete(nav.session);
       this.clearWorkerTarget(params.targetId);
       return this.targets.get(params.targetId)?.guarded === true;
