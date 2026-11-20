@@ -127,12 +127,15 @@ test('a run whose leader exits with processes left reports them as survivors, St
   await until(() => told.some((notice) => notice.phase === 'end'), 'the end notice');
   assert.deepEqual(told.find((notice) => notice.phase === 'end').survivors, [51, 52]);
   await approvals.port.stopRun(id);
-  assert.deepEqual(kernel.kills, [['kill', '-TERM', '51', '52']]);
+  assert.deepEqual(kernel.kills, [
+    ['kill', '-TERM', '51'],
+    ['kill', '-TERM', '52'],
+  ]);
   rows.length = 0;
   await until(() => row(approvals, id)?.run?.survivors === undefined, 'the survivors to clear');
   assert.equal(row(approvals, id).run.state, 'done');
   await assert.rejects(approvals.port.stopRun(id), /This request isn't running\./);
-  assert.equal(kernel.kills.length, 1);
+  assert.equal(kernel.kills.length, 2);
 });
 
 test('a stopped run whose processes outlive the stop reports them, and Stop on survivors a kill could not reach says why', async () => {
@@ -174,6 +177,86 @@ test('a stopped run whose processes outlive the stop reports them, and Stop on s
   await approvals.port.stopRun(id);
   await until(() => row(approvals, id)?.run?.survivors === undefined, 'the survivor to clear');
   assert.equal(row(approvals, id).run.state, 'stopped');
+});
+
+test('Stop issues no kill for survivors that are forged, stale or foreign, and kills only the one that still carries the run', async () => {
+  const open = tabs();
+  const ownerEnd = open();
+  const owner = createApprovals({ channel: ownerEnd, kernel: () => kernelOf(1), pollMs: 60_000 });
+  owner.own();
+  const next = kernelOf(2);
+  const rows = [];
+  const follower = createApprovals({
+    channel: open(),
+    kernel: () => next,
+    procs: () => listing(rows),
+    pollMs: 60_000,
+    lick: async () => {},
+  });
+  const id = await expire(owner, ask('sudo-survivors-forged'));
+  await until(() => row(follower, id)?.state === 'unanswered', 'the follower to see it');
+  const tag = `sudo-run:${id}`;
+  rows.push(
+    { pid: 61, pgid: 61, uid: 0, state: 'S', tags: [] },
+    proc(62, 62, 'sudo-run:bios:another'),
+    proc(63, 63, tag, 1000),
+    { ...proc(64, 64, tag), state: 'Z' },
+    proc(66, 66, tag)
+  );
+  const forged = open();
+  const history = follower.port.history().map((entry) =>
+    entry.approval.id === id
+      ? {
+          ...entry,
+          run: {
+            state: 'done',
+            by: 'you',
+            at: Date.now(),
+            pid: 60,
+            survivors: [1, 61, 62, 63, 64, 65, 66],
+          },
+        }
+      : entry
+  );
+  forged.postMessage({ history });
+  await until(() => row(follower, id)?.run?.survivors?.length === 7, 'the forged survivors');
+  forged.close();
+  ownerEnd.close();
+  follower.own();
+  await follower.port.stopRun(id);
+  assert.deepEqual(next.kills, [['kill', '-TERM', '66']]);
+});
+
+test('Stop issues no kill for a survivor whose pid an untagged process took over between the list and the kill', async () => {
+  const kernel = kernelOf(80);
+  const tagged = [];
+  let reads = 0;
+  let reuseAfter = Number.POSITIVE_INFINITY;
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => kernel,
+    procs: () => ({
+      ps: async () => {
+        reads += 1;
+        const rows = tagged.map((entry) => ({ ...entry }));
+        if (reads >= reuseAfter) tagged[0] = { pid: 81, pgid: 81, uid: 0, state: 'S', tags: [] };
+        return rows;
+      },
+    }),
+    pollMs: 60_000,
+    lick: async () => {},
+  });
+  approvals.own();
+  const id = await expire(approvals, ask('sudo-survivors-reused'));
+  await approvals.port.run(id);
+  await until(() => row(approvals, id)?.run?.state === 'running', 'the run');
+  tagged.push(proc(81, 81, `sudo-run:${id}`));
+  kernel.finish({ status: 0 });
+  await until(() => row(approvals, id)?.run?.survivors?.join() === '81', 'the survivor');
+  reuseAfter = reads + 1;
+  await approvals.port.stopRun(id);
+  assert.deepEqual(kernel.kills, []);
+  assert.equal(tagged[0].tags.length, 0);
 });
 
 test('survivors a closed owner reported clear in the tab that takes over once its kernel lists processes', async () => {

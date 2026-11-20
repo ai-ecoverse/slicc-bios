@@ -15,7 +15,7 @@ import {
   runRows,
   runTag,
   signalGroup,
-  signalPids,
+  signalSurvivors,
   startNotice,
   validPgid,
 } from './approvals-run.js';
@@ -443,17 +443,16 @@ async function stopSurvivors(ctx, record) {
   const client = await procs();
   const rows = await runRows(client, id, target);
   if (!rows) throw new Error(RUN_ERRORS.unseen);
-  const pids = survivorsOf(rows, record.run.pid).filter((pid) =>
-    record.run.survivors.includes(pid)
+  const listed = rows.filter(
+    (row) => row.pid !== record.run.pid && record.run.survivors.includes(row.pid)
   );
   linger(ctx, id, target);
-  if (!pids.length) return;
-  try {
-    await signalPids(typeof client.kill === 'function' ? client : kernel(), pids);
-  } catch (error) {
-    const left = await leftOf(ctx, id, target, record.run.pid);
-    if (left.some((pid) => pids.includes(pid))) throw new Error(messageOf(error));
-  }
+  if (!listed.length) return;
+  const killer = typeof client.kill === 'function' ? client : kernel();
+  const failure = await signalSurvivors(client, killer, id, target, listed);
+  if (!failure) return;
+  const left = await leftOf(ctx, id, target, record.run.pid);
+  if (listed.some((row) => left.includes(row.pid))) throw new Error(messageOf(failure));
 }
 
 async function stopOwned(ctx, id) {
