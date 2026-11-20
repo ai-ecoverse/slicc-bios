@@ -76,6 +76,14 @@ function browser(pages) {
     'Page.getFrameTree': (_, sessionId) => {
       if (broken.has(sessionId)) throw new Error('No frame tree for this session');
       const targetId = owners.get(sessionId);
+      if (pages[targetId].destroyOnTree && owners.get(sessionId) === targetId) {
+        pages[targetId].destroyOnTree = false;
+        emit({ method: 'Target.targetDestroyed', params: { targetId } });
+      }
+      if (pages[targetId].treeFailures > 0) {
+        pages[targetId].treeFailures -= 1;
+        throw new Error('the frame tree read failed once');
+      }
       const url = pages[targetId].url;
       return {
         frameTree: {
@@ -103,6 +111,9 @@ function browser(pages) {
     emit,
     sessionsOf: (targetId) =>
       [...owners].filter(([, owner]) => owner === targetId).map(([sessionId]) => sessionId),
+    destroy(targetId) {
+      emit({ method: 'Target.targetDestroyed', params: { targetId } });
+    },
     announce(targetId, url) {
       const page = pages[targetId];
       page.navigating = false;
@@ -414,4 +425,92 @@ test('a content read on a shown session is proved through that session while ano
     ),
     'the page the client still holds is not announced destroyed'
   );
+});
+
+test('a withheld page whose frameNavigated and targetInfoChanged arrive together is shown once', {
+  timeout: 30000,
+}, async (t) => {
+  const pages = racing('host');
+  const wire = client(t, pages);
+  await wire.start();
+  const tabSession = await wire.open('host');
+  wire.cdp.commit('host', ORDINARY);
+  wire.cdp.announce('host', ORDINARY);
+  await wire.until(() => wire.page(tabSession), 3000, 'the page session was delivered');
+  await pause(500);
+  const shown = wire.got.filter(
+    (message) =>
+      message.method === 'Target.attachedToTarget' &&
+      message.sessionId === tabSession &&
+      message.params.targetInfo.type === 'page'
+  );
+  assert.equal(shown.length, 1, `the page was shown ${shown.length} times`);
+});
+
+test('a withheld page whose target is destroyed during the re-proof is never shown, and its tab is cut at once', {
+  timeout: 30000,
+}, async (t) => {
+  const pages = racing('host');
+  const wire = client(t, pages);
+  await wire.start();
+  const tabSession = await wire.open('host');
+  const destroyed = Date.now();
+  wire.cdp.destroy('host');
+  await wire.until(
+    () => wire.cut(tabSession, 'host'),
+    3000,
+    'the tab of the destroyed page was detached and destroyed'
+  );
+  const cutAt = wire.got.find(
+    (message) =>
+      message.method === 'Target.targetDestroyed' && message.params.targetId === 'tab-host'
+  ).at;
+  assert.ok(cutAt - destroyed < 3000, `cut ${cutAt - destroyed} ms after the target went`);
+  wire.cdp.commit('host', ORDINARY);
+  await pause(300);
+  assert.equal(wire.page(tabSession), undefined, 'the destroyed page was never shown');
+});
+
+test('a withheld page whose re-proof fails once after it committed is retried and delivered, not held to the bound', {
+  timeout: 30000,
+}, async (t) => {
+  const pages = racing('host');
+  const wire = client(t, pages);
+  await wire.start();
+  const tabSession = await wire.open('host');
+  pages.host.treeFailures = 1;
+  const committed = Date.now();
+  wire.cdp.commit('host', ORDINARY);
+  const attached = await wire.until(
+    () => wire.page(tabSession),
+    3000,
+    'the page session was delivered after one failed re-proof'
+  );
+  assert.ok(attached.at - committed < 3000);
+  assert.equal(pages.host.treeFailures, 0, 'the failed read happened');
+  const evaluated = await wire.send(
+    'Runtime.evaluate',
+    { expression: "'framed'", returnByValue: true },
+    attached.params.sessionId
+  );
+  assert.equal(evaluated.error, undefined, JSON.stringify(evaluated));
+});
+
+test('a withheld page whose target is destroyed while its re-proof reads the frame tree is cut, not shown', {
+  timeout: 30000,
+}, async (t) => {
+  const pages = racing('host');
+  const wire = client(t, pages);
+  await wire.start();
+  const tabSession = await wire.open('host');
+  pages.host.destroyOnTree = true;
+  wire.cdp.commit('host', ORDINARY);
+  await wire.until(
+    () => wire.cut(tabSession, 'host'),
+    3000,
+    'the tab of the page destroyed mid re-proof was detached and destroyed'
+  );
+  assert.equal(pages.host.destroyOnTree, false, 'the target went during the tree read');
+  await pause(300);
+  assert.equal(wire.page(tabSession), undefined, 'the destroyed page was never shown');
 });

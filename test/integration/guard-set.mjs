@@ -12,7 +12,7 @@ import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'j
 import { MIN_EXTENSION_VERSION } from '../../src/seed/extension.js';
 import { boot } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
-import { extensionFrames } from './fake-extension-frames.mjs';
+import { extensionFrames, sendsErrorProtected } from './fake-extension-frames.mjs';
 import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
@@ -296,7 +296,18 @@ async function unguardedClient(browser) {
   };
 }
 
-export async function guardHost(t, path, { frames = true } = {}) {
+export const OLDER_FAKE = '7.12.2';
+const capabilitiesOf = (path, version = CURRENT_EXTENSION.version) =>
+  path === 'extension'
+    ? { ...PATHS.extension, errorFrameClass: sendsErrorProtected(version) }
+    : PATHS[path];
+
+export async function guardHost(
+  t,
+  path,
+  { frames = true, extension = CURRENT_EXTENSION.version } = {}
+) {
+  const fakeVersion = frames === true ? extension : MIN_EXTENSION_VERSION;
   const { chrome, browser } = await launched();
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
@@ -327,13 +338,13 @@ export async function guardHost(t, path, { frames = true } = {}) {
     handed ??= { path, hook };
   });
   await seven.expose('extensionFrames', async ([id, tabId, own]) => {
-    const answer = await extensionFrames(browser, tabId, own);
+    const answer = await extensionFrames(browser, tabId, own, fakeVersion);
     await seven
       .evaluate(([id, answer]) => window.extensionFramesAnswer(id, answer), [id, answer])
       .catch(() => false);
   });
   await seven.init(
-    `() => { globalThis.sliccFakeFrames = ${frames === true}; globalThis.sliccFakeVersion = ${JSON.stringify(frames === true ? CURRENT_EXTENSION.version : MIN_EXTENSION_VERSION)}; }`
+    `() => { globalThis.sliccFakeFrames = ${frames === true}; globalThis.sliccFakeVersion = ${JSON.stringify(fakeVersion)}; }`
   );
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
@@ -873,7 +884,7 @@ export function shared(path, { variants, except = [], group } = {}) {
           rowTimeoutMs: ROW_MS,
           settleScale: SCALE[variant] ?? 1,
           targets: group === 'idp' ? secureTargets : targets,
-          capabilities: PATHS[path],
+          capabilities: capabilitiesOf(path),
           variant,
           fixture: group === 'idp' ? secure : fixture,
           log: (row) =>
