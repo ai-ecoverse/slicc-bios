@@ -570,6 +570,217 @@ for (const [hostName, own] of hosts) {
       assert.equal(tree.result.frameTree.frame.name, 'ordinary-title');
       assert.equal(history.result.entries[0].title, 'ordinary-title');
     });
+
+    test(`W1 protected failed load blanks windowName and dialog names (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `w1-${hostName}-${routeName}`,
+        plainFrame(`w1-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      await wire.send('Page.enable', {}, attached.result.sessionId);
+      settleChromeError(entry, failed, { tree: 'error' });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const from = wire.delivered.length;
+      wire.emit({
+        method: 'Page.windowOpen',
+        sessionId: attached.result.sessionId,
+        params: {
+          url: ordinary,
+          windowName: hostOnly,
+          windowFeatures: ['popup'],
+          userGesture: true,
+        },
+      });
+      wire.emit({
+        method: 'Page.javascriptDialogOpening',
+        sessionId: attached.result.sessionId,
+        params: {
+          url: errorPage,
+          message: hostOnly,
+          type: 'prompt',
+          hasBrowserHandler: true,
+          defaultPrompt: hostOnly,
+        },
+      });
+      wire.emit({
+        method: 'Page.javascriptDialogClosed',
+        sessionId: attached.result.sessionId,
+        params: { result: true, userInput: hostOnly },
+      });
+      await wire.drain(10);
+      const opened = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.windowOpen');
+      const dialog = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.javascriptDialogOpening');
+      const closed = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.javascriptDialogClosed');
+      assert.ok(opened);
+      assert.equal(opened.params.windowName, '');
+      assert.deepEqual(opened.params.windowFeatures, ['popup']);
+      assert.equal(opened.params.userGesture, true);
+      assert.ok(dialog);
+      assert.equal(dialog.params.message, '');
+      assert.equal(dialog.params.defaultPrompt, '');
+      assert.ok(closed);
+      assert.equal(closed.params.userInput, '');
+      assert.equal(closed.params.result, true);
+      const blob = JSON.stringify({ opened, dialog, closed });
+      assert.equal(blob.includes(hostOnly), false);
+      assert.equal(blob.includes(failed), false);
+    });
+
+    test(`W1b unproven failed load blanks windowName and dialog names (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `w1b-${hostName}-${routeName}`,
+        plainFrame(`w1b-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      await wire.send('Page.enable', {}, attached.result.sessionId);
+      const unproven = 'synthetic-unproven-failed-url';
+      settleChromeError(entry, unproven, { tree: 'error' });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const from = wire.delivered.length;
+      wire.emit({
+        method: 'Page.windowOpen',
+        sessionId: attached.result.sessionId,
+        params: {
+          url: ordinary,
+          windowName: 'ordinary-window',
+          windowFeatures: ['popup'],
+          userGesture: true,
+        },
+      });
+      wire.emit({
+        method: 'Page.javascriptDialogOpening',
+        sessionId: attached.result.sessionId,
+        params: {
+          url: errorPage,
+          message: 'ordinary-dialog',
+          type: 'prompt',
+          hasBrowserHandler: true,
+          defaultPrompt: 'ordinary-default',
+        },
+      });
+      wire.emit({
+        method: 'Page.javascriptDialogClosed',
+        sessionId: attached.result.sessionId,
+        params: { result: false, userInput: 'ordinary-input' },
+      });
+      await wire.drain(10);
+      const opened = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.windowOpen');
+      const dialog = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.javascriptDialogOpening');
+      const closed = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.javascriptDialogClosed');
+      assert.ok(opened);
+      assert.equal(opened.params.windowName, '');
+      assert.ok(dialog);
+      assert.equal(dialog.params.message, '');
+      assert.equal(dialog.params.defaultPrompt, '');
+      assert.ok(closed);
+      assert.equal(closed.params.userInput, '');
+      assert.equal(JSON.stringify({ opened, dialog, closed }).includes(unproven), false);
+    });
+
+    test(`W2 ordinary failed load keeps windowName and dialog names (${hostName}, ${routeName})`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, own, route);
+      const entry = wire.target(
+        `w2-${hostName}-${routeName}`,
+        plainFrame(`w2-${hostName}-${routeName}`)
+      );
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: entry.info.targetId,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined);
+      await wire.send('Page.enable', {}, attached.result.sessionId);
+      settleChromeError(entry, ordinaryFail, { tree: 'error' });
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: attached.result.sessionId,
+        params: { frame: entry.tree.frame },
+      });
+      await wire.drain(10);
+      const from = wire.delivered.length;
+      const openParams = {
+        url: ordinary,
+        windowName: 'ordinary-window',
+        windowFeatures: ['popup'],
+        userGesture: true,
+      };
+      const dialogParams = {
+        url: ordinary,
+        message: 'ordinary-dialog',
+        type: 'prompt',
+        hasBrowserHandler: true,
+        defaultPrompt: 'ordinary-default',
+      };
+      const closedParams = { result: true, userInput: 'ordinary-input' };
+      wire.emit({
+        method: 'Page.windowOpen',
+        sessionId: attached.result.sessionId,
+        params: openParams,
+      });
+      wire.emit({
+        method: 'Page.javascriptDialogOpening',
+        sessionId: attached.result.sessionId,
+        params: dialogParams,
+      });
+      wire.emit({
+        method: 'Page.javascriptDialogClosed',
+        sessionId: attached.result.sessionId,
+        params: closedParams,
+      });
+      await wire.drain(10);
+      const opened = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.windowOpen');
+      const dialog = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.javascriptDialogOpening');
+      const closed = wire.delivered
+        .slice(from)
+        .find((message) => message.method === 'Page.javascriptDialogClosed');
+      assert.ok(opened);
+      assert.deepEqual(opened.params, openParams);
+      assert.ok(dialog);
+      assert.deepEqual(dialog.params, dialogParams);
+      assert.ok(closed);
+      assert.deepEqual(closed.params, closedParams);
+    });
   }
 }
 

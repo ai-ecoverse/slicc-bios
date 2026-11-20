@@ -437,7 +437,11 @@ const ERROR_METADATA = new Set([
   'Page.frameNavigated',
   'Page.frameStartedLoading',
   'Page.frameStoppedLoading',
+  'Page.windowOpen',
+  'Page.javascriptDialogOpening',
+  'Page.javascriptDialogClosed',
 ]);
+const PAGE_NAMES = new Set(['name', 'windowName', 'title']);
 const requestKey = ({ id, sessionId }) => JSON.stringify([sessionId ?? null, id]);
 const RENDERED = new Set([
   'Page.printToPDF',
@@ -831,6 +835,16 @@ export function redacting(is) {
     const out = {};
     const before = changed.length;
     for (const [key, item] of Object.entries(value)) {
+      if (
+        PAGE_NAMES.has(key) &&
+        typeof item === 'string' &&
+        item &&
+        (protectedAuthority(item) || is.url(`https://${item}/`) || is.url(`http://${item}/`))
+      ) {
+        out[key] = '';
+        changed.push(path);
+        continue;
+      }
       out[text(key)] = walk(item, ANSWERED.has(key) ? [...path, key] : path, changed);
     }
     const sibling = Object.entries(value).some(
@@ -1161,10 +1175,20 @@ class Guard {
           : ERROR_PAGE;
     }
     if (value.title !== undefined) safe.title = safe.url ?? ERROR_PAGE;
-    for (const key of ['attached', 'waitingForDebugger', 'canAccessOpener'])
+    for (const key of ['name', 'windowName', 'message', 'defaultPrompt', 'userInput'])
+      if (typeof value[key] === 'string') safe[key] = '';
+    if (Array.isArray(value.windowFeatures)) safe.windowFeatures = value.windowFeatures;
+    for (const key of [
+      'attached',
+      'waitingForDebugger',
+      'canAccessOpener',
+      'userGesture',
+      'hasBrowserHandler',
+      'result',
+    ])
       if (typeof value[key] === 'boolean') safe[key] = value[key];
     if (
-      /^(?:page|iframe|worker|service_worker|shared_worker|background_page|webview|browser|browser_ui|other|Navigation|BackForwardCacheRestore)$/.test(
+      /^(?:page|iframe|worker|service_worker|shared_worker|background_page|webview|browser|browser_ui|other|Navigation|BackForwardCacheRestore|alert|confirm|prompt|beforeunload)$/.test(
         value.type ?? ''
       )
     )

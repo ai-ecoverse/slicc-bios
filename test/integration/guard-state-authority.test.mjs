@@ -147,15 +147,19 @@ for (const [method, params] of [
     const mark = wire.delivered.length;
     wire.emit({ method, sessionId: session, params });
     await flush();
+    const metadata = wire.delivered.slice(mark).find((message) => message.method === method);
     if (method === 'Page.frameAttached') {
-      const metadata = wire.delivered.slice(mark).find((message) => message.method === method);
       assert.ok(metadata);
       assert.deepEqual(metadata.params, { frameId: 'named-safe', parentFrameId: 'named-unsafe' });
-    } else
-      assert.equal(
-        wire.delivered.slice(mark).some((message) => message.method === method),
-        false
-      );
+    } else if (
+      method === 'Page.windowOpen' ||
+      method === 'Page.javascriptDialogOpening' ||
+      method === 'Page.javascriptDialogClosed'
+    ) {
+      assert.ok(metadata, `${method} is scrubbed metadata on an error document`);
+      if (metadata.params.windowName !== undefined) assert.equal(metadata.params.windowName, '');
+      if (metadata.params.message !== undefined) assert.equal(metadata.params.message, '');
+    } else assert.equal(metadata, undefined);
     assert.equal(
       JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-unsafe-event'),
       false
