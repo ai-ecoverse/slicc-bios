@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 import { extensionConnection } from '../../src/seed/cdp.js';
 import { guardProtected } from '../../src/seed/guard.js';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
+import { guardRoute } from './guard-route.mjs';
 
 const chrome = await launch({ tools: false });
 const { port: debugging } = await devtools(chrome);
@@ -101,7 +102,7 @@ async function evaluateOn(sessionId, expression = 'self.location.href', cdp = ch
 
 function kernelClient(t) {
   const raw = extensionConnection(chrome.cdp);
-  const guarded = guardProtected(raw, own, new Map(), undefined, undefined, null);
+  const guarded = guardProtected(raw, own, new Map(), guardRoute('extension'), undefined, null);
   const got = [];
   const pending = new Map();
   let next = 0;

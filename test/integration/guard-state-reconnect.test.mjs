@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { extensionConnection } from '../../src/seed/cdp.js';
 import { BLANKED, INHERITED, PROTECTED } from '../../src/seed/guard.js';
+import { guardRoute } from './guard-route.mjs';
 import { errorFrame, flush, guardProtected, ordinary, plainFrame } from './guard-state-fixture.mjs';
 
 function catalogProtocol(t) {
@@ -60,7 +61,12 @@ function catalogProtocol(t) {
     },
   };
   function connect() {
-    const connection = guardProtected(extensionConnection(cdp), 'https://protected.invalid');
+    const connection = guardProtected(
+      extensionConnection(cdp),
+      'https://protected.invalid',
+      new Map(),
+      guardRoute('extension')
+    );
     connections.add(connection);
     const pending = new Map();
     let next = 0;

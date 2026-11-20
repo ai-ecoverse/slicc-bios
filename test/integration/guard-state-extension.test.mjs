@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { guardProtected } from '../../src/seed/guard.js';
+import { guardRoute } from './guard-route.mjs';
 
 const { extensionConnection } = await import(process.env.CDP_SOURCE ?? '../../src/seed/cdp.js');
 const ordinary = 'https://extension-ordinary.invalid/page';
@@ -42,7 +43,12 @@ function extensionProtocol(t) {
       return {};
     },
   };
-  const guard = guardProtected(extensionConnection(cdp), 'https://extension-protected.invalid');
+  const guard = guardProtected(
+    extensionConnection(cdp),
+    'https://extension-protected.invalid',
+    new Map(),
+    guardRoute('extension')
+  );
   const key = (id, sessionId) => JSON.stringify([sessionId ?? null, id]);
   guard.onmessage = (text) => {
     const reply = JSON.parse(text);
