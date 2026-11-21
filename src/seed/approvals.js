@@ -193,10 +193,13 @@ function leftSoon(ctx, id, target, leader) {
   return Promise.race([leftOf(ctx, id, target, leader), late]).finally(() => clearTimeout(timer));
 }
 
-function linger(ctx, id, target) {
+const UNSEEN_TRIES = 5;
+
+function linger(ctx, id, target, tries = 0) {
   const { listed, remember, procs, pollMs, lingering } = ctx;
   if (lingering.has(id)) return;
   lingering.add(id);
+  let misses = 0;
   const tick = async () => {
     const rows = await runRows(await procs(), id, target);
     const record = listed().find((entry) => entry.approval.id === id);
@@ -204,7 +207,9 @@ function linger(ctx, id, target) {
     const kept = run?.survivors ?? [];
     const pids = rows && run ? survivorsOf(rows, run.pid) : kept;
     if (pids.join() !== kept.join()) remember({ ...record, run: withSurvivors(run, pids) });
-    if (pids.length && !liveRun(run)) later(tick, pollMs);
+    if (!rows) misses += 1;
+    const retry = !rows && misses <= tries;
+    if ((pids.length || retry) && !liveRun(run)) later(tick, pollMs);
     else lingering.delete(id);
   };
   later(tick, pollMs);
@@ -213,7 +218,7 @@ function linger(ctx, id, target) {
 function keep(ctx, record, left) {
   if (!record?.run || liveRun(record.run) || left?.length === 0) return;
   if (left) ctx.remember({ ...record, run: withSurvivors(record.run, left) });
-  linger(ctx, record.approval.id, record.approval.target);
+  linger(ctx, record.approval.id, record.approval.target, left ? 0 : UNSEEN_TRIES);
 }
 
 function watchEnded(ctx, { started, id, record, running, paths, replay }) {
@@ -239,7 +244,7 @@ function watchEnded(ctx, { started, id, record, running, paths, replay }) {
       remember(next, { replay, pgid: started.pgid });
       runs.delete(id);
       void tell(endNotice(next, paths, { ...exit, endedAt }, { replay }));
-      if (!left || left.length) linger(ctx, id, target);
+      if (!left || left.length) linger(ctx, id, target, left ? 0 : UNSEEN_TRIES);
     })
     .catch(async (error) => {
       const left = await leftSoon(ctx, id, target, started.pid);
@@ -253,7 +258,7 @@ function watchEnded(ctx, { started, id, record, running, paths, replay }) {
       const failed = { ...prior, state: 'failed', endedAt: now(), error: messageOf(error) };
       remember({ ...base, run: withSurvivors(failed, left ?? []) }, { replay });
       runs.delete(id);
-      if (!left || left.length) linger(ctx, id, target);
+      if (!left || left.length) linger(ctx, id, target, left ? 0 : UNSEEN_TRIES);
     });
 }
 
