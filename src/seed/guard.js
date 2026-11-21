@@ -1082,9 +1082,13 @@ class Guard {
     this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
-    this.provenance = new Set();
     this.exactProvenance = new Set();
     this.destroyedTargets = new Set();
+    this.learnGen = 0;
+    this.listedCache = { gen: -1, at: 0, infos: null };
+    this.listedBag = undefined;
+    this._listedInfos = undefined;
+    this._listing = false;
     this.internal = new Map();
     this.evidence = new Set();
     this.asked = new Map();
@@ -1373,6 +1377,8 @@ class Guard {
 
   learn(info) {
     if (!info?.targetId) return;
+    this.destroyedTargets.delete(info.targetId);
+    this.learnGen += 1;
     const known = this.targets.get(info.targetId);
     const remembered = this.tabs.get(info.targetId)?.error;
     if (remembered && !this.errorFrames.has(remembered.id)) {
@@ -1412,7 +1418,7 @@ class Guard {
     return this.targets.get(targetId);
   }
 
-  async opener(openerId, depth, seen, fresh = false) {
+  async opener(openerId, depth, seen, fresh = false, bag = { infos: undefined }) {
     if (!openerId) return undefined;
     if (fresh) {
       const known = this.targets.get(openerId)?.info;
@@ -1423,7 +1429,7 @@ class Guard {
         return 'unknown';
       this.learn(info);
     } else if (!(await this.lookup(openerId))) return 'unknown';
-    return (await this.target(openerId, depth + 1, seen)) ? 'protected' : 'unprotected';
+    return (await this.target(openerId, depth + 1, seen, false, bag)) ? 'protected' : 'unprotected';
   }
 
   async openerInfo(targetId) {
@@ -1505,24 +1511,73 @@ class Guard {
     );
   }
 
-  async openerReallyGone(openerId) {
-    if (!openerId) return false;
-    if (this.destroyedTargets.has(openerId)) return true;
+  boundDestroyedTargets() {
+    if (this.destroyedTargets.size <= 256) return;
+    const kept = new Set();
+    for (const [, found] of this.targets) {
+      if (found.openerId && this.destroyedTargets.has(found.openerId)) kept.add(found.openerId);
+    }
+    for (const id of this.destroyedTargets) {
+      if (kept.has(id)) continue;
+      this.destroyedTargets.delete(id);
+      if (this.destroyedTargets.size <= 256) break;
+    }
+  }
+
+  async listedTargets(bag) {
+    if (this._listedInfos !== undefined) {
+      if (bag) bag.infos = this._listedInfos;
+      return this._listedInfos;
+    }
+    if (bag && bag.infos !== undefined) {
+      this._listedInfos = bag.infos;
+      return bag.infos;
+    }
+    const now = Date.now();
+    const fresh =
+      Array.isArray(this.listedCache.infos) && now - this.listedCache.at < LISTED_FRESH_MS;
+    if (fresh) {
+      this._listedInfos = this.listedCache.infos;
+      if (bag) bag.infos = this.listedCache.infos;
+      return this.listedCache.infos;
+    }
     const answer = await this.within(this.call('Target.getTargets'), ANSWER_MS);
-    const infos = answer?.result?.targetInfos;
-    if (answer?.error || !Array.isArray(infos)) return false;
-    if (infos.some((info) => info?.targetId === openerId)) return false;
-    this.destroyedTargets.add(openerId);
+    const infos = answer?.error ? null : answer?.result?.targetInfos;
+    if (Array.isArray(infos)) {
+      this.listedCache = { gen: this.learnGen, at: now, infos };
+      for (const info of infos) if (info?.targetId) this.destroyedTargets.delete(info.targetId);
+    }
+    const listed = Array.isArray(infos) ? infos : null;
+    this._listedInfos = listed;
+    if (bag) bag.infos = listed;
+    return listed;
+  }
+
+  async openerReallyGone(openerId, bag) {
+    if (!openerId) return false;
+    const infos = await this.listedTargets(bag);
+    if (Array.isArray(infos) && infos.some((info) => info?.targetId === openerId)) {
+      this.destroyedTargets.delete(openerId);
+      return false;
+    }
+    if (this.destroyedTargets.has(openerId)) return true;
+    if (!Array.isArray(infos)) return false;
+    const live = await this.openerInfo(openerId);
+    if (live) {
+      this.learn(live);
+      this.destroyedTargets.delete(openerId);
+      return false;
+    }
     return true;
   }
 
-  async crossOpener(targetId, found) {
+  async crossOpener(targetId, found, bag) {
     if (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)) return false;
     const previous = this.targets.get(found.openerId);
     const known = previous?.info;
     const first = await this.openerInfo(found.openerId);
     if (!first) {
-      if (!(await this.openerReallyGone(found.openerId)))
+      if (!(await this.openerReallyGone(found.openerId, bag)))
         return previous && (previous.guarded || this.is.target(previous)) ? null : false;
       return false;
     }
@@ -1560,23 +1615,41 @@ class Guard {
     );
   }
 
-  async target(targetId, depth = 0, seen = new Set(), framedBlank = false) {
+  async target(targetId, depth = 0, seen = new Set(), framedBlank = false, bag) {
+    const rooted = depth === 0;
+    const ownsListing = rooted && !this._listing;
+    if (ownsListing) {
+      this._listing = true;
+      this._listedInfos = undefined;
+      this.listedBag = bag ?? { infos: undefined };
+    }
+    if (rooted) {
+      if (!this.listedBag) this.listedBag = bag ?? { infos: undefined };
+      bag = this.listedBag;
+    } else bag = bag ?? this.listedBag ?? { infos: undefined };
+    try {
+      return await this.judgeTarget(targetId, depth, seen, framedBlank, bag);
+    } finally {
+      if (ownsListing) {
+        this._listing = false;
+        this.listedBag = undefined;
+        this._listedInfos = undefined;
+      }
+    }
+  }
+
+  async judgeTarget(targetId, depth, seen, framedBlank, bag) {
     if (seen.has(targetId)) return true;
     const found = await this.lookup(targetId);
     if (!found) return true;
     seen = new Set(seen);
     seen.add(targetId);
-    if (isHeld(targetId)) {
+    if (isHeld(targetId) || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
       return true;
     }
-    if (isHeld(found.openerId)) {
-      hold(targetId);
-      found.guarded = true;
-      return true;
-    }
-    const cross = await this.crossOpener(targetId, found);
+    const cross = await this.crossOpener(targetId, found, bag);
     if (
       cross === null ||
       isHeld(found.openerId) ||
@@ -1591,7 +1664,7 @@ class Guard {
     if (found.type === 'iframe') {
       if (await this.frameAncestry(targetId, found, depth, seen)) return true;
     } else if (found.parentId && found.parentId !== targetId) {
-      refused = await this.target(found.parentId, depth + 1, seen);
+      refused = await this.target(found.parentId, depth + 1, seen, framedBlank, bag);
       if (isHeld(found.parentId)) {
         hold(targetId);
         found.guarded = true;
@@ -1600,7 +1673,9 @@ class Guard {
       if (refused && !this.targets.get(found.parentId)?.guarded) return true;
       refused = refused || (await this.createdOwner(found.parentId));
     }
-    return (await this.openerVerdict(targetId, found, cross, depth, seen, framedBlank)) || refused;
+    return (
+      (await this.openerVerdict(targetId, found, cross, depth, seen, framedBlank, bag)) || refused
+    );
   }
 
   inheritingBlank(found, framedBlank) {
@@ -1619,20 +1694,38 @@ class Guard {
     if (entry) entry.openerVerdict = opener;
   }
 
-  async openerVerdict(targetId, found, cross, depth, seen, framedBlank) {
+  goneOpenerVerdict(found, blank) {
+    return this.openerGoneUnsettled(found, blank) && found.openerVerdict !== 'unprotected'
+      ? 'protected'
+      : 'unprotected';
+  }
+
+  unreadOpenerVerdict(found) {
+    return found.openerVerdict === 'unprotected' ? 'unprotected' : 'protected';
+  }
+
+  async openerVerdict(targetId, found, cross, depth, seen, framedBlank, bag) {
     const blank = this.inheritingBlank(found, framedBlank);
     const crossed = cross && !blank;
     let opener;
     if (crossed) opener = undefined;
     else if (found.openerId) {
-      if (await this.openerReallyGone(found.openerId))
-        opener =
-          this.openerGoneUnsettled(found, blank) && found.openerVerdict !== 'unprotected'
-            ? 'protected'
-            : 'unprotected';
-      else {
-        opener = await this.opener(found.openerId, depth, seen, blank);
-        this.rememberOpenerVerdict(targetId, found, opener);
+      if (blank) {
+        opener = await this.opener(found.openerId, depth, seen, true, bag);
+        if (opener === 'unknown')
+          opener = (await this.openerReallyGone(found.openerId, bag))
+            ? this.goneOpenerVerdict(found, blank)
+            : this.unreadOpenerVerdict(found);
+        else this.rememberOpenerVerdict(targetId, found, opener);
+      } else {
+        const live = await this.openerInfo(found.openerId);
+        if (live) {
+          this.learn(live);
+          opener = await this.opener(found.openerId, depth, seen, false, bag);
+          this.rememberOpenerVerdict(targetId, found, opener);
+        } else if (await this.openerReallyGone(found.openerId, bag))
+          opener = this.goneOpenerVerdict(found, blank);
+        else opener = this.unreadOpenerVerdict(found);
       }
     }
     const lent = found.type === 'page' && !crossed && !emptyNoAccess(found.info);
@@ -3211,21 +3304,12 @@ class Guard {
     const id = targetId ?? info?.targetId;
     if (!id) return false;
     const openerId = info?.openerId ?? this.targets.get(id)?.openerId;
-    if (!(typeof openerId === 'string' && openerId.length > 0)) return false;
-    return !this.exactProvenance.has(id);
-  }
-
-  claimProvenance(targetId) {
-    if (!targetId) return;
-    const info = this.targets.get(targetId);
-    if (this.popupShaped({ openerId: info?.openerId, targetId }, targetId)) return;
-    this.provenance.add(targetId);
+    return typeof openerId === 'string' && openerId.length > 0;
   }
 
   claimCreatedReply(targetId) {
     if (!targetId) return;
     this.exactProvenance.add(targetId);
-    this.provenance.add(targetId);
   }
 
   async errorUnproven(info, targetId = info?.targetId) {
@@ -3273,7 +3357,7 @@ class Guard {
     return this.createdPending(raw, targetId);
   }
 
-  async current(targetId, limit = ANSWER_MS, ...rest) {
+  async currentInfo(targetId, limit = ANSWER_MS, ...rest) {
     const prefetched = rest.length > 0;
     const early = rest[0];
     if (prefetched && early?.listedReject !== undefined) throw early.listedReject;
@@ -3287,15 +3371,39 @@ class Guard {
       : await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
     let info = answer?.result?.targetInfo;
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
-      return true;
+      return undefined;
     this.learn(info);
-    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit, rest[1]))) return true;
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit, rest[1])))
+      return undefined;
     if (this.createdPending(info, targetId)) {
       ({ raw: info } = await this.createdTargetInfo(targetId));
-      if (!info || info.targetId !== targetId || this.createdUnset(info)) return true;
+      if (!info || info.targetId !== targetId || this.createdUnset(info)) return undefined;
       this.learn(info);
     }
-    if (await this.target(targetId)) return true;
+    return info;
+  }
+
+  async current(targetId, limit = ANSWER_MS, ...rest) {
+    const info = await this.currentInfo(targetId, limit, ...rest);
+    if (!info) return true;
+    const bag = { infos: undefined };
+    this.listedBag = bag;
+    this._listing = true;
+    this._listedInfos = undefined;
+    let held = false;
+    try {
+      held = await this.target(targetId, 0, new Set(), false, bag);
+    } finally {
+      if (held) {
+        this._listing = false;
+        this.listedBag = undefined;
+        this._listedInfos = undefined;
+      }
+    }
+    if (held) return true;
+    this._listing = false;
+    this.listedBag = undefined;
+    this._listedInfos = undefined;
     if (!URL.canParse(info.url)) {
       if (info.url === '' && info.type === 'tab') return false;
       if (info.url !== '' || !NAV_TYPES.has(info.type)) return true;
@@ -3306,7 +3414,15 @@ class Guard {
       if (nav.failed || !(await this.verify(nav.session))) return true;
       this.learn({ ...info, url: this.frames.get(this.frameRoots.get(targetId)) });
     }
-    return this.target(targetId);
+    this.listedBag = bag;
+    this._listing = true;
+    try {
+      return await this.target(targetId, 0, new Set(), false, bag);
+    } finally {
+      this._listing = false;
+      this.listedBag = undefined;
+      this._listedInfos = undefined;
+    }
   }
 
   relatedProof(owner, targetId) {
@@ -4732,8 +4848,9 @@ class Guard {
       nav?.wiped?.();
       this.navs.delete(params.targetId);
       this.forgetFailedUrl(params.targetId);
-      this.provenance.delete(params.targetId);
+      this.exactProvenance.delete(params.targetId);
       this.destroyedTargets.add(params.targetId);
+      this.boundDestroyedTargets();
       if (nav?.session) this.navSessions.delete(nav.session);
       this.clearWorkerTarget(params.targetId);
       return this.targets.get(params.targetId)?.guarded === true;
@@ -6395,14 +6512,8 @@ class Guard {
       const ok = await this.watch(result.sessionId, params.targetId);
       if (!ok) return this.refuse(was);
       this.touch(params.targetId);
-      this.claimProvenance(params.targetId);
       return this.deliver(message);
     }
-    if (
-      ['Page.navigate', 'Page.reload', 'Page.navigateToHistoryEntry'].includes(method) &&
-      !message.error
-    )
-      this.claimProvenance(this.sessions.get(was.sessionId)?.targetId);
     if (method === 'Target.getTargets' && Array.isArray(result?.targetInfos)) {
       return this.listed(message, result);
     }

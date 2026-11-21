@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { BLANKED, guardProtected, ordinaryFailedUrl, protection } from '../../src/seed/guard.js';
+import {
+  BLANKED,
+  guardProtected,
+  ordinaryFailedUrl,
+  PROTECTED,
+  protection,
+} from '../../src/seed/guard.js';
 
 const ordinary = 'https://ordinary.invalid/page';
 const ordinaryFail = 'https://ordinary.invalid/unreachable';
@@ -140,9 +146,21 @@ function protocol(t, own, route) {
     const targetId = params.targetId ?? sessions.get(sessionId);
     const targetEntry = targets.get(targetId);
     let result = {};
-    if (method === 'Target.getTargetInfo') result = { targetInfo: targetEntry.info };
-    if (method === 'Target.getTargets')
-      result = { targetInfos: [...targets.values()].map((entry) => entry.info) };
+    if (method === 'Target.getTargetInfo') {
+      if (targetEntry?.destroyed || targetEntry?.unreadable) {
+        emit({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message: 'gone' } });
+        return;
+      }
+      result = { targetInfo: targetEntry?.info ?? { targetId } };
+    }
+    if (method === 'Target.getTargets') {
+      calls.getTargets += 1;
+      result = {
+        targetInfos: [...targets.values()]
+          .filter((entry) => !entry.destroyed && !entry.absent)
+          .map((entry) => entry.info),
+      };
+    }
     if (method === 'Target.attachToTarget') {
       const attached = id >= 2 ** 30 ? `guard-${targetId}` : `client-${targetId}-${id}`;
       sessions.set(attached, targetId);
@@ -187,15 +205,37 @@ function protocol(t, own, route) {
     targets.set(id, entry);
     return entry;
   }
+  const calls = { getTargets: 0 };
   return {
     targets,
     sessions,
     sent,
     delivered,
+    calls,
     emit,
     send,
     request,
     target,
+    destroy(id) {
+      const entry = targets.get(id);
+      if (entry) entry.destroyed = true;
+      emit({ method: 'Target.targetDestroyed', params: { targetId: id } });
+    },
+    absent(id) {
+      const entry = targets.get(id);
+      if (entry) {
+        entry.absent = true;
+        entry.unreadable = true;
+      }
+    },
+    omit(id) {
+      const entry = targets.get(id);
+      if (entry) entry.absent = true;
+    },
+    unread(id) {
+      const entry = targets.get(id);
+      if (entry) entry.unreadable = true;
+    },
     setCreateOrder(order) {
       createOrder = order;
     },
@@ -1655,6 +1695,243 @@ describe('createTarget provenance races', { concurrency: false }, () => {
       });
     }
   }
+
+  for (const [routeName, route] of routes) {
+    test(`C8d createTarget attach-before-reply then child popup chrome-error stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      wire.setCreateOrder('attach-race');
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const created = await wire.send('Target.createTarget', {
+        url: ordinary,
+        background: true,
+      });
+      await wire.drain(20);
+      await wire.tick(t.mock.timers, 500);
+      assert.equal(created.error, undefined, JSON.stringify(created));
+      const parentId = created.result.targetId;
+      const parent = await wire.send('Target.attachToTarget', {
+        targetId: parentId,
+        flatten: true,
+      });
+      assert.equal(parent.error, undefined, 'createTarget tab stays admitted');
+      wire.target('late-opener');
+      const childId = `c8d-child-${routeName}`;
+      const child = wire.target(childId, blankFrame(childId));
+      child.info.url = '';
+      child.info.title = '';
+      child.info.openerId = parentId;
+      child.info.canAccessOpener = true;
+      const from = wire.delivered.length;
+      autoAttach(wire, child, `client-${childId}`, true);
+      await wire.drain(20);
+      settleChromeError(child, `${ownOrigin}/doc?c8d-${routeName}`, { tree: 'blank' });
+      child.info.openerId = parentId;
+      child.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...child.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `C8d/${routeName}`);
+      const again = await wire.send('Target.attachToTarget', {
+        targetId: parentId,
+        flatten: true,
+      });
+      assert.equal(again.error, undefined, 'createTarget tab is not over-held');
+    });
+
+    test(`C8e later opener on createTarget-claimed page chrome-error stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      wire.setCreateOrder('reply-then-events');
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const created = await wire.send('Target.createTarget', {
+        url: ordinary,
+        background: true,
+      });
+      await wire.drain(20);
+      await wire.tick(t.mock.timers, 500);
+      assert.equal(created.error, undefined, JSON.stringify(created));
+      const targetId = created.result.targetId;
+      const admitted = await wire.send('Target.attachToTarget', {
+        targetId,
+        flatten: true,
+      });
+      assert.equal(admitted.error, undefined, 'createTarget claim admits without opener');
+      const info = await wire.send('Target.getTargetInfo', { targetId });
+      assert.equal(
+        info.result?.targetInfo?.openerId,
+        undefined,
+        'createTarget reports no openerId'
+      );
+      wire.target('c8e-opener');
+      const entry = wire.targets.get(targetId);
+      entry.info.openerId = 'c8e-opener';
+      entry.info.canAccessOpener = true;
+      const from = wire.delivered.length;
+      settleChromeError(entry, `${ownOrigin}/doc?c8e-${routeName}`, { tree: 'blank' });
+      entry.info.openerId = 'c8e-opener';
+      entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `C8e/${routeName}`);
+      const refused = await wire.send('Target.attachToTarget', {
+        targetId,
+        flatten: true,
+      });
+      assert.ok(refused.error, 'later opener overrides exactProvenance');
+    });
+  }
+});
+
+describe('opener really-gone and listed reuse', { concurrency: false }, () => {
+  test('live protected opener omitted once from getTargets keeps blank child held', {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const opener = wire.target(
+      'live-omit-opener',
+      plainFrame('live-omit-opener', `${ownOrigin}/opener`)
+    );
+    const child = wire.target('live-omit-child', blankFrame('live-omit-child'));
+    child.info.url = 'about:blank';
+    child.info.title = '';
+    child.info.openerId = 'live-omit-opener';
+    child.info.canAccessOpener = true;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...opener.info, attached: true } },
+    });
+    await wire.drain(8);
+    autoAttach(wire, child, 'client-live-omit-child', true);
+    await wire.drain(20);
+    const before = await wire.send('Target.attachToTarget', {
+      targetId: 'live-omit-child',
+      flatten: true,
+    });
+    assert.equal(before.error?.message, PROTECTED, JSON.stringify(before));
+    wire.omit('live-omit-opener');
+    wire.calls.getTargets = 0;
+    const after = await wire.send('Target.attachToTarget', {
+      targetId: 'live-omit-child',
+      flatten: true,
+    });
+    assert.equal(after.error?.message, PROTECTED, JSON.stringify(after));
+    assert.ok(wire.calls.getTargets <= 1, `at most one getTargets, got ${wire.calls.getTargets}`);
+  });
+
+  test('ordinary prior + unreadable listed opener keeps cached ordinary verdict', {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const opener = wire.target('ordinary-opener', plainFrame('ordinary-opener', ordinary));
+    const child = wire.target('ordinary-prior-child', plainFrame('ordinary-prior-child', ordinary));
+    child.info.openerId = 'ordinary-opener';
+    child.info.canAccessOpener = false;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...opener.info, attached: true } },
+    });
+    await wire.drain(8);
+    autoAttach(wire, child, 'client-ordinary-prior-child', false);
+    await wire.drain(20);
+    const before = await wire.send('Target.attachToTarget', {
+      targetId: 'ordinary-prior-child',
+      flatten: true,
+    });
+    assert.equal(before.error, undefined, JSON.stringify(before));
+    wire.unread('ordinary-opener');
+    wire.calls.getTargets = 0;
+    const after = await wire.send('Target.attachToTarget', {
+      targetId: 'ordinary-prior-child',
+      flatten: true,
+    });
+    assert.equal(after.error, undefined, JSON.stringify(after));
+    assert.ok(wire.calls.getTargets <= 1, `at most one getTargets, got ${wire.calls.getTargets}`);
+  });
+
+  test('settled ordinary child of ordinary opener admits after omit+getTargetInfo-fail without targetDestroyed', {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const opener = wire.target('ord-gone-opener', plainFrame('ord-gone-opener', ordinary));
+    const child = wire.target('ord-gone-child', plainFrame('ord-gone-child', ordinary));
+    child.info.openerId = 'ord-gone-opener';
+    child.info.canAccessOpener = false;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...opener.info, attached: true } },
+    });
+    await wire.drain(8);
+    autoAttach(wire, child, 'client-ord-gone-child', false);
+    await wire.drain(20);
+    const before = await wire.send('Target.attachToTarget', {
+      targetId: 'ord-gone-child',
+      flatten: true,
+    });
+    assert.equal(before.error, undefined, JSON.stringify(before));
+    wire.absent('ord-gone-opener');
+    delete child.info.openerId;
+    child.info.canAccessOpener = false;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...child.info, attached: true } },
+    });
+    await wire.drain(8);
+    wire.calls.getTargets = 0;
+    const after = await wire.send('Target.attachToTarget', {
+      targetId: 'ord-gone-child',
+      flatten: true,
+    });
+    assert.equal(after.error, undefined, JSON.stringify(after));
+    assert.ok(wire.calls.getTargets <= 1, `at most one getTargets, got ${wire.calls.getTargets}`);
+  });
+
+  test('unreadable live protected opener still holds a settled cross-origin child', {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const opener = wire.target('unread-opener', plainFrame('unread-opener', `${ownOrigin}/opener`));
+    const child = wire.target('unread-child', plainFrame('unread-child', ordinary));
+    child.info.openerId = 'unread-opener';
+    child.info.canAccessOpener = false;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...opener.info, attached: true } },
+    });
+    await wire.drain(8);
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...child.info, attached: true } },
+    });
+    await wire.drain(8);
+    wire.unread('unread-opener');
+    wire.calls.getTargets = 0;
+    const after = await wire.send('Target.attachToTarget', {
+      targetId: 'unread-child',
+      flatten: true,
+    });
+    assert.equal(after.error?.message, PROTECTED, JSON.stringify(after));
+    assert.ok(wire.calls.getTargets <= 1, `at most one getTargets, got ${wire.calls.getTargets}`);
+  });
 });
 
 describe('popup opener provenance races', { concurrency: false }, () => {
