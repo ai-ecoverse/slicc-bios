@@ -10,6 +10,7 @@ import { linkNode } from './linked-node.mjs';
 
 const LAG = 8000;
 const CHOSEN = process.env.GUARD_VARIANTS?.split(',').filter(Boolean) ?? null;
+const PROBE_ROWS = process.env.PROBE_ROWS?.split(',').filter(Boolean) ?? null;
 const chosen = (detach) => !CHOSEN?.length || CHOSEN.includes(detach);
 const DETACH = [
   ['prompt', 0],
@@ -606,8 +607,9 @@ for (const [detach, lag] of DETACH) {
       const children = trigger === 'popup' || trigger === 'iframe';
       for (const [name, at] of Object.entries(targets())) {
         const id = `${vector}.${name}`;
+        if (PROBE_ROWS && !PROBE_ROWS.includes(id)) continue;
         const to = at('/doc');
-        await t.test(`${id} control`, async () => {
+        await t.test(`${id} control`, { skip: Boolean(PROBE_ROWS) }, async () => {
           const onPlain = await controlThroughHarness(
             `${id}:plain`,
             setup,
@@ -641,6 +643,8 @@ for (const [detach, lag] of DETACH) {
           const targetId = await tab(`${PLAIN}/doc`);
           const url = `${to}?p=${id}`;
           const auto = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+          const probe = { before: null, popup: null, answer: null, session: null, times: {} };
+          const probeStart = Date.now();
           try {
             const session = await guard.attach(targetId);
             for (const [method, params] of setup(id)) {
@@ -664,8 +668,10 @@ for (const [detach, lag] of DETACH) {
               assert.equal((await guard.send('Target.setAutoAttach', auto)).error, undefined);
             }
             const before = (await guard.events()).length;
+            probe.before = before;
             const mark = chrome.requests.length;
             const ran = await guard.go(TRIGGERS[trigger](url), session);
+            probe.times.triggered = Date.now() - probeStart;
             let popup = null;
             let popupProof = null;
             if (trigger === 'popup') {
@@ -681,11 +687,16 @@ for (const [detach, lag] of DETACH) {
                 popup,
                 `${id}: the popup opened, found by its opener through the harness's own CDP`
               );
+              probe.popup = popup.targetId;
+              probe.times.found = Date.now() - probeStart;
               await pause(lag + 3000);
               const attached = await guard.send('Target.attachToTarget', {
                 targetId: popup.targetId,
                 flatten: true,
               });
+              probe.times.attachAnswered = Date.now() - probeStart;
+              probe.session = attached.result?.sessionId ?? null;
+              probe.answer = attached.error?.message ?? (probe.session ? 'session' : 'none');
               const report =
                 attached.error?.message === PROTECTED
                   ? null
@@ -731,6 +742,48 @@ for (const [detach, lag] of DETACH) {
               assertChildEvents(id, trigger, to, child, later, popupProof);
             }
           } finally {
+            if (PROBE_ROWS && probe.before !== null) {
+              try {
+                const seen = (await guard.events()).slice(probe.before);
+                const mine = (event) =>
+                  event.params?.targetInfo?.openerId === targetId ||
+                  (probe.popup !== null && JSON.stringify(event).includes(probe.popup));
+                const about = seen.filter(mine);
+                const attaches = about
+                  .filter((event) => event.method === 'Target.attachedToTarget')
+                  .map((event) => ({
+                    sessionId: event.params.sessionId,
+                    explicit: event.params.sessionId === probe.session,
+                    url: event.params.targetInfo?.url,
+                    title: event.params.targetInfo?.title,
+                    waitingForDebugger: event.params.waitingForDebugger,
+                  }));
+                const line = {
+                  iter: process.env.PROBE_ITER ?? null,
+                  row: id,
+                  popup: probe.popup,
+                  explicitAttach: probe.answer,
+                  times: probe.times,
+                  attaches,
+                  attachWithChromeError: attaches.some(
+                    (entry) =>
+                      String(entry.url).startsWith('chrome-error:') ||
+                      String(entry.title).startsWith('chrome-error:')
+                  ),
+                  trace: about
+                    .slice(0, 40)
+                    .map(
+                      (event) =>
+                        `${event.method}${event.params?.targetInfo ? ` ${event.params.targetInfo.url}` : ''}`
+                    ),
+                };
+                process.stdout.write(`PROBE-ROW ${JSON.stringify(line)}\n`);
+              } catch (error) {
+                process.stdout.write(
+                  `PROBE-ROW ${JSON.stringify({ iter: process.env.PROBE_ITER ?? null, row: id, probeError: String(error) })}\n`
+                );
+              }
+            }
             if (children) {
               await guard.send('Target.setAutoAttach', {
                 autoAttach: false,
