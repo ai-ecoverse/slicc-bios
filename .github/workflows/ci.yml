@@ -25,7 +25,7 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/guard-error-protected-real.test.mjs
+      test-glob: test/integration/guard-{error-protected-real,extension-error-frame,frame-error-protected}.test.mjs
       shards: 1
       timeout-minutes: 120
       flaky-retry: 0
@@ -40,7 +40,16 @@ jobs:
             failed=$((failed + 1))
           fi
         done
-        echo "PROBE failed runs: $failed of 5"
+        for file in guard-extension-error-frame guard-frame-error-protected; do
+          echo "PROBE sibling $file start $(date -u +%H:%M:%S)"
+          if node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/$file.test.mjs; then
+            echo "PROBE sibling $file pass $(date -u +%H:%M:%S)"
+          else
+            echo "PROBE sibling $file fail $(date -u +%H:%M:%S)"
+            failed=$((failed + 1))
+          fi
+        done
+        echo "PROBE failed runs: $failed of 7"
         [ "$failed" = 0 ]
       strict-tests: |
         **/*guard*.test.*
