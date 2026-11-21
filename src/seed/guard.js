@@ -1562,10 +1562,21 @@ class Guard {
     }
     if (this.destroyedTargets.has(openerId)) return true;
     if (!Array.isArray(infos)) return false;
-    const live = await this.openerInfo(openerId);
-    if (live) {
-      this.learn(live);
-      this.destroyedTargets.delete(openerId);
+    const answer = await this.within(
+      this.call('Target.getTargetInfo', { targetId: openerId }),
+      ANSWER_MS
+    );
+    if (!this.noSuchTarget(answer)) {
+      const info = answer?.result?.targetInfo;
+      if (
+        !answer?.error &&
+        info?.targetId === openerId &&
+        typeof info.type === 'string' &&
+        typeof info.url === 'string'
+      ) {
+        this.learn(info);
+        this.destroyedTargets.delete(openerId);
+      }
       return false;
     }
     return true;
@@ -1701,7 +1712,14 @@ class Guard {
   }
 
   unreadOpenerVerdict(found) {
-    return found.openerVerdict === 'unprotected' ? 'unprotected' : 'protected';
+    if (found.openerVerdict === 'unprotected') return 'unprotected';
+    if (found.openerVerdict === 'protected') return 'protected';
+    return undefined;
+  }
+
+  noSuchTarget(answer) {
+    const message = answer?.error?.message;
+    return typeof message === 'string' && /^No target\b/i.test(message);
   }
 
   async openerVerdict(targetId, found, cross, depth, seen, framedBlank, bag) {
@@ -1715,7 +1733,7 @@ class Guard {
         if (opener === 'unknown')
           opener = (await this.openerReallyGone(found.openerId, bag))
             ? this.goneOpenerVerdict(found, blank)
-            : this.unreadOpenerVerdict(found);
+            : 'protected';
         else this.rememberOpenerVerdict(targetId, found, opener);
       } else {
         const live = await this.openerInfo(found.openerId);
