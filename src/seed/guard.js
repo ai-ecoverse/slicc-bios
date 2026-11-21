@@ -60,6 +60,14 @@ const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
 const bare = (url) => url.split('#')[0];
+const unanswered = (answer) =>
+  !answer
+    ? 'timeout'
+    : answer.error
+      ? `error ${answer.error.message}`
+      : answer.result?.exceptionDetails
+        ? 'exception'
+        : 'verdict';
 const SCRUB_MS = 5000;
 const CLOSE_MS = 5000;
 export const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
@@ -84,6 +92,8 @@ const PLACE_RETRIES = 2;
 const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
+export const DROP_LOG_MS = 60_000;
+export const DROP_LOG_CAP = 20;
 const LISTED_CHECKS = 8;
 const LISTED_FRESH_MS = 100;
 const CREATOR_FRESH_MS = 1000;
@@ -1027,6 +1037,10 @@ class Guard {
     this.retiredTargets = new Set();
     this.failedProof = new Set();
     this.proofNeeded = new Set();
+    this.dropLogSeen = new Set();
+    this.dropLogAt = 0;
+    this.dropLogLines = 0;
+    this.dropLogHeld = 0;
     this.contextChecks = new Map();
     this.proofCommits = new Map();
     this.proofEpoch = new Map();
@@ -2042,15 +2056,31 @@ class Guard {
       this.revisions.get(targetId) !== revision ||
       scope.loader !== loader ||
       Date.now() >= deadline
-    )
+    ) {
+      scope.privatePlacement = {
+        outcome: 'suspended',
+        framesRevision: list?.revision,
+        tabRevision: revision,
+      };
       return;
+    }
     const frames = list?.frames;
     if (Array.isArray(frames) && frames.some((frame) => frame?.kind === 'protected')) {
       scope.privatePlaced = false;
+      scope.privatePlacement = {
+        outcome: 'suspended',
+        framesRevision: list?.revision,
+        tabRevision: revision,
+      };
       this.replaceDebuggerLease(targetId, 'revoked');
       return;
     }
     if (!Array.isArray(frames) || !frames.every(ordinaryFrame)) {
+      scope.privatePlacement = {
+        outcome: 'suspended',
+        framesRevision: list?.revision,
+        tabRevision: revision,
+      };
       this.replaceDebuggerLease(targetId, 'suspended');
       return;
     }
@@ -2093,6 +2123,11 @@ class Guard {
         });
     }
     scope.privatePlaced = rooted;
+    scope.privatePlacement = {
+      outcome: rooted ? 'rooted' : 'suspended',
+      framesRevision: list.revision,
+      tabRevision: revision,
+    };
     this.replaceDebuggerLease(targetId, rooted ? 'placed' : 'suspended');
   }
 
@@ -3591,8 +3626,77 @@ class Guard {
     );
   }
 
-  staleContext(answer, targetId) {
-    if (!answer || answer.error) this.uncertainProof(targetId);
+  unconfirmedContext(record, started, why) {
+    record.unconfirmed = `${why}, ${Date.now() - started} ms of ${ANSWER_MS} ms`;
+    console.warn(
+      `the CDP guard could not confirm a context: target ${record.targetId}, context ${record.message.params.context.id}, ${record.unconfirmed}`
+    );
+  }
+
+  dropLogSummary() {
+    const held = this.dropLogHeld;
+    if (!held) return;
+    this.dropLogHeld = 0;
+    console.warn(`the CDP guard suppressed ${held} dropped event log(s)`);
+  }
+
+  rateLimitedWarn(key, line) {
+    const now = Date.now();
+    if (!this.dropLogAt || now - this.dropLogAt >= DROP_LOG_MS) {
+      this.dropLogSummary();
+      this.dropLogAt = now;
+      this.dropLogLines = 0;
+      this.dropLogSeen.clear();
+      this.after(DROP_LOG_MS, () => {
+        if (this.dropLogAt === now) this.dropLogSummary();
+      });
+    }
+    if (this.dropLogSeen.has(key) || this.dropLogLines >= DROP_LOG_CAP) {
+      this.dropLogHeld += 1;
+      return;
+    }
+    this.dropLogSeen.add(key);
+    this.dropLogLines += 1;
+    console.warn(line);
+  }
+
+  droppedContext(message, why) {
+    const target = this.sessions.get(message.sessionId)?.targetId;
+    const context = message.params?.context?.id ?? message.params?.executionContextId;
+    this.rateLimitedWarn(
+      `${message.method}\0${target}\0${context}\0${why}`,
+      `the CDP guard dropped ${message.method}: target ${target}, context ${context}, ${why}`
+    );
+  }
+
+  logPageLockRefusal(sessionId, method) {
+    let id = this.scopeTarget(sessionId);
+    const seen = new Set();
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      const scope = this.scopes.get(id);
+      const owners = scope?.remoteBackendOwners;
+      if (owners?.size && !scope.privatePlaced) {
+        const ids = [...owners.keys()];
+        const placement = scope.privatePlacement;
+        const outcome = placement?.outcome ?? 'suspended';
+        const framesRevision = placement?.framesRevision;
+        const tabRevision = placement?.tabRevision === this.revisions.get(id) ? 'current' : 'stale';
+        this.rateLimitedWarn(
+          `pageLock\0${id}\0${method}\0${scope.privatePlaced}\0${ids.join(',')}\0${outcome}\0${framesRevision}\0${tabRevision}`,
+          `the CDP guard refused a page read: target ${id}, ${method}, privatePlaced ${scope.privatePlaced}, remoteBackendOwners ${ids.length} [${ids.join(', ')}], placement ${outcome}, framesRevision ${framesRevision}, tabRevision ${tabRevision}`
+        );
+        return;
+      }
+      id = scope?.parent;
+    }
+  }
+
+  staleContext(answer, record, started) {
+    if (!answer || answer.error) {
+      this.unconfirmedContext(record, started, `stale, ${unanswered(answer)}`);
+      this.uncertainProof(record.targetId);
+    }
     return false;
   }
 
@@ -3606,9 +3710,10 @@ class Guard {
       typeof context.uniqueId === 'string'
         ? { uniqueContextId: context.uniqueId }
         : { contextId: context.id };
+    const started = Date.now();
     const answer = await this.contextAnswer(record, where);
     const targetId = record.targetId;
-    if (!current()) return this.staleContext(answer, targetId);
+    if (!current()) return this.staleContext(answer, record, started);
     if (
       answer?.error?.message === catalog.protectedOrigins.refusal &&
       (await this.retryContext(record))
@@ -3630,13 +3735,16 @@ class Guard {
       if (world.main === context.uniqueId) delete world.main;
       world.ids.set(context.id, true);
       if (context.uniqueId) world.uniques.set(context.uniqueId, true);
+      this.unconfirmedContext(record, started, unanswered(answer));
       return this.uncertainProof(targetId);
     }
     let verified = false;
     if (bare(this.frames.get(context.auxData.frameId) ?? '') !== bare(value)) {
       const nav = this.navs.get(targetId);
-      if (!nav?.session || !(await this.verify(nav.session, undefined, true)))
+      if (!nav?.session || !(await this.verify(nav.session, undefined, true))) {
+        this.unconfirmedContext(record, started, 'frame differs, unverified');
         return this.uncertainProof(targetId);
+      }
       verified = true;
     }
     if (!current()) return false;
@@ -6131,9 +6239,21 @@ class Guard {
     }
     if (message.method === 'Runtime.executionContextCreated') {
       const record = this.contextChecks.get(message.sessionId)?.get(message.params?.context?.id);
-      if (record?.message === message && (!(await record.promise) || record.loading)) return true;
+      if (record?.message === message && (!(await record.promise) || record.loading)) {
+        this.droppedContext(
+          message,
+          record.unconfirmed ?? (record.loading ? 'loading' : 'unconfirmed')
+        );
+        return true;
+      }
     }
-    return this.failedScope(message.sessionId) && contentRead(message.method);
+    const dropped = this.failedScope(message.sessionId) && contentRead(message.method);
+    if (dropped && message.method.startsWith('Runtime.')) {
+      const owner = this.sessions.get(message.sessionId)?.targetId;
+      const failed = [...this.failedProof].find((id) => this.relatedProof(owner, id));
+      this.droppedContext(message, `failed proof of ${failed}`);
+    }
+    return dropped;
   }
 
   async debuggerEventReady(message, revision) {
@@ -6996,8 +7116,14 @@ class Guard {
     if (!(await this.placed(sessionId))) return UNGUARDED;
     if (!(await this.reread(sessionId))) return UNGUARDED;
     if (method === 'Page.captureScreenshot') {
-      if (this.locked(sessionId, true)) return PROTECTED;
-    } else if (this.locked(sessionId)) return PROTECTED;
+      if (this.locked(sessionId, true)) {
+        this.logPageLockRefusal(sessionId, method);
+        return PROTECTED;
+      }
+    } else if (this.locked(sessionId)) {
+      this.logPageLockRefusal(sessionId, method);
+      return PROTECTED;
+    }
     return this.extensionGate(method, sessionId);
   }
 

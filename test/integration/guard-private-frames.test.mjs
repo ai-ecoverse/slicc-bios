@@ -237,6 +237,27 @@ test('an unsettled late child revokes at five seconds and only a new root docume
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
 });
 
+test('a page-scoped read refused through a remote owner lock logs the placement state once', async (t) => {
+  const warnings = [];
+  t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')));
+  const list = snapshot(['remote'], 'unknown', 7);
+  const { p } = fixture(t, async () => structuredClone(list), ['remote']);
+  const session = await p.attach('root');
+  await flush();
+  assert.match(
+    (await p.send('DOM.getDocument', {}, session)).error?.message ?? '',
+    /^slicc: refused:/
+  );
+  assert.deepEqual(warnings, [
+    'the CDP guard refused a page read: target root, DOM.getDocument, privatePlaced false, remoteBackendOwners 1 [2], placement suspended, framesRevision 7, tabRevision current',
+  ]);
+  assert.match(
+    (await p.send('DOM.getDocument', {}, session)).error?.message ?? '',
+    /^slicc: refused:/
+  );
+  assert.equal(warnings.length, 1, 'the page-lock line is deduped by the drop-log rate limit');
+});
+
 test('a protected late owner revokes Debugger work for this document even if it later becomes ordinary', async (t) => {
   let list = snapshot([]);
   const { p, root } = fixture(t, async () => structuredClone(list), []);
