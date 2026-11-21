@@ -168,6 +168,35 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
   });
   hub.mintFails = null;
 
+  let release;
+  let finalizing = null;
+  hub.holdFinalize = (record) => {
+    finalizing = record.previewToken;
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  };
+  const held = snapshotBody(FILES.slice(0, 1)).toString('base64');
+  await run(
+    page,
+    `printf '%s' '${held}' | base64 -d > /tmp/held.body; (exec 3<>/dev/embedder; cat /tmp/held.body >&3; head -n1 <&3) > /home/held.json & echo $! > /home/held.pid`
+  );
+  await until(() => finalizing, 'the finalize held');
+  await run(page, 'kill -- -$(cat /home/held.pid); echo killed-$((40 + 2))');
+  await shows(page, 'killed-42');
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  release();
+  hub.holdFinalize = null;
+  await until(
+    () => hub.stops?.includes(finalizing),
+    'a snapshot cancelled during finalize stopped'
+  );
+  assert.ok(
+    !(await page.evaluate(() => localStorage.getItem('slicc-os.snapshots') ?? '')).includes(
+      finalizing
+    )
+  );
+
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.switches.set('previews', false)
   );

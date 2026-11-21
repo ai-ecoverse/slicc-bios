@@ -284,7 +284,9 @@ export function publishSnapshot({ tray, refusal, warn = () => {} }) {
       }
       await sending.settle();
       if (signal?.aborted) throw signal.reason;
-      return { previewToken: held.previewToken, url: await finalized(tray, refusal, held) };
+      const url = await finalized(tray, refusal, held);
+      if (signal?.aborted) throw signal.reason;
+      return { previewToken: held.previewToken, url };
     } catch (error) {
       await sending.settle().catch(() => undefined);
       await reader.cancel(error?.message);
