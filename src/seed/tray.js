@@ -171,7 +171,22 @@ export function trayHub(origin, fetcher) {
     return claimed;
   }
 
-  return { lead, seat };
+  async function upload(current, previewToken, uploadToken, tail, init) {
+    if (!current?.trayId) throw new Error(NOT_LEADING);
+    const response = await fetcher(
+      `${origin}/api/tray/${encodeURIComponent(current.trayId)}/preview/${encodeURIComponent(previewToken)}/${tail}`,
+      { ...init, headers: { ...init.headers, authorization: `Bearer ${uploadToken}` } }
+    );
+    const value = await response.json().catch(() => ({}));
+    return {
+      status: response.status,
+      ok: response.ok,
+      value: value ?? {},
+      headers: response.headers,
+    };
+  }
+
+  return { lead, seat, upload };
 }
 
 const refusal = (send) => (message, code, text) =>
@@ -494,6 +509,17 @@ const previewApi = (hub, now) => ({
   mint: (body) => hub.seat(now().session, 'preview', body),
   stop: (previewToken) => hub.seat(now().session, 'preview/stop', { previewToken }),
   list: () => hub.seat(now().session, 'previews', undefined, 'GET'),
+  file: ({ previewToken, uploadToken, path, type, bytes }) =>
+    hub.upload(now().session, previewToken, uploadToken, `file?path=${encodeURIComponent(path)}`, {
+      method: 'PUT',
+      headers: { 'content-type': type },
+      body: bytes,
+    }),
+  finalize: ({ previewToken, uploadToken }) =>
+    hub.upload(now().session, previewToken, uploadToken, 'finalize', {
+      method: 'POST',
+      headers: {},
+    }),
 });
 
 const failed = (answered) =>

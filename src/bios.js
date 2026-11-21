@@ -281,6 +281,7 @@ await step('seed', async () => {
     'site.js',
     'six.js',
     'skills.js',
+    'snapshot.js',
     'start.js',
     'storage.js',
     'switches.js',

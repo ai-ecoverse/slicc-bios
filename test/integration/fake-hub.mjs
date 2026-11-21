@@ -114,15 +114,21 @@ function bootstraps(hub) {
   };
 }
 
-async function body(request) {
+async function raw(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+function parsed(bytes) {
   try {
-    return JSON.parse(Buffer.concat(chunks).toString() || '{}');
+    return JSON.parse(bytes.toString() || '{}');
   } catch {
     return {};
   }
 }
+
+const body = async (request) => parsed(await raw(request));
 
 function biscotti(hub, followers) {
   const seats = new Map();
@@ -255,7 +261,41 @@ function previewRecords(hub) {
     return true;
   };
   hub.revoke = (token) => stop(records.get(token)?.tray, token);
-  return (request, url, body) => {
+  hub.uploads = [];
+  hub.fetchSnapshot = (previewToken, path = '/') => {
+    const record = records.get(previewToken);
+    if (record?.mode !== 'persistent' || record.state !== 'ready') return { status: 404 };
+    const file = record.files.get(path === '/' ? record.entryRel : path.slice(1));
+    return file ? { status: 200, type: file.type, body: file.bytes } : { status: 404 };
+  };
+  const uploaded = (request, url, bytes) => {
+    const route = /^\/api\/tray\/t(\d+)\/preview\/([^/]+)\/(file|finalize)$/.exec(url.pathname);
+    if (!route) return null;
+    const record = records.get(decodeURIComponent(route[2]));
+    if (record?.tray !== route[1] || record.mode !== 'persistent' || record.state !== 'pending')
+      return [404, { error: 'persistent preview is not accepting uploads' }];
+    if (request.headers.authorization !== `Bearer ${record.uploadToken}`)
+      return [403, { error: 'invalid upload capability' }];
+    if (route[3] === 'finalize') {
+      if (request.method !== 'POST') return [405, { error: 'method not allowed' }];
+      if (!record.files.has(record.entryRel))
+        return [400, { error: 'persistent preview entry file was not uploaded' }];
+      record.state = 'ready';
+      record.expiresAt = new Date(Date.now() + record.ttlMs).toISOString();
+      return [200, { previewToken: record.previewToken, url: record.url }];
+    }
+    if (request.method !== 'PUT') return [405, { error: 'method not allowed' }];
+    const path = url.searchParams.get('path') ?? '';
+    if (!segments(path)) return [400, { error: 'invalid preview file path' }];
+    const refused = hub.uploadFails?.(path);
+    if (refused) return refused;
+    hub.uploads.push(path);
+    record.files.set(path, { bytes, type: request.headers['content-type'] });
+    return [200, { ok: true }];
+  };
+  return (request, url, body, bytes) => {
+    const upload = uploaded(request, url, bytes);
+    if (upload) return upload;
     const route = /^\/api\/tray\/t(\d+)\/(preview|preview\/stop|previews)$/.exec(url.pathname);
     if (!route) return null;
     const tray = route[1];
@@ -302,8 +342,28 @@ function previewRecords(hub) {
       : null;
     if (!segments(body.servedRoot?.slice(1)) || !segments(entryRel))
       return [400, { error: 'invalid preview entry path' }];
-    const record = add(tray, body);
-    return [200, { previewToken: record.previewToken, url: record.url }];
+    const persistent = body.ttlMs !== undefined;
+    const record = add(
+      tray,
+      body,
+      persistent
+        ? {
+            mode: 'persistent',
+            state: 'pending',
+            ttlMs: body.ttlMs,
+            uploadToken: `u${made + 1}`,
+            files: new Map(),
+          }
+        : {}
+    );
+    return [
+      200,
+      {
+        previewToken: record.previewToken,
+        url: record.url,
+        ...(persistent ? { uploadToken: record.uploadToken } : {}),
+      },
+    ];
   };
 }
 
@@ -316,14 +376,15 @@ export function startHub() {
     const cors = {
       'access-control-allow-origin': '*',
       'access-control-allow-headers': 'content-type, authorization',
-      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
       'content-type': 'application/json',
     };
     if (request.method === 'OPTIONS') return response.writeHead(204, cors).end();
     const url = new URL(request.url, hub.url);
-    const sent = url.pathname.startsWith('/api/tray/') ? await body(request) : null;
+    const bytes = url.pathname.startsWith('/api/tray/') ? await raw(request) : null;
+    const sent = bytes ? parsed(bytes) : null;
     const api = sent
-      ? (previews(request, url, sent) ?? (await guests.api(request, url, sent)))
+      ? (previews(request, url, sent, bytes) ?? (await guests.api(request, url, sent)))
       : null;
     if (api) return response.writeHead(api[0], cors).end(JSON.stringify(api[1]));
     const seated = /^\/join\/(g\d+)$/.exec(url.pathname);

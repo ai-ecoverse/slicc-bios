@@ -192,6 +192,7 @@ export const KINDS = {
   'serve.publish': {},
   'serve.list': {},
   'serve.stop': {},
+  'serve.snapshot': {},
 };
 
 export function pageRequests({
