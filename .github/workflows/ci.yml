@@ -25,10 +25,49 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
-      timeout-minutes: 90
-      flaky-retry: 3
+      test-glob: test/integration/guard-vectors.test.mjs
+      shards: 1
+      timeout-minutes: 100
+      flaky-retry: 0
+      test: |
+        n=30
+        export PROBE_DIR="${RUNNER_TEMP:-/tmp}/probe-$$"
+        mkdir -p "$PROBE_DIR"
+        : > "$PROBE_DIR/iters.jsonl"
+        if command -v timeout > /dev/null; then cap="timeout -k 15 600"; else cap=""; fi
+        for i in $(seq 1 "$n"); do
+          log="$PROBE_DIR/iter-$i.log"
+          start=$(node -p "Date.now()")
+          code=0
+          PROBE_ITER=$i PROBE_ROWS=C3.popup.seven,C3.popup.vault GUARD_VARIANTS=lagging $cap node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs --test-name-pattern='^C1.C4 and E1 at registration, lagging detach$' test/integration/guard-vectors.test.mjs > "$log" 2>&1 || code=$?
+          ms=$(( $(node -p "Date.now()") - start ))
+          node -e '
+            const fs = require("node:fs");
+            const [log, iter, code, ms] = process.argv.slice(1);
+            const text = fs.readFileSync(log, "utf8");
+            const rows = text.split("\n").filter((l) => l.includes("PROBE-ROW ")).map((l) => JSON.parse(l.slice(l.indexOf("PROBE-ROW ") + 10)));
+            const fromAssertion = /was never attached to the client[\s\S]{0,1500}chrome-error:\/\/chromewebdata/.test(text);
+            const fromRows = rows.some((r) => r.attachWithChromeError);
+            const result = code === "0" ? "pass" : code === "124" || code === "137" ? "timeout" : "fail";
+            const failed = text.split("\n").filter((l) => /^\s*\u2716 /.test(l)).map((l) => l.trim()).slice(0, 6);
+            const line = { iter: Number(iter), result, exit: Number(code), durationMs: Number(ms), attachWithChromeError: fromRows || fromAssertion, fromRows, fromAssertion, failed, rows: rows.map((r) => ({ row: r.row, attachWithChromeError: r.attachWithChromeError, explicitAttach: r.explicitAttach, attaches: r.attaches, times: r.times, probeError: r.probeError })) };
+            console.log(`PROBE-ITER ${JSON.stringify(line)}`);
+            fs.appendFileSync(`${process.env.PROBE_DIR}/iters.jsonl`, `${JSON.stringify(line)}\n`);
+          ' "$log" "$i" "$code" "$ms" || echo "PROBE-ITER-ERROR $i exit $code ms $ms"
+          if [ -d artifacts/guard-vectors ]; then mv artifacts/guard-vectors "$PROBE_DIR/iter-$i-guard-vectors" || true; fi
+          if [ "$code" != 0 ]; then grep -E "PROBE-ROW|AssertionError|chrome-error|failing tests" "$log" | head -40 || true; fi
+        done
+        mkdir -p artifacts
+        cp -r "$PROBE_DIR" artifacts/probe || true
+        node -e '
+          const fs = require("node:fs");
+          const lines = fs.readFileSync(`${process.env.PROBE_DIR}/iters.jsonl`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+          const d = lines.map((l) => l.durationMs).sort((a, b) => a - b);
+          const s = { sha: process.env.SHA, n: lines.length, pass: lines.filter((l) => l.result === "pass").length, fail: lines.filter((l) => l.result === "fail").length, timeout: lines.filter((l) => l.result === "timeout").length, attachWithChromeError: lines.filter((l) => l.attachWithChromeError).length, attachIters: lines.filter((l) => l.attachWithChromeError).map((l) => l.iter), minMs: d[0], medianMs: d[Math.floor(d.length / 2)], maxMs: d.at(-1), totalMs: d.reduce((a, b) => a + b, 0) };
+          console.log(`PROBE-SUMMARY ${JSON.stringify(s)}`);
+          if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `PROBE-SUMMARY ${JSON.stringify(s)}\n`);
+          process.exit(s.pass === s.n ? 0 : 1);
+        '
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*
