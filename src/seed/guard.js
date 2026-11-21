@@ -1505,13 +1505,24 @@ class Guard {
     );
   }
 
+  async openerReallyGone(openerId) {
+    if (!openerId) return false;
+    if (this.destroyedTargets.has(openerId)) return true;
+    const answer = await this.within(this.call('Target.getTargets'), ANSWER_MS);
+    const infos = answer?.result?.targetInfos;
+    if (answer?.error || !Array.isArray(infos)) return false;
+    if (infos.some((info) => info?.targetId === openerId)) return false;
+    this.destroyedTargets.add(openerId);
+    return true;
+  }
+
   async crossOpener(targetId, found) {
     if (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)) return false;
     const previous = this.targets.get(found.openerId);
     const known = previous?.info;
     const first = await this.openerInfo(found.openerId);
     if (!first) {
-      if (!this.destroyedTargets.has(found.openerId))
+      if (!(await this.openerReallyGone(found.openerId)))
         return previous && (previous.guarded || this.is.target(previous)) ? null : false;
       return false;
     }
@@ -1614,7 +1625,7 @@ class Guard {
     let opener;
     if (crossed) opener = undefined;
     else if (found.openerId) {
-      if (this.destroyedTargets.has(found.openerId))
+      if (await this.openerReallyGone(found.openerId))
         opener =
           this.openerGoneUnsettled(found, blank) && found.openerVerdict !== 'unprotected'
             ? 'protected'
