@@ -16,8 +16,16 @@ const site = createServer((req, res) => {
   if (url.pathname === '/host') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(
-      `<!doctype html><title>host</title><p id="mark">host</p><iframe src="${url.searchParams.get('frame')}"></iframe>`
+      `<!doctype html><title>host</title><p id="mark">host</p>${url.searchParams
+        .getAll('frame')
+        .map((frame) => `<iframe src="${frame}"></iframe>`)
+        .join('')}`
     );
+    return;
+  }
+  if (url.pathname === '/doc') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><title>sibling</title><p>ordinary sibling</p>');
     return;
   }
   res.writeHead(200, REFUSING);
@@ -27,22 +35,69 @@ await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
 after(() => site.close());
 const port = site.address().port;
 const FRAME_HOST = 'refusing-frames.test';
-const host = (frame) => `http://127.0.0.1:${port}/host?frame=${encodeURIComponent(frame)}`;
+const SIBLING_HOST = 'other.test';
+const host = (...frames) =>
+  `http://127.0.0.1:${port}/host?${frames.map((frame) => `frame=${encodeURIComponent(frame)}`).join('&')}`;
 const ORDINARY_FAILED = `http://${FRAME_HOST}/refused/frame`;
 const PROTECTED_FAILED = `http://${FRAME_HOST}/auth/callback?code=error-protected-secret`;
+const UNREACHABLE = 'https://127.0.0.1:1/unreachable/frame?q=probe';
+const SIBLING = `http://${SIBLING_HOST}/doc?sibling=probe`;
 const RULES = [`MAP ${FRAME_HOST} 127.0.0.1:${port}`];
+const VARIANT_RULES = [...RULES, `MAP ${SIBLING_HOST} 127.0.0.1:${port}`];
+const OBSERVE = 120000;
+const probe = (line) =>
+  process.stdout.write(
+    `PROBE ${JSON.stringify({ run: process.env.PROBE_RUN ?? null, ...line })}\n`
+  );
 
 async function install() {
   globalThis.errorGuard?.close();
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
   const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const extension = globalThis.sliccExtension;
+  const answers = [];
+  globalThis.errorGuardFrames = answers;
+  const shape = (answer) => {
+    if (!answer || typeof answer !== 'object') return `answer ${typeof answer}`;
+    const kinds = Array.isArray(answer.frames)
+      ? answer.frames
+          .map((frame) =>
+            frame?.kind === 'error' ? `error:${frame.errorProtected}` : String(frame?.kind)
+          )
+          .sort()
+          .join(',')
+      : 'none';
+    return `v${answer.version} frames=[${kinds}] local=${answer.localFrames?.length} remote=${answer.remoteOwners?.length}`;
+  };
+  const frames = (targetId) => {
+    const entry = { targetId, calledAt: Date.now() };
+    answers.push(entry);
+    let call;
+    try {
+      call = extension.frames(Number(targetId));
+    } catch (error) {
+      entry.settledAt = Date.now();
+      entry.text = `threw: ${error?.message ?? String(error)}`;
+      throw error;
+    }
+    Promise.resolve(call).then(
+      (answer) => {
+        entry.settledAt = Date.now();
+        entry.text = shape(answer);
+      },
+      (error) => {
+        entry.settledAt = Date.now();
+        entry.text = `rejected: ${error?.message ?? String(error)}`;
+      }
+    );
+    return call;
+  };
   const connection = guardProtected(
     extensionConnection(extension.cdp),
     location.origin,
     new Map(),
     { kind: 'extension', version: extension.version },
-    (targetId) => extension.frames(Number(targetId))
+    frames
   );
   const pending = new Map();
   let next = 0;
@@ -129,14 +184,15 @@ async function errored(real, url) {
   );
 }
 
-async function opened(t, frame) {
-  const real = await realExtension({ extension: CURRENT_EXTENSION, rules: RULES });
+async function opened(t, frame, rules = RULES) {
+  const real = await realExtension({ extension: CURRENT_EXTENSION, rules });
   t.after(() => real.close());
   const seven = await real.page(t);
   await seven.goto(SEVEN);
   await ready(seven);
   t.after(() => seven.evaluate(() => globalThis.errorGuard?.close()).catch(() => {}));
-  const url = host(frame);
+  const url = host(...[frame].flat());
+  const createdAt = Date.now();
   await real.cdp.send('Target.createTarget', { url });
   await errored(real, url);
   await seven.evaluate(install);
@@ -148,21 +204,95 @@ async function opened(t, frame) {
     flatten: true,
   });
   assert.equal(attached.error, undefined, JSON.stringify(attached));
-  return { seven, sessionId: attached.result.sessionId };
+  return { real, seven, sessionId: attached.result.sessionId, createdAt, targetId: tab.targetId };
 }
 
-test(`over the real extension ${CURRENT_EXTENSION.version}, a page whose ordinary cross-site iframe failed to load is drivable through the guard`, {
-  timeout: 10 * 60 * 1000,
-}, async (t) => {
-  const { seven, sessionId } = await opened(t, ORDINARY_FAILED);
-  const deadline = Date.now() + 30000;
+function tally(map, text, ms) {
+  const seen = map.get(text) ?? { text, count: 0, firstSeenMs: ms };
+  seen.count += 1;
+  seen.lastSeenMs = ms;
+  map.set(text, seen);
+}
+
+async function unlocks(t, fixture, frame, rules) {
+  const { real, seven, sessionId, createdAt, targetId } = await opened(t, frame, rules);
+  const browser = await real.cdp.send('Browser.getVersion').catch((error) => ({
+    error: error.message,
+  }));
+  const extensionVersion = await seven.evaluate(() => globalThis.sliccExtension?.version);
+  probe({
+    probe: 'env',
+    fixture,
+    product: browser.product ?? browser.error,
+    revision: browser.revision,
+    extension: extensionVersion,
+    pinned: CURRENT_EXTENSION.version,
+  });
+  const started = Date.now();
+  const refusals = new Map();
+  let attempts = 0;
   let read;
-  while (Date.now() < deadline) {
+  let unlockedAfterMs = null;
+  let unlockAttemptStartMs = null;
+  while (Date.now() < started + OBSERVE) {
+    const at = Date.now() - started;
+    attempts += 1;
     read = await guarded(seven, 'DOM.getDocument', { depth: 1 }, sessionId);
-    if (!read.error) break;
+    if (!read.error) {
+      unlockedAfterMs = Date.now() - started;
+      unlockAttemptStartMs = at;
+      break;
+    }
+    tally(refusals, read.error.message ?? JSON.stringify(read.error), at);
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  assert.equal(read.error, undefined, `DOM.getDocument stayed refused: ${JSON.stringify(read)}`);
+  const answers = await seven
+    .evaluate(() => globalThis.errorGuardFrames ?? [])
+    .catch((error) => [{ calledAt: started, text: `unreadable: ${error.message}` }]);
+  const distinct = new Map();
+  for (const entry of answers)
+    tally(distinct, entry.text ?? 'pending', (entry.settledAt ?? entry.calledAt) - started);
+  const outcome =
+    unlockAttemptStartMs === null
+      ? `locked-${OBSERVE / 1000}s`
+      : unlockAttemptStartMs < 30000
+        ? 'unlocked'
+        : 'unlocked-late';
+  probe({
+    probe: 'unlock',
+    fixture,
+    attempts,
+    refusedTexts: [...refusals.keys()],
+    refusals: [...refusals.values()],
+    firstAttemptMs: started - createdAt,
+    unlockedAfterMs,
+    unlockAttemptStartMs,
+    lockedPast10s: unlockedAfterMs === null || unlockedAfterMs > 10000,
+    lockedPast30s: unlockedAfterMs === null || unlockedAfterMs > 30000,
+    outcome,
+  });
+  probe({
+    probe: 'frames',
+    fixture,
+    targetId,
+    calls: answers.length,
+    distinct: [...distinct.values()],
+    timeline: answers.slice(0, 200).map((entry) => ({
+      calledMs: entry.calledAt - started,
+      settledMs: entry.settledAt === undefined ? null : entry.settledAt - started,
+      targetMatches: String(entry.targetId) === String(targetId),
+      text: entry.text ?? 'pending',
+    })),
+  });
+  assert.notEqual(
+    unlockAttemptStartMs,
+    null,
+    `DOM.getDocument stayed refused for ${OBSERVE} ms: ${JSON.stringify(read)}`
+  );
+  assert.ok(
+    unlockAttemptStartMs < 30000,
+    `DOM.getDocument stayed refused past 30000 ms, unlocked after ${unlockedAfterMs} ms`
+  );
   assert.equal(read.result.root.nodeName, '#document');
   const mark = await guarded(
     seven,
@@ -171,6 +301,18 @@ test(`over the real extension ${CURRENT_EXTENSION.version}, a page whose ordinar
     sessionId
   );
   assert.equal(mark.result?.result?.value, 'host', JSON.stringify(mark));
+}
+
+test(`over the real extension ${CURRENT_EXTENSION.version}, a page whose ordinary cross-site iframe failed to load is drivable through the guard`, {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  await unlocks(t, 'ordinary-refused', ORDINARY_FAILED);
+});
+
+test(`probe: over the real extension ${CURRENT_EXTENSION.version}, a page with an unreachable https://127.0.0.1:1 iframe and an ordinary other.test sibling is drivable through the guard`, {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  await unlocks(t, 'unreachable-with-sibling', [UNREACHABLE, SIBLING], VARIANT_RULES);
 });
 
 test(`over the real extension ${CURRENT_EXTENSION.version}, a page whose iframe failed to load a protected sign-in callback stays locked for DOM and paint`, {
