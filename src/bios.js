@@ -219,6 +219,8 @@ await step('seed', async () => {
     'approvals-run.js',
     'beta.js',
     'ble.js',
+    'bridge.js',
+    'bridge-cdp.js',
     'browser.js',
     'callback.html',
     'callback.js',
