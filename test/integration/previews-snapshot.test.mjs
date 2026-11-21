@@ -5,6 +5,19 @@ import { launch } from './chrome.mjs';
 import { startHub } from './fake-hub.mjs';
 
 const chrome = await launch({ tools: false });
+const debug = () => {
+  globalThis.sliccKernelDebug = true;
+};
+
+const running = (page, pgid) =>
+  page.evaluate(async (pgid) => {
+    const client = await globalThis.sliccKernelClient();
+    try {
+      return (await client.ps()).some((entry) => entry.pgid === pgid && entry.state !== 'Z');
+    } finally {
+      await client.close();
+    }
+  }, pgid);
 after(() => chrome.close());
 
 const read = (page, name) =>
@@ -84,6 +97,7 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
   const hub = await startHub();
   t.after(() => hub.close());
   const page = await chrome.page(t);
+  await page.init(debug);
   await boot(page);
   await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await page.reload();
@@ -189,9 +203,11 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     `printf '%s' '${held}' | base64 -d > /tmp/held.body; (exec 3<>/dev/embedder; cat /tmp/held.body >&3; head -n1 <&3) > /home/held.json & echo $! > /home/held.pid`
   );
   await until(() => finalizing, 'the finalize held');
+  const group = Number((await homeFile(page, 'held.pid')).trim());
+  assert.equal(await running(page, group), true);
   await run(page, 'kill -- -$(cat /home/held.pid); echo killed-$((40 + 2))');
   await shows(page, 'killed-42');
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await until(async () => !(await running(page, group)), 'the killed program gone from ps');
   release();
   hub.holdFinalize = null;
   await until(
@@ -213,10 +229,22 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     document.querySelector('slicc-app').model.switches.set('previews', true)
   );
 
+  const stop = `printf '%s\\n' '{"kind":"serve.stop","previewToken":"${one.previewToken}"}' | cat > /dev/embedder`;
+  hub.stopFails = [503, { error: 'the hub is down' }];
+  await run(page, `${stop}; echo "failed-stop-$?-$((40 + 2))"`);
+  await shows(page, 'failed-stop-1-42');
+  assert.ok(hub.previews.has(one.previewToken), 'the hub still serves it');
   await run(
     page,
-    `printf '%s\\n' '{"kind":"serve.stop","previewToken":"${one.previewToken}"}' | cat > /dev/embedder; echo "stop-$?-$((40 + 2))"`
+    'exec 4<>/dev/embedder; printf \'{"kind":"serve.list"}\\n\' >&4; cat <&4 > /home/list-kept.txt; exec 4>&-'
   );
+  assert.equal(
+    JSON.parse((await homeFile(page, 'list-kept.txt')).trim()).previewToken,
+    one.previewToken,
+    'a stop the hub failed keeps the snapshot'
+  );
+  hub.stopFails = null;
+  await run(page, `${stop}; echo "stop-$?-$((40 + 2))"`);
   await shows(page, 'stop-0-42');
   assert.ok(hub.stops.includes(one.previewToken));
   assert.equal(hub.fetchSnapshot(one.previewToken, '/').status, 404);

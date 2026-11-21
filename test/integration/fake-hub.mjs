@@ -336,6 +336,7 @@ function previewRecords(hub) {
       ];
     if (request.method !== 'POST') return [405, { error: 'method not allowed' }];
     if (route[2] === 'preview/stop') {
+      if (hub.stopFails) return hub.stopFails;
       hub.stops = [...(hub.stops ?? []), body.previewToken];
       return [200, { revoked: stop(tray, body.previewToken) }];
     }
