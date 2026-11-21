@@ -193,6 +193,8 @@ export const KINDS = {
   'serve.list': {},
   'serve.stop': {},
   'serve.snapshot': {},
+  'serve.logs': {},
+  'serve.truncate': {},
 };
 
 export function pageRequests({

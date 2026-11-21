@@ -1,3 +1,4 @@
+import { Bridge } from './bridge.js';
 import { asker, refused, who } from './requests.js';
 import { createSnapshots, snapshotOptions, snapshotPrompt, snapshotStore } from './snapshot.js';
 
@@ -25,6 +26,11 @@ export const ELSEWHERE =
   "seven publishes only from the tab that runs its kernel; run serve in that tab's terminal";
 export const UNKNOWN = 'the tray hub has no such preview';
 export const TOO_LARGE = `preview file exceeds ${MAX_FILE_BYTES / 1024 / 1024} MiB limit`;
+export const MAX_TABS = 100;
+export const DEFAULT_TABS = 20;
+export const WEBHOOKS_DIR = '/root/.slicc/webhooks';
+const KEEP_WEBHOOKS =
+  'dir=$1 name=$2 entry=$3; shift 3; mkdir -p "$dir" || exit 1; for f in "$dir"/serve-????????????????.json; do [ -e "$f" ] || continue; b=${f##*/}; b=${b%.json}; keep=; for h in "$@"; do [ "$h" = "$b" ] && keep=1; done; [ -n "$keep" ] || rm -f "$f"; done; printf \'%s\\n\' "$entry" > "$dir/$name.json"';
 
 const encoder = new TextEncoder();
 
@@ -306,6 +312,98 @@ export function serveId(random = () => crypto.getRandomValues(new Uint8Array(16)
   return [...random()].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+export function bridgeOptions(options) {
+  if (options?.bridge !== true) return null;
+  const maxTabs = options.maxTabs ?? DEFAULT_TABS;
+  if (!Number.isInteger(maxTabs) || maxTabs < 1 || maxTabs > MAX_TABS)
+    throw new TypeError('invalid maxTabs');
+  return { maxTabs, quiet: options.quiet === true };
+}
+
+export function webhookEntry(url) {
+  return JSON.stringify({
+    target: 'cone',
+    message: `An event from a visitor's tab on the bridged preview ${url} (serve --bridge)`,
+  });
+}
+
+export function previewWebhooks(run) {
+  return {
+    keep: (name, url, held) =>
+      run(['bash', '-c', KEEP_WEBHOOKS, 'serve', WEBHOOKS_DIR, name, webhookEntry(url), ...held]),
+    drop: (name) => run(['rm', '-f', `${WEBHOOKS_DIR}/${name}.json`]),
+  };
+}
+
+const listed = (entry) => ({
+  previewToken: entry.previewToken,
+  url: entry.url,
+  ...(entry.root ? { root: entry.root } : {}),
+  port: entry.port,
+  ...(entry.entry ? { entry: entry.entry } : {}),
+  since: entry.since,
+});
+
+export function mintedBridge(wanted, webhook) {
+  if (!wanted) return {};
+  return { bridge: true, maxTabs: wanted.maxTabs, quiet: wanted.quiet, webhookId: webhook };
+}
+
+export function previewBridge({ tray, timers, warn, webhooks, entries }) {
+  const bridge = new Bridge({
+    send: (message) => tray?.previews.send?.(message) === true,
+    deliver: (name, delivery) => tray.previews.deliver(name, delivery),
+    timers,
+    warn,
+  });
+  return {
+    bridge,
+    async add(item, wanted) {
+      item.bridged = bridge.add({
+        token: item.previewToken,
+        url: item.url,
+        title: item.root || `127.0.0.1:${item.port}`,
+        quiet: wanted.quiet,
+        webhook: item.webhook,
+        uid: item.uid,
+      });
+      const held = [...entries.values()].map((entry) => entry.webhook).filter(Boolean);
+      await Promise.resolve()
+        .then(() => webhooks?.keep(item.webhook, item.url, held))
+        .catch((error) => warn(`serve: adding the webhook ${item.webhook}: ${error.message}`));
+    },
+    drop(entry) {
+      entry.bridged?.remove();
+      if (!entry.webhook) return;
+      Promise.resolve()
+        .then(() => webhooks?.drop(entry.webhook))
+        .catch((error) => warn(`serve: removing the webhook ${entry.webhook}: ${error.message}`));
+    },
+  };
+}
+
+export function previewItem({ name, port, root, entry, stamp, trayId, since }) {
+  const servedRoot = `${SERVED_PREFIX}${name}`;
+  return {
+    id: name,
+    port,
+    root,
+    entry,
+    servedRoot,
+    entryPath: `${servedRoot}/${entry ?? 'index.html'}`,
+    entryIsRoot: entry === null,
+    stamp,
+    uid: stamp?.uid ?? null,
+    trayId,
+    since,
+    previewToken: null,
+    url: null,
+    webhook: null,
+    bridged: null,
+    listeners: new Set(),
+  };
+}
+
 export function createPreviews({
   tray,
   fetch: fetcher,
@@ -314,8 +412,11 @@ export function createPreviews({
   now = Date.now,
   warn = (message) => console.warn(message),
   store = snapshotStore({ now }),
+  webhooks = null,
 }) {
   const entries = new Map();
+  const bridging = previewBridge({ tray, timers, warn, webhooks, entries });
+  const { bridge } = bridging;
   const snapshots = createSnapshots({
     tray,
     refusal: hubRefusal,
@@ -346,6 +447,7 @@ export function createPreviews({
   function end(entry, reason, hub) {
     if (entries.get(entry.id) !== entry) return false;
     entries.delete(entry.id);
+    bridging.drop(entry);
     for (const listener of [...entry.listeners]) listener(reason);
     if (hub && entry.previewToken)
       revoke(entry.previewToken).catch((error) =>
@@ -354,28 +456,21 @@ export function createPreviews({
     return true;
   }
 
-  async function publish({ port, root = '', entry = null, allowLive = true, stamp = null }) {
+  async function publish({
+    port,
+    root = '',
+    entry = null,
+    allowLive = true,
+    stamp = null,
+    bridge: wanted = null,
+  }) {
     if (!tray) throw new DOMException(NO_TRAY, 'NotSupportedError');
     if (!tray.previews.ready()) throw new Error(NOT_READY);
     const trayId = tray.previews.trayId();
     const name = id();
-    const servedRoot = `${SERVED_PREFIX}${name}`;
-    const item = {
-      id: name,
-      port,
-      root,
-      entry,
-      servedRoot,
-      entryPath: `${servedRoot}/${entry ?? 'index.html'}`,
-      entryIsRoot: entry === null,
-      stamp,
-      uid: stamp?.uid ?? null,
-      trayId,
-      since: now(),
-      previewToken: null,
-      url: null,
-      listeners: new Set(),
-    };
+    const item = previewItem({ name, port, root, entry, stamp, trayId, since: now() });
+    item.webhook = wanted ? `serve-${id().slice(0, 16)}` : null;
+    const { servedRoot } = item;
     entries.set(name, item);
     let minted;
     try {
@@ -383,6 +478,7 @@ export function createPreviews({
         servedRoot,
         entryPath: item.entryPath,
         allowLive,
+        ...mintedBridge(wanted, item.webhook),
       });
     } catch (error) {
       entries.delete(name);
@@ -404,15 +500,18 @@ export function createPreviews({
       await revoke(previewToken).catch(() => undefined);
       throw new DOMException(STOPPED, 'AbortError');
     }
+    if (wanted) await bridging.add(item, wanted);
     return {
       id: name,
       url: item.url,
       previewToken,
       trayId,
+      ...(item.webhook ? { webhook: item.webhook } : {}),
       on(listener) {
         item.listeners.add(listener);
         return () => item.listeners.delete(listener);
       },
+      events: (listener) => item.bridged?.on(listener) ?? (() => undefined),
       stop: (reason = STOPPED) => end(item, reason, true),
     };
   }
@@ -437,18 +536,12 @@ export function createPreviews({
 
   return {
     publish,
+    bridge,
     snapshot: snapshots.snapshot,
     list: (uid = 0) => [
       ...[...entries.values()]
         .filter((entry) => entry.previewToken && visible(entry, uid))
-        .map((entry) => ({
-          previewToken: entry.previewToken,
-          url: entry.url,
-          ...(entry.root ? { root: entry.root } : {}),
-          port: entry.port,
-          ...(entry.entry ? { entry: entry.entry } : {}),
-          since: entry.since,
-        })),
+        .map(listed),
       ...snapshots.list(uid),
     ],
     async stop(token, uid = 0) {
@@ -475,11 +568,14 @@ export function createPreviews({
         if (entry) end(entry, REVOKED, false);
       },
       state(message) {
+        bridge.control.state(message);
         const entry = byToken(message?.previewToken);
         if (entry)
           entry.state = { quiet: message.quiet === true, announced: message.announced === true };
       },
+      bridge: bridge.control,
       connected: () => {
+        bridge.control.relinked();
         const trayId = tray.previews.trayId();
         for (const entry of [...entries.values()])
           if (entry.previewToken && entry.trayId !== trayId) end(entry, LOST, false);
@@ -521,9 +617,14 @@ export function publishPrompt({ stamp, options }) {
     typeof options?.root === 'string' && options.root
       ? options.root
       : `the server on port ${options?.port}`;
+  const bridged = options?.bridge === true;
   return {
-    title: `Publish ${root} at a public URL?`,
-    body: `${asker(stamp)} asks seven to publish ${root} at a public URL. Anyone with the link can open it while it is served.`,
+    title: bridged
+      ? `Publish ${root} at a public URL, and let the agent drive the tabs of whoever opens it?`
+      : `Publish ${root} at a public URL?`,
+    body: bridged
+      ? `${asker(stamp)} asks seven to publish ${root} at a public URL with the bridge. Anyone with the link can open it while it is served, and the agent can read and drive the tabs they open on it.`
+      : `${asker(stamp)} asks seven to publish ${root} at a public URL. Anyone with the link can open it while it is served.`,
     action: 'Publish',
     cancel: 'Cancel',
     variant: 'confirmation',
@@ -560,6 +661,7 @@ export function serveRequests({ previews, here = () => true, on, live }) {
       const entry = entryOf(options?.entry);
       if (entry === undefined) throw new TypeError('invalid entry');
       const root = typeof options?.root === 'string' ? options.root : '';
+      const bridge = bridgeOptions(options);
       enabled();
       const registry = owner();
       await gesture(stamp, publishPrompt(request), signal);
@@ -570,6 +672,7 @@ export function serveRequests({ previews, here = () => true, on, live }) {
         entry,
         allowLive: options?.allowLive !== false,
         stamp,
+        bridge,
       });
       if (published.refused) {
         if (signal?.aborted) throw signal.reason;
@@ -581,10 +684,13 @@ export function serveRequests({ previews, here = () => true, on, live }) {
       }
       let controller = null;
       let chip = null;
+      let events = null;
       const finish = (reason) => {
         signal?.removeEventListener('abort', abort);
         chip?.();
         chip = null;
+        events?.();
+        events = null;
         if (!controller) return;
         const ending = controller;
         controller = null;
@@ -616,8 +722,10 @@ export function serveRequests({ previews, here = () => true, on, live }) {
                 url: published.url,
                 previewToken: published.previewToken,
                 ...(published.trayId ? { trayId: published.trayId } : {}),
+                ...(published.webhook ? { webhook: published.webhook } : {}),
               })
             );
+            events = published.events((record) => controller?.enqueue(line(record)));
           },
           cancel: () => {
             controller = null;
@@ -663,16 +771,39 @@ export function serveRequests({ previews, here = () => true, on, live }) {
         throw new TypeError('serve.stop needs a previewToken');
       await owner().stop(token, stamp?.uid ?? 0);
     },
+    'serve.logs': async ({ options, stamp }) => {
+      const lines = owner()
+        .bridge.logs(tokenOf(options), stamp?.uid ?? 0)
+        .map((item) => JSON.stringify(item));
+      return lines.length ? `${lines.join('\n')}\n` : '';
+    },
+    'serve.truncate': async ({ options, stamp }) =>
+      `${JSON.stringify(owner().bridge.truncate(tokenOf(options), stamp?.uid ?? 0))}\n`,
   };
+}
+
+export function tokenOf(options) {
+  const token = options?.previewToken;
+  if (token === undefined || token === null) return null;
+  if (typeof token !== 'string' || !token) throw new TypeError('invalid previewToken');
+  return token;
 }
 
 export function publicPreviews({ tray, kernel, switches, live }) {
   const previews = tray
-    ? createPreviews({ tray, fetch: (request, port) => kernel().loopbackFetch(request, { port }) })
+    ? createPreviews({
+        tray,
+        fetch: (request, port) => kernel().loopbackFetch(request, { port }),
+        webhooks: previewWebhooks(async (argv) => {
+          const { status, stderr } = await kernel().run(argv, { cwd: '/' });
+          if (status !== 0) throw new Error(stderr?.trim() || `${argv[0]} exited ${status}`);
+        }),
+      })
     : null;
   const toggle = switches.add({ ...PREVIEWS_SWITCH, off: () => previews?.stopAll(SWITCHED_OFF) });
   return {
     control: () => (kernel() ? previews?.control : null),
+    bridge: () => (kernel() && previews?.bridge.held() ? previews.bridge : null),
     handlers: serveRequests({
       previews: () => previews,
       here: () => Boolean(kernel()),
