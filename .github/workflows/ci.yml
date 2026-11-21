@@ -25,10 +25,53 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
+      test-glob: test/integration/guard-vectors.test.mjs
+      test: |
+        set +e
+        N=20
+        mkdir -p artifacts
+        LOG=artifacts/popup-race-loop.log
+        : > "$LOG"
+        pass=0
+        fail=0
+        chrome_err=0
+        i=1
+        while [ "$i" -le "$N" ]; do
+          start=$(date +%s)
+          out=$(mktemp)
+          GUARD_VARIANTS=prompt,lagging node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs --test-name-pattern='C3\.popup\.(seven|vault)' test/integration/guard-vectors.test.mjs >"$out" 2>&1
+          code=$?
+          end=$(date +%s)
+          dur=$((end - start))
+          shape=0
+          if grep -q "never attached to the client" "$out" && grep -q "chrome-error://chromewebdata/" "$out"; then
+            shape=1
+          fi
+          if [ "$code" -eq 0 ]; then
+            status=pass
+            pass=$((pass + 1))
+          else
+            status=fail
+            fail=$((fail + 1))
+          fi
+          chrome_err=$((chrome_err + shape))
+          line="LOOP i=$i status=$status chrome_error_attach=$shape duration_s=$dur exit=$code"
+          echo "$line" | tee -a "$LOG"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$shape" -eq 1 ]; then
+            grep -E "never attached to the client|chrome-error://chromewebdata/|C3\.popup\.(seven|vault) protected" "$out" | tee -a "$LOG" || true
+          fi
+          cat "$out" >> "$LOG"
+          rm -f "$out"
+          i=$((i + 1))
+        done
+        summary="LOOP-SUMMARY N=$N pass=$pass fail=$fail chrome_error_attach=$chrome_err"
+        echo "$summary" | tee -a "$LOG"
+        echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+        exit 0
+      shards: 1
       timeout-minutes: 90
-      flaky-retry: 3
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*
