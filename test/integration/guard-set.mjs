@@ -928,6 +928,21 @@ export function shared(path, { variants, except = [], group } = {}) {
               );
             if (process.env.GUARD_TRACE)
               trace('debug', JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300));
+            if (data.calls && current?.id === 'C8.iframe-error') {
+              const answer = data.calls.snapshot;
+              process.stdout.write(
+                `GUARD-SNAPSHOT ${path} ${current.id} ${target} ${variant} ${data.side} ${JSON.stringify(
+                  !answer
+                    ? { ran: false }
+                    : answer.ok
+                      ? { ok: true, nodeName: answer.result?.root?.nodeName ?? null }
+                      : {
+                          ok: false,
+                          error: String(answer.error?.message ?? answer.error).slice(0, 160),
+                        }
+                )}\n`
+              );
+            }
             if (
               data.side !== 'guarded' ||
               !data.calls ||
