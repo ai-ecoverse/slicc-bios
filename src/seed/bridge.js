@@ -214,6 +214,10 @@ export class Bridge {
   handOn(name, delivery) {
     return Promise.resolve()
       .then(() => this.deliver(name, delivery))
+      .then((answer) => {
+        if (answer?.delivered === false)
+          this.warn(`serve: the agent has no webhook ${name}, so it dropped the delivery`);
+      })
       .catch((error) => this.warn(`serve: the webhook ${name}: ${error.message}`));
   }
 
