@@ -357,11 +357,12 @@ const bounded = (promise, ms, what) =>
     new Promise((resolve) => setTimeout(() => resolve(`no answer to ${what} in ${ms} ms`), ms)),
   ]);
 
-export function stockChain(route, { chain = 'tray' } = {}) {
-  const label = `${chain} ${route}`;
+export function stockChain(route, { chain = 'tray', round, show, budget } = {}) {
+  const label = `${chain} ${route}${round ? ` #${round}` : ''}`;
   const { server, hits } = fixtureServer();
   const holds = [];
   const steps = [];
+  const guardLines = [];
   let rig;
   let bridge = null;
   let tap = null;
@@ -370,6 +371,13 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = server.address().port;
     const chrome = await launch({ tools: false, args: CHROME_ARGS });
+    chrome.cdp.on(({ method, params }) => {
+      if (method !== 'Runtime.consoleAPICalled') return;
+      const text = params.args.map((arg) => arg.value ?? arg.description).join(' ');
+      if (!text.includes('the CDP guard')) return;
+      guardLines.push(`${new Date().toISOString().slice(11, 23)} ${text}`);
+      if (guardLines.length > 300) guardLines.shift();
+    });
     const { port: debugPort } = await devtools(chrome);
     const browserUrl = await debuggerUrl(debugPort);
     const ordinary = `http://ordinary.test:${port}`;
@@ -392,10 +400,11 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     };
     return rig;
   };
-  after(() => {
-    rig?.chrome.close();
+  const close = async () => {
+    await rig?.chrome.close();
     server.close();
-  });
+  };
+  if (!round) after(close);
 
   const protectedUrl = (url) =>
     [rig.sevenOrigin, rig.vaultOrigin, rig.idpOrigin].some((origin) => url.startsWith(origin));
@@ -418,6 +427,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       for (const line of watched.trace()) lines.push(`STOCK-PW-TRACE ${tag} ${line}`);
     }
     for (const line of bridge?.trace() ?? []) lines.push(`STOCK-EXT-TRACE ${tag} ${line}`);
+    for (const line of guardLines) lines.push(`STOCK-GUARD-LOG ${tag} ${line}`);
     if (lines.length) process.stdout.write(`${lines.join('\n')}\n`);
   }
 
@@ -443,10 +453,11 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       stopped.abort();
       const took = Date.now() - started;
       steps.push(`${client} ${name} ${took}`);
-      if (took > HELD_MS) {
-        holds.push(`${label} ${client} ${name}: ${took} ms`);
+      if (took > HELD_MS) holds.push(`${label} ${client} ${name}: ${took} ms`);
+      if (took > HELD_MS || (client === 'playwright' && name === show))
         traces(client, name, watched);
-      }
+      if (round && client === 'playwright' && name === 'evaluate after group 2')
+        process.stdout.write(`STOCK-STRESS ${label} evaluate after group 2 ${took} ms\n`);
     }
   }
 
@@ -1110,6 +1121,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     await routeHint(base);
 
     await t.test('Playwright', () => playwrightFlow(base));
+    if (round) return;
     await t.test('Puppeteer', () => puppeteerFlow(base));
     await t.test(
       'Puppeteer connects again beside an ordinary page with a same-origin iframe that its first connection left open',
@@ -1168,6 +1180,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     await routeHint(base);
     await t.test('Playwright', () => playwrightFlow(base));
+    if (round) return;
     await t.test('Puppeteer', () => puppeteerFlow(base));
     await t.test(
       'Puppeteer connects again beside an ordinary page with a same-origin iframe that its first connection left open',
@@ -1186,7 +1199,9 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     chain === 'stdio'
       ? `stock Playwright and Puppeteer through released slicc cdp --signal stdio on the ${route} route drive an ordinary page and stay out of seven, the vault and a held sign-in`
       : `stock Playwright and Puppeteer through released slicc <join-url> cdp and the fake tray on the ${route} route need Browser, drive an ordinary page, stay out of seven, the vault and a held sign-in, and close on the switch and Stop`;
-  test(title, { skip: !CLI, timeout: 25 * 60 * 1000 }, (t) =>
-    chain === 'stdio' ? overStdio(t) : overTray(t)
-  );
+  test(`${title}${round ? ` #${round}` : ''}`, { skip: !CLI, timeout: 25 * 60 * 1000 }, (t) => {
+    if (budget && Date.now() > budget) return t.skip('the stress budget is spent');
+    if (round) t.after(close);
+    return chain === 'stdio' ? overStdio(t) : overTray(t);
+  });
 }
