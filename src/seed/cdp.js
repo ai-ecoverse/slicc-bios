@@ -1,3 +1,5 @@
+import { joined } from './bridge.js';
+import { PREVIEW_ROUTE } from './bridge-cdp.js';
 import { EXTENSION_UPDATE, extensionAutomationSupported } from './extension.js';
 import { admits, guardProtected, NO_AUTO_ATTACH, TAB_ONLY, TAB_PREFIX } from './guard.js';
 import { isHeld, LINKED, MARK } from './held.js';
@@ -481,10 +483,11 @@ export function browserHook(
     globalThis.location?.origin,
     globalThis.sliccExtension?.id && `chrome-extension://${globalThis.sliccExtension.id}`,
   ].filter(Boolean),
-  before = async () => {}
+  before = async () => {},
+  previews = () => null
 ) {
   const tabs = new WeakMap();
-  const guard = async (open, browser, route, privateFrames, caller) => {
+  const guarded = async (open, browser, route, privateFrames, caller) => {
     await before();
     if (browser && !tabs.has(browser)) {
       const records = new Map();
@@ -493,28 +496,43 @@ export function browserHook(
       });
       tabs.set(browser, records);
     }
-    return observe(
-      guardProtected(
-        await open(),
-        own,
-        browser ? tabs.get(browser) : undefined,
-        route,
-        privateFrames,
-        caller
-      ),
-      { caller }
+    return guardProtected(
+      await open(),
+      own,
+      browser ? tabs.get(browser) : undefined,
+      route,
+      privateFrames,
+      caller
     );
   };
+  const visitors = (bridge, caller) =>
+    guardProtected(bridge.connection(), own, new Map(), PREVIEW_ROUTE, undefined, caller);
   return async ({ runtime, caller, stamp, here = false } = {}) => {
-    const picked = pickBrowserOpen(links, { runtime, here });
-    return guard(picked.open, picked.host, picked.route, picked.frames, callerOf(caller, stamp));
+    const who = callerOf(caller, stamp);
+    const bridge = runtime ? null : previews();
+    if (!bridge) {
+      const picked = pickBrowserOpen(links, { runtime, here });
+      return observe(await guarded(picked.open, picked.host, picked.route, picked.frames, who), {
+        caller: who,
+      });
+    }
+    const browser = await Promise.resolve()
+      .then(() => pickBrowserOpen(links, { runtime, here }))
+      .then((picked) => guarded(picked.open, picked.host, picked.route, picked.frames, who))
+      .catch((error) => {
+        if (!Object.values(MISSING).includes(error.message))
+          console.warn(`cdp: only the bridged preview's tabs, no browser: ${error.message}`);
+        return null;
+      });
+    const visiting = visitors(bridge, who);
+    return observe(browser ? joined(browser, visiting) : visiting, { caller: who });
   };
 }
 
-export function browserControl({ observe, links, before } = {}) {
+export function browserControl({ observe, links, before, previews } = {}) {
   if (links) panelLinks = links;
   return {
-    hook: browserHook(observe, links, undefined, before),
+    hook: browserHook(observe, links, undefined, before, previews),
     status: () => ({ via: browserVia(links) }),
   };
 }

@@ -1,3 +1,4 @@
+import { WEBHOOK } from './bridge-cdp.js';
 import { device, failure, offerLink } from './link.js';
 
 export const SESSION_KEY = 'slicc-os.tray';
@@ -478,7 +479,8 @@ const previewGone = (message) => ({
   reason: 'this preview is no longer served',
 });
 
-const webhookHandler = (onWebhook) => (message) => {
+const webhookHandler = (onWebhook, previews) => (message) => {
+  if (previews()?.bridge?.emitted(message) || WEBHOOK.test(message?.webhookId ?? '')) return;
   const found = webhookDelivery(message);
   if (!found || !onWebhook) return;
   Promise.resolve()
@@ -500,11 +502,16 @@ function previewHandlers(previews, send) {
     },
     'preview.revoked': (message) => previews()?.revoked(message),
     'preview.state': (message) => previews()?.state(message),
+    'bridge.connected': (message) => previews()?.bridge?.connected(message),
+    'bridge.disconnected': (message) => previews()?.bridge?.disconnected(message),
+    'bridge.cdp.response': (message) => previews()?.bridge?.responded(message),
   };
 }
 
-const previewApi = (hub, now) => ({
+const previewApi = (hub, now, send, onWebhook) => ({
   ready: () => now().ready,
+  send,
+  deliver: async (name, delivery) => onWebhook?.(name, delivery),
   trayId: () => now().session?.trayId ?? null,
   mint: (body) => hub.seat(now().session, 'preview', body),
   stop: (previewToken) => hub.seat(now().session, 'preview/stop', { previewToken }),
@@ -633,7 +640,9 @@ export function createTray({
     storage.setItem(UNLINKED_KEY, JSON.stringify([...unlinked]));
   };
   const send = (message) => {
-    if (socket?.readyState === 1) socket.send(JSON.stringify(message));
+    if (socket?.readyState !== 1) return false;
+    socket.send(JSON.stringify(message));
+    return true;
   };
 
   const follower = followers({
@@ -663,7 +672,7 @@ export function createTray({
     },
     ...joins(follower, seats),
     ...previewHandlers(previews, send),
-    'webhook.event': webhookHandler(onWebhook),
+    'webhook.event': webhookHandler(onWebhook, previews),
   };
 
   function open(claimed) {
@@ -757,7 +766,7 @@ export function createTray({
       changed();
     },
     guests: guestHub,
-    previews: previewApi(hub, () => ({ session, ready: state === 'ready' })),
+    previews: previewApi(hub, () => ({ session, ready: state === 'ready' }), send, onWebhook),
     status: () => described(state, error, session, page),
     away: () => awayDevices(devices, links),
     known: (id) => id in devices,

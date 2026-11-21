@@ -221,6 +221,7 @@ const control = browserControl({
   },
   links: () => links,
   before: () => sweep({ hosts: () => browserHosts(), own: location.origin }),
+  previews: () => served.bridge(),
 });
 const protectedHttp = guardOf(location.origin);
 const exits = createExitRouter({ protectedUrl: (url) => protectedHttp.url(url) });
