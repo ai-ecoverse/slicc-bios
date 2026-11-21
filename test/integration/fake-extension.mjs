@@ -1,5 +1,6 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
+import { cdpTrace } from './cdp-trace.mjs';
 
 export const SHIELD = "slicc: refused: target is on seven's origin";
 const shielded = protectedOrigins(catalog.protectedOrigins);
@@ -25,12 +26,29 @@ export function extensionOver(browser) {
     const shielding = [];
     const attaching = new Map();
     const attached = new Map();
+    const traced = cdpTrace({ frames: 400 });
     let own = 2 ** 31 - 2 ** 20;
     const deliver = (message) =>
-      void page.evaluate((message) => window.cdpIn(message), message).catch(() => false);
+      void page
+        .evaluate((message) => window.cdpIn(message), message)
+        .catch((error) => {
+          let parsed;
+          try {
+            parsed = JSON.parse(message);
+          } catch {
+            parsed = {};
+          }
+          traced.fail(parsed, error);
+          return false;
+        });
+    const answer = (reply) => {
+      deliver(JSON.stringify(reply));
+      traced.note('<', reply, 'bridge');
+    };
+    socket.onclose = ({ code }) => traced.note('<', { method: 'WebSocket.close' }, `code ${code}`);
     socket.onmessage = ({ data }) => {
       const message = JSON.parse(data);
-      if (message.id >= 2 ** 31 - 2 ** 20) return;
+      if (message.id >= 2 ** 31 - 2 ** 20) return void traced.note('<', message, 'own');
       const targetId = attaching.get(message.id);
       attaching.delete(message.id);
       if (targetId && message.result?.sessionId) {
@@ -41,11 +59,13 @@ export function extensionOver(browser) {
       if (message.method === 'Target.detachedFromTarget')
         for (const sessions of attached.values()) sessions.delete(message.params?.sessionId);
       deliver(data);
+      traced.note('<', message);
     };
     await page.expose('cdpOut', (command) => {
       sent.push(command.method);
+      traced.note('>', command);
       const refusal = refuse(command);
-      if (refusal) return deliver(JSON.stringify({ id: command.id, error: { message: refusal } }));
+      if (refusal) return answer({ id: command.id, error: { message: refusal } });
       if (command.method === 'Target.attachToTarget')
         attaching.set(command.id, command.params?.targetId);
       if (
@@ -53,7 +73,7 @@ export function extensionOver(browser) {
         (command.params?.patterns ?? []).some(namesProtected)
       ) {
         shielding.push(command.params.patterns);
-        return deliver(JSON.stringify({ id: command.id, error: { message: SHIELD } }));
+        return answer({ id: command.id, error: { message: SHIELD } });
       }
       const ms = slow[command.method];
       if (ms) setTimeout(() => socket.send(JSON.stringify(command)), ms);
@@ -98,6 +118,7 @@ export function extensionOver(browser) {
     return {
       sent,
       shielding,
+      trace: () => traced.trace(),
       detach(targetId) {
         for (const sessionId of attached.get(targetId) ?? []) {
           own += 1;

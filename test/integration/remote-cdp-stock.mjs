@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import puppeteer from 'puppeteer-core';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import { boot, ready } from './bios.mjs';
+import { cdpTrace } from './cdp-trace.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { CLI } from './cli.mjs';
 import { extensionOver } from './fake-extension.mjs';
@@ -42,6 +43,15 @@ const STEP_MS = 60000;
 const AGAIN_MS = 5000;
 const UTILITY = '__puppeteer_utility_world__';
 const HELD_MS = 5000;
+const PROBE_ID = 2 ** 31 - 1;
+const PROBE_MARK = Buffer.from(`"id":${PROBE_ID}`);
+const PAYLOAD = 256 * 1024 * 1024;
+const DEFLATE = {
+  clientNoContextTakeover: true,
+  zlibDeflateOptions: { level: 3 },
+  zlibInflateOptions: { chunkSize: 10 * 1024 },
+  threshold: 10 * 1024,
+};
 const PIN = JSON.parse(
   readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')
 ).devDependencies['@ai-ecoverse/slicc'];
@@ -186,6 +196,161 @@ async function recordedTransport(url) {
   return { transport, closed, trace };
 }
 
+function fetched(url, method, headers) {
+  return new Promise((resolve, reject) => {
+    const asked = request(url, { method, headers, agent: false }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ res, body: Buffer.concat(chunks).toString() }));
+      res.on('error', reject);
+    });
+    asked.on('error', reject);
+    asked.end();
+  });
+}
+
+const mirror = (socket, code, reason) => {
+  if (socket.readyState === WebSocket.CLOSED) return;
+  if (code === 1006) return socket.terminate();
+  if (
+    (code >= 1000 && code <= 1003) ||
+    (code >= 1007 && code <= 1014) ||
+    (code >= 3000 && code <= 4999)
+  )
+    return socket.close(code, reason);
+  socket.close();
+};
+
+async function tappedCdp(base) {
+  const traced = cdpTrace({ frames: 300 });
+  const servers = [false, true].map(
+    (perMessageDeflate) =>
+      new WebSocketServer({ noServer: true, maxPayload: PAYLOAD, perMessageDeflate })
+  );
+  let origin = base.replace(/^http/, 'ws');
+  let upstream = null;
+  const upstreams = new Set();
+  let probe = null;
+  const note = (way, data) => {
+    let message;
+    try {
+      message = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+    traced.note(way, message);
+  };
+  const agent = (req) =>
+    req.headers['user-agent'] ? { 'user-agent': req.headers['user-agent'] } : {};
+  const server = createServer((req, res) => {
+    fetched(new URL(req.url, base), req.method, agent(req)).then(
+      ({ res: answer, body }) => {
+        let text = body;
+        try {
+          const rewrite = (entry) => {
+            if (typeof entry?.webSocketDebuggerUrl !== 'string') return entry;
+            const url = new URL(entry.webSocketDebuggerUrl);
+            origin = url.origin;
+            url.host = `127.0.0.1:${server.address().port}`;
+            return { ...entry, webSocketDebuggerUrl: url.href };
+          };
+          const parsed = JSON.parse(body);
+          text = JSON.stringify(Array.isArray(parsed) ? parsed.map(rewrite) : rewrite(parsed));
+        } catch {}
+        res.writeHead(
+          answer.statusCode,
+          answer.headers['content-type'] ? { 'content-type': answer.headers['content-type'] } : {}
+        );
+        res.end(text);
+      },
+      (error) => {
+        res.writeHead(502);
+        res.end(error.message);
+      }
+    );
+  });
+  const answered = (data) => {
+    let message;
+    try {
+      message = JSON.parse(data.toString());
+    } catch {
+      return false;
+    }
+    if (message.id !== PROBE_ID) return false;
+    probe.answered = Date.now();
+    probe.route = message.result?.slicc?.route;
+    probe.error = message.error?.message;
+    traced.note('<', message, 'probe');
+    return true;
+  };
+  const join = (client, up) => {
+    upstream = up;
+    client.on('message', (data, binary) => {
+      up.send(data, { binary });
+      note('>', data);
+    });
+    up.on('message', (data, binary) => {
+      if (probe && !probe.answered && data.includes(PROBE_MARK) && answered(data)) return;
+      client.send(data, { binary });
+      note('<', data);
+    });
+    client.on('close', (code, reason) => mirror(up, code, reason));
+    up.on('close', (code, reason) => mirror(client, code, reason));
+    client.on('error', () => up.terminate());
+  };
+  server.on('upgrade', (req, socket, head) => {
+    const offered = /permessage-deflate/.test(req.headers['sec-websocket-extensions'] ?? '');
+    const up = new WebSocket(`${origin}${req.url}`, {
+      headers: agent(req),
+      maxPayload: PAYLOAD,
+      perMessageDeflate: offered ? DEFLATE : false,
+    });
+    upstreams.add(up);
+    up.on('error', () => socket.destroy());
+    up.once('unexpected-response', (asked, answer) => {
+      socket.end(`HTTP/1.1 ${answer.statusCode} ${answer.statusMessage}\r\n\r\n`);
+      asked.destroy();
+    });
+    up.once('open', () =>
+      servers[Number(up.extensions.includes('permessage-deflate'))].handleUpgrade(
+        req,
+        socket,
+        head,
+        (client) => join(client, up)
+      )
+    );
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    base: `http://127.0.0.1:${server.address().port}`,
+    probe() {
+      if (upstream?.readyState !== WebSocket.OPEN || (probe && !probe.answered)) return;
+      probe = { sent: Date.now() };
+      const message = { id: PROBE_ID, method: 'Browser.getVersion' };
+      upstream.send(JSON.stringify(message));
+      traced.note('>', message, 'probe');
+    },
+    probed() {
+      if (!probe) return { sent: false };
+      const sent = new Date(probe.sent).toISOString();
+      if (!probe.answered) return { sent, unansweredFor: Date.now() - probe.sent };
+      return {
+        sent,
+        answeredIn: probe.answered - probe.sent,
+        route: probe.route,
+        error: probe.error,
+      };
+    },
+    trace: () => traced.trace(),
+    close() {
+      for (const wss of servers) for (const client of wss.clients) client.terminate();
+      for (const up of upstreams) if (up.readyState !== WebSocket.CLOSED) up.terminate();
+      server.closeAllConnections();
+      server.close();
+    },
+  };
+}
+
 const bounded = (promise, ms, what) =>
   Promise.race([
     promise,
@@ -198,6 +363,8 @@ export function stockChain(route, { chain = 'tray' } = {}) {
   const holds = [];
   const steps = [];
   let rig;
+  let bridge = null;
+  let tap = null;
   const start = async () => {
     if (rig) return rig;
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -243,9 +410,22 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     'a sign-in to seven’s callback': rig.callbackOnly,
   });
 
+  function traces(client, name, watched) {
+    const tag = `${label} ${client} ${name}:`;
+    const lines = [];
+    if (watched) {
+      lines.push(`STOCK-PW-PROBE ${tag} ${JSON.stringify(watched.probed())}`);
+      for (const line of watched.trace()) lines.push(`STOCK-PW-TRACE ${tag} ${line}`);
+    }
+    for (const line of bridge?.trace() ?? []) lines.push(`STOCK-EXT-TRACE ${tag} ${line}`);
+    if (lines.length) process.stdout.write(`${lines.join('\n')}\n`);
+  }
+
   async function step(client, name, work) {
     const started = Date.now();
     const stopped = new AbortController();
+    const watched = client === 'playwright' ? tap : null;
+    const probing = watched && setTimeout(() => watched.probe(), HELD_MS);
     let timer;
     try {
       return await Promise.race([
@@ -259,10 +439,14 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       ]);
     } finally {
       clearTimeout(timer);
+      clearTimeout(probing);
       stopped.abort();
       const took = Date.now() - started;
       steps.push(`${client} ${name} ${took}`);
-      if (took > HELD_MS) holds.push(`${label} ${client} ${name}: ${took} ms`);
+      if (took > HELD_MS) {
+        holds.push(`${label} ${client} ${name}: ${took} ms`);
+        traces(client, name, watched);
+      }
     }
   }
 
@@ -274,6 +458,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       });
     if (route === 'extension') {
       const extension = await rig.fakeExtension(page);
+      bridge = extension;
       t.after(extension.close);
     }
     if (route === 'devtools')
@@ -321,6 +506,16 @@ export function stockChain(route, { chain = 'tray' } = {}) {
   }
 
   async function playwrightFlow(base) {
+    tap = await tappedCdp(base);
+    try {
+      await tappedFlow(tap.base);
+    } finally {
+      tap.close();
+      tap = null;
+    }
+  }
+
+  async function tappedFlow(base) {
     const run = (name, work) => step('playwright', name, work);
     const connected = await run('connect', () => chromium.connectOverCDP(base));
     try {
