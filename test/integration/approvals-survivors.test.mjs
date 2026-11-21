@@ -359,6 +359,127 @@ for (const [hang, procsOf] of [
   });
 }
 
+const never = new Promise(() => {});
+const copies = (rows) => rows.map((entry) => ({ ...entry }));
+const passwd = 'root:x:0:0::/root:/bin/sh\nsvc:x:1001:1001::/home/svc:/bin/sh\n';
+
+function rejectsOnce(rows) {
+  let calls = 0;
+  return () => ({
+    ps: () => {
+      calls += 1;
+      if (calls === 1) return never;
+      if (calls === 2) return Promise.reject(new Error('ps failed'));
+      return Promise.resolve(copies(rows));
+    },
+  });
+}
+
+for (const [miss, target, uid, procsOf] of [
+  ['ps() rejects', 'root', 0, rejectsOnce],
+  [
+    'the client fails to connect',
+    'root',
+    0,
+    (rows) => {
+      let calls = 0;
+      return () => {
+        calls += 1;
+        if (calls === 1) return never;
+        if (calls === 2) return Promise.reject(new Error('connect failed'));
+        return listing(rows);
+      };
+    },
+  ],
+  [
+    "/etc/passwd can't be read",
+    'svc',
+    1001,
+    (rows) => {
+      let calls = 0;
+      let reads = 0;
+      return () => ({
+        ps: () => {
+          calls += 1;
+          return calls === 1 ? never : Promise.resolve(copies(rows));
+        },
+        fs: {
+          readText: async () => {
+            reads += 1;
+            if (reads === 1) throw new Error('EIO');
+            return passwd;
+          },
+        },
+      });
+    },
+  ],
+]) {
+  test(`after a timed-out lookup, survivors fill in when ${miss} once and then the list answers`, async () => {
+    const kernel = kernelOf(130);
+    const rows = [];
+    const approvals = createApprovals({
+      channel: lone(),
+      kernel: () => kernel,
+      procs: procsOf(rows),
+      pollMs: 5,
+      lick: async () => {},
+    });
+    approvals.own();
+    const name = miss.replace(/\W+/g, '-').replace(/^-|-$/g, '');
+    const id = await expire(approvals, { ...ask(`sudo-survivors-miss-${name}`), target });
+    await approvals.port.run(id);
+    await until(() => row(approvals, id)?.run?.state === 'running', 'the run');
+    rows.push(proc(131, 130, `sudo-run:${id}`, uid));
+    kernel.finish({ status: 0 });
+    await until(
+      () => row(approvals, id)?.run?.survivors?.join() === '131',
+      () => `the survivor after ${miss} once, saw ${JSON.stringify(row(approvals, id)?.run)}`
+    );
+    assert.equal(row(approvals, id).run.state, 'done');
+    rows.length = 0;
+    await until(() => row(approvals, id)?.run?.survivors === undefined, 'the survivor to clear');
+    assert.equal(row(approvals, id).run.state, 'done');
+  });
+}
+
+for (const [outcome, state, end] of [
+  ['fails', 'failed', (approvals, id, kernel) => kernel.fail(new Error('the kernel lost the run'))],
+  [
+    'was stopped',
+    'stopped',
+    async (approvals, id, kernel) => {
+      await approvals.port.stopRun(id);
+      kernel.finish({ status: 143, signal: 'SIGTERM' });
+    },
+  ],
+]) {
+  test(`after a timed-out lookup for a run that ${outcome}, survivors fill in when ps() rejects once and then the list answers`, async () => {
+    const kernel = kernelOf(140);
+    const rows = [];
+    const approvals = createApprovals({
+      channel: lone(),
+      kernel: () => kernel,
+      procs: rejectsOnce(rows),
+      pollMs: 5,
+      lick: async () => {},
+    });
+    approvals.own();
+    const id = await expire(approvals, ask(`sudo-survivors-miss-${state}`));
+    await approvals.port.run(id);
+    await until(() => row(approvals, id)?.run?.state === 'running', 'the run');
+    rows.push(proc(141, 141, `sudo-run:${id}`));
+    await end(approvals, id, kernel);
+    await until(
+      () => row(approvals, id)?.run?.survivors?.join() === '141',
+      () => `the survivor after ps() rejects once, saw ${JSON.stringify(row(approvals, id)?.run)}`
+    );
+    assert.equal(row(approvals, id).run.state, state);
+    rows.length = 0;
+    await until(() => row(approvals, id)?.run?.survivors === undefined, 'the survivor to clear');
+    assert.equal(row(approvals, id).run.state, state);
+  });
+}
+
 test("a run whose leader fails while its kernel client doesn't answer ps() still fails, and its survivors fill in once the client answers", async () => {
   const kernel = kernelOf(120);
   const rows = [];
