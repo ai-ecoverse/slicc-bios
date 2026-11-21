@@ -130,14 +130,15 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     }
   );
 
-  const stopsBefore = hub.stops?.length ?? 0;
+  const orphan = hub.addPreview(
+    '1',
+    { servedRoot: '/srv/serve/orphan', entryPath: '/srv/serve/orphan/index.html' },
+    { previewToken: 't1.orphan' }
+  );
   await page.reload();
   await ready(page, undefined, { tools: false });
-  await page.until(
-    () => document.querySelector('slicc-app').model.network.status().links?.sync === 'ready'
-  );
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  assert.equal((hub.stops ?? []).slice(stopsBefore).includes(one.previewToken), false);
+  await until(() => hub.stops?.includes(orphan.previewToken), 'the boot sweep');
+  assert.equal(hub.stops.includes(one.previewToken), false, 'the sweep left the snapshot alone');
   await run(
     page,
     'exec 4<>/dev/embedder; printf \'{"kind":"serve.list"}\\n\' >&4; cat <&4 > /home/list2.txt; exec 4>&-'
@@ -148,7 +149,10 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
   assert.equal(await ask(page, 'two', snapshotBody(FILES)), 'ended-0');
   const two = JSON.parse(await homeFile(page, 'two.json'));
   assert.deepEqual(two, { error: 'too big', status: 413, during: 'upload', path: 'css/a.css' });
-  await until(() => hub.stops?.includes('t1.p2'), 'the refused snapshot stopped');
+  await until(
+    () => hub.stops?.includes(`t1.p${hub.minting.length + 1}`),
+    'the refused snapshot stopped'
+  );
   hub.uploadFails = null;
 
   assert.equal(await ask(page, 'three', snapshotBody(FILES, { bytes: 5 })), 'ended-1');
@@ -156,7 +160,10 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     await homeFile(page, 'three.err'),
     /bad snapshot body: more than the 5 bytes it announced/
   );
-  await until(() => hub.stops?.includes('t1.p3'), 'the bad snapshot stopped');
+  await until(
+    () => hub.stops?.includes(`t1.p${hub.minting.length + 1}`),
+    'the bad snapshot stopped'
+  );
 
   hub.mintFails = [429, { error: 'Too many snapshots', code: 'PREVIEW_LIMIT' }];
   assert.equal(await ask(page, 'four', snapshotBody(FILES)), 'ended-0');
