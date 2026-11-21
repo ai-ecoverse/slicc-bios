@@ -5,6 +5,19 @@ import { launch } from './chrome.mjs';
 import { startHub } from './fake-hub.mjs';
 
 const chrome = await launch({ tools: false });
+const debug = () => {
+  globalThis.sliccKernelDebug = true;
+};
+
+const running = (page, pgid) =>
+  page.evaluate(async (pgid) => {
+    const client = await globalThis.sliccKernelClient();
+    try {
+      return (await client.ps()).some((entry) => entry.pgid === pgid && entry.state !== 'Z');
+    } finally {
+      await client.close();
+    }
+  }, pgid);
 after(() => chrome.close());
 
 const read = (page, name) =>
@@ -84,6 +97,7 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
   const hub = await startHub();
   t.after(() => hub.close());
   const page = await chrome.page(t);
+  await page.init(debug);
   await boot(page);
   await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await page.reload();
@@ -130,14 +144,15 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     }
   );
 
-  const stopsBefore = hub.stops?.length ?? 0;
+  const orphan = hub.addPreview(
+    '1',
+    { servedRoot: '/srv/serve/orphan', entryPath: '/srv/serve/orphan/index.html' },
+    { previewToken: 't1.orphan' }
+  );
   await page.reload();
   await ready(page, undefined, { tools: false });
-  await page.until(
-    () => document.querySelector('slicc-app').model.network.status().links?.sync === 'ready'
-  );
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  assert.equal((hub.stops ?? []).slice(stopsBefore).includes(one.previewToken), false);
+  await until(() => hub.stops?.includes(orphan.previewToken), 'the boot sweep');
+  assert.equal(hub.stops.includes(one.previewToken), false, 'the sweep left the snapshot alone');
   await run(
     page,
     'exec 4<>/dev/embedder; printf \'{"kind":"serve.list"}\\n\' >&4; cat <&4 > /home/list2.txt; exec 4>&-'
@@ -148,7 +163,10 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
   assert.equal(await ask(page, 'two', snapshotBody(FILES)), 'ended-0');
   const two = JSON.parse(await homeFile(page, 'two.json'));
   assert.deepEqual(two, { error: 'too big', status: 413, during: 'upload', path: 'css/a.css' });
-  await until(() => hub.stops?.includes('t1.p2'), 'the refused snapshot stopped');
+  await until(
+    () => hub.stops?.includes(`t1.p${hub.minting.length + 1}`),
+    'the refused snapshot stopped'
+  );
   hub.uploadFails = null;
 
   assert.equal(await ask(page, 'three', snapshotBody(FILES, { bytes: 5 })), 'ended-1');
@@ -156,7 +174,10 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     await homeFile(page, 'three.err'),
     /bad snapshot body: more than the 5 bytes it announced/
   );
-  await until(() => hub.stops?.includes('t1.p3'), 'the bad snapshot stopped');
+  await until(
+    () => hub.stops?.includes(`t1.p${hub.minting.length + 1}`),
+    'the bad snapshot stopped'
+  );
 
   hub.mintFails = [429, { error: 'Too many snapshots', code: 'PREVIEW_LIMIT' }];
   assert.equal(await ask(page, 'four', snapshotBody(FILES)), 'ended-0');
@@ -168,6 +189,37 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
   });
   hub.mintFails = null;
 
+  let release;
+  let finalizing = null;
+  hub.holdFinalize = (record) => {
+    finalizing = record.previewToken;
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  };
+  const held = snapshotBody(FILES.slice(0, 1)).toString('base64');
+  await run(
+    page,
+    `printf '%s' '${held}' | base64 -d > /tmp/held.body; (exec 3<>/dev/embedder; cat /tmp/held.body >&3; head -n1 <&3) > /home/held.json & echo $! > /home/held.pid`
+  );
+  await until(() => finalizing, 'the finalize held');
+  const group = Number((await homeFile(page, 'held.pid')).trim());
+  assert.equal(await running(page, group), true);
+  await run(page, 'kill -- -$(cat /home/held.pid); echo killed-$((40 + 2))');
+  await shows(page, 'killed-42');
+  await until(async () => !(await running(page, group)), 'the killed program gone from ps');
+  release();
+  hub.holdFinalize = null;
+  await until(
+    () => hub.stops?.includes(finalizing),
+    'a snapshot cancelled during finalize stopped'
+  );
+  assert.ok(
+    !(await page.evaluate(() => localStorage.getItem('slicc-os.snapshots') ?? '')).includes(
+      finalizing
+    )
+  );
+
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.switches.set('previews', false)
   );
@@ -177,10 +229,22 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     document.querySelector('slicc-app').model.switches.set('previews', true)
   );
 
+  const stop = `printf '%s\\n' '{"kind":"serve.stop","previewToken":"${one.previewToken}"}' | cat > /dev/embedder`;
+  hub.stopFails = [503, { error: 'the hub is down' }];
+  await run(page, `${stop}; echo "failed-stop-$?-$((40 + 2))"`);
+  await shows(page, 'failed-stop-1-42');
+  assert.ok(hub.previews.has(one.previewToken), 'the hub still serves it');
   await run(
     page,
-    `printf '%s\\n' '{"kind":"serve.stop","previewToken":"${one.previewToken}"}' | cat > /dev/embedder; echo "stop-$?-$((40 + 2))"`
+    'exec 4<>/dev/embedder; printf \'{"kind":"serve.list"}\\n\' >&4; cat <&4 > /home/list-kept.txt; exec 4>&-'
   );
+  assert.equal(
+    JSON.parse((await homeFile(page, 'list-kept.txt')).trim()).previewToken,
+    one.previewToken,
+    'a stop the hub failed keeps the snapshot'
+  );
+  hub.stopFails = null;
+  await run(page, `${stop}; echo "stop-$?-$((40 + 2))"`);
   await shows(page, 'stop-0-42');
   assert.ok(hub.stops.includes(one.previewToken));
   assert.equal(hub.fetchSnapshot(one.previewToken, '/').status, 404);

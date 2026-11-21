@@ -268,6 +268,11 @@ function previewRecords(hub) {
     const file = record.files.get(path === '/' ? record.entryRel : path.slice(1));
     return file ? { status: 200, type: file.type, body: file.bytes } : { status: 404 };
   };
+  const finalize = (record) => {
+    record.state = 'ready';
+    record.expiresAt = new Date(Date.now() + record.ttlMs).toISOString();
+    return [200, { previewToken: record.previewToken, url: record.url }];
+  };
   const uploaded = (request, url, bytes) => {
     const route = /^\/api\/tray\/t(\d+)\/preview\/([^/]+)\/(file|finalize)$/.exec(url.pathname);
     if (!route) return null;
@@ -280,9 +285,8 @@ function previewRecords(hub) {
       if (request.method !== 'POST') return [405, { error: 'method not allowed' }];
       if (!record.files.has(record.entryRel))
         return [400, { error: 'persistent preview entry file was not uploaded' }];
-      record.state = 'ready';
-      record.expiresAt = new Date(Date.now() + record.ttlMs).toISOString();
-      return [200, { previewToken: record.previewToken, url: record.url }];
+      if (hub.holdFinalize) return hub.holdFinalize(record).then(() => finalize(record));
+      return finalize(record);
     }
     if (request.method !== 'PUT') return [405, { error: 'method not allowed' }];
     const path = url.searchParams.get('path') ?? '';
@@ -332,6 +336,7 @@ function previewRecords(hub) {
       ];
     if (request.method !== 'POST') return [405, { error: 'method not allowed' }];
     if (route[2] === 'preview/stop') {
+      if (hub.stopFails) return hub.stopFails;
       hub.stops = [...(hub.stops ?? []), body.previewToken];
       return [200, { revoked: stop(tray, body.previewToken) }];
     }
@@ -384,7 +389,7 @@ export function startHub() {
     const bytes = url.pathname.startsWith('/api/tray/') ? await raw(request) : null;
     const sent = bytes ? parsed(bytes) : null;
     const api = sent
-      ? (previews(request, url, sent, bytes) ?? (await guests.api(request, url, sent)))
+      ? ((await previews(request, url, sent, bytes)) ?? (await guests.api(request, url, sent)))
       : null;
     if (api) return response.writeHead(api[0], cors).end(JSON.stringify(api[1]));
     const seated = /^\/join\/(g\d+)$/.exec(url.pathname);

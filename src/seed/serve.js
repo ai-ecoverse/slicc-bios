@@ -457,8 +457,9 @@ export function createPreviews({
       if ((entry && !visible(entry, uid)) || kept === null)
         throw new DOMException(UNKNOWN, 'NotFoundError');
       if (entry) end(entry, STOPPED_BY_COMMAND, false);
-      if (!(await revoke(token)) && !entry && !kept)
-        throw new DOMException(UNKNOWN, 'NotFoundError');
+      const revoked = await revoke(token);
+      if (kept) snapshots.revoked(token);
+      if (!revoked && !entry && !kept) throw new DOMException(UNKNOWN, 'NotFoundError');
     },
     stopAll(reason) {
       for (const entry of [...entries.values()]) end(entry, reason, true);

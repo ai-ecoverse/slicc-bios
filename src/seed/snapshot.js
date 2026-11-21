@@ -284,7 +284,9 @@ export function publishSnapshot({ tray, refusal, warn = () => {} }) {
       }
       await sending.settle();
       if (signal?.aborted) throw signal.reason;
-      return { previewToken: held.previewToken, url: await finalized(tray, refusal, held) };
+      const url = await finalized(tray, refusal, held);
+      if (signal?.aborted) throw signal.reason;
+      return { previewToken: held.previewToken, url };
     } catch (error) {
       await sending.settle().catch(() => undefined);
       await reader.cancel(error?.message);
@@ -338,9 +340,7 @@ export function createSnapshots({ tray, refusal, store, id, now, warn, prefix, p
     held(token, uid) {
       const item = store.find(token);
       if (!item) return false;
-      if (!visible(item, uid)) return null;
-      store.remove(token);
-      return true;
+      return visible(item, uid) ? true : null;
     },
     revoked: (token) => store.remove(token),
   };
