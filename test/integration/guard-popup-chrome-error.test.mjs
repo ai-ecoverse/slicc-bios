@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { BLANKED, guardProtected, ordinaryFailedUrl, protection } from '../../src/seed/guard.js';
+import {
+  BLANKED,
+  guardProtected,
+  ordinaryFailedUrl,
+  PROTECTED,
+  protection,
+} from '../../src/seed/guard.js';
 
 const ordinary = 'https://ordinary.invalid/page';
 const ordinaryFail = 'https://ordinary.invalid/unreachable';
@@ -84,11 +90,14 @@ function protocol(t, own, route) {
   let createSeq = 0;
   let createOrder = 'reply-then-events';
   let hold = () => false;
+  let breakSend = null;
   const key = (id, sessionId) => JSON.stringify([sessionId ?? null, id]);
   const raw = {
     send(text) {
       const message = JSON.parse(text);
       sent.push(message);
+      const err = breakSend?.(message);
+      if (err) throw err;
       if (hold(message)) return;
       queueMicrotask(() => respond(message));
     },
@@ -140,9 +149,21 @@ function protocol(t, own, route) {
     const targetId = params.targetId ?? sessions.get(sessionId);
     const targetEntry = targets.get(targetId);
     let result = {};
-    if (method === 'Target.getTargetInfo') result = { targetInfo: targetEntry.info };
-    if (method === 'Target.getTargets')
-      result = { targetInfos: [...targets.values()].map((entry) => entry.info) };
+    if (method === 'Target.getTargetInfo') {
+      if (targetEntry?.destroyed || targetEntry?.unreadable) {
+        emit({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message: 'gone' } });
+        return;
+      }
+      result = { targetInfo: targetEntry?.info ?? { targetId } };
+    }
+    if (method === 'Target.getTargets') {
+      calls.getTargets += 1;
+      result = {
+        targetInfos: [...targets.values()]
+          .filter((entry) => !entry.destroyed && !entry.absent)
+          .map((entry) => entry.info),
+      };
+    }
     if (method === 'Target.attachToTarget') {
       const attached = id >= 2 ** 30 ? `guard-${targetId}` : `client-${targetId}-${id}`;
       sessions.set(attached, targetId);
@@ -187,15 +208,40 @@ function protocol(t, own, route) {
     targets.set(id, entry);
     return entry;
   }
+  const calls = { getTargets: 0 };
   return {
     targets,
     sessions,
     sent,
     delivered,
+    calls,
     emit,
     send,
     request,
     target,
+    breakSend(fn) {
+      breakSend = fn;
+    },
+    destroy(id) {
+      const entry = targets.get(id);
+      if (entry) entry.destroyed = true;
+      emit({ method: 'Target.targetDestroyed', params: { targetId: id } });
+    },
+    absent(id) {
+      const entry = targets.get(id);
+      if (entry) {
+        entry.absent = true;
+        entry.unreadable = true;
+      }
+    },
+    omit(id) {
+      const entry = targets.get(id);
+      if (entry) entry.absent = true;
+    },
+    unread(id) {
+      const entry = targets.get(id);
+      if (entry) entry.unreadable = true;
+    },
     setCreateOrder(order) {
       createOrder = order;
     },
@@ -1655,4 +1701,538 @@ describe('createTarget provenance races', { concurrency: false }, () => {
       });
     }
   }
+
+  for (const [routeName, route] of routes) {
+    test(`C8d createTarget attach-before-reply then child popup chrome-error stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      wire.setCreateOrder('attach-race');
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const created = await wire.send('Target.createTarget', {
+        url: ordinary,
+        background: true,
+      });
+      await wire.drain(20);
+      await wire.tick(t.mock.timers, 500);
+      assert.equal(created.error, undefined, JSON.stringify(created));
+      const parentId = created.result.targetId;
+      const parent = await wire.send('Target.attachToTarget', {
+        targetId: parentId,
+        flatten: true,
+      });
+      assert.equal(parent.error, undefined, 'createTarget tab stays admitted');
+      wire.target('late-opener');
+      const childId = `c8d-child-${routeName}`;
+      const child = wire.target(childId, blankFrame(childId));
+      child.info.url = '';
+      child.info.title = '';
+      child.info.openerId = parentId;
+      child.info.canAccessOpener = true;
+      const from = wire.delivered.length;
+      autoAttach(wire, child, `client-${childId}`, true);
+      await wire.drain(20);
+      settleChromeError(child, `${ownOrigin}/doc?c8d-${routeName}`, { tree: 'blank' });
+      child.info.openerId = parentId;
+      child.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...child.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `C8d/${routeName}`);
+      const again = await wire.send('Target.attachToTarget', {
+        targetId: parentId,
+        flatten: true,
+      });
+      assert.equal(again.error, undefined, 'createTarget tab is not over-held');
+    });
+
+    test(`C8e later opener on createTarget-claimed page chrome-error stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      wire.setCreateOrder('reply-then-events');
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const created = await wire.send('Target.createTarget', {
+        url: ordinary,
+        background: true,
+      });
+      await wire.drain(20);
+      await wire.tick(t.mock.timers, 500);
+      assert.equal(created.error, undefined, JSON.stringify(created));
+      const targetId = created.result.targetId;
+      const admitted = await wire.send('Target.attachToTarget', {
+        targetId,
+        flatten: true,
+      });
+      assert.equal(admitted.error, undefined, 'createTarget claim admits without opener');
+      const info = await wire.send('Target.getTargetInfo', { targetId });
+      assert.equal(
+        info.result?.targetInfo?.openerId,
+        undefined,
+        'createTarget reports no openerId'
+      );
+      wire.target('c8e-opener');
+      const entry = wire.targets.get(targetId);
+      entry.info.openerId = 'c8e-opener';
+      entry.info.canAccessOpener = true;
+      const from = wire.delivered.length;
+      settleChromeError(entry, `${ownOrigin}/doc?c8e-${routeName}`, { tree: 'blank' });
+      entry.info.openerId = 'c8e-opener';
+      entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `C8e/${routeName}`);
+      const refused = await wire.send('Target.attachToTarget', {
+        targetId,
+        flatten: true,
+      });
+      assert.ok(refused.error, 'later opener holds chrome-error on a createTarget page');
+    });
+  }
+
+  for (const [routeName, route] of routes) {
+    test(`P2-2 createTarget reports no openerId (${routeName}; no chrome.tabs.create openerTabId)`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      wire.setCreateOrder('reply-then-events');
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const created = await wire.send('Target.createTarget', {
+        url: ordinary,
+        background: true,
+      });
+      await wire.drain(20);
+      await wire.tick(t.mock.timers, 500);
+      assert.equal(created.error, undefined, JSON.stringify(created));
+      const targetId = created.result.targetId;
+      const info = await wire.send('Target.getTargetInfo', { targetId });
+      assert.equal(info.error, undefined);
+      assert.equal(
+        info.result.targetInfo.openerId,
+        undefined,
+        `${routeName}: createTarget uses CDP Target.createTarget, not chrome.tabs.create/openerTabId`
+      );
+      const listed = await wire.send('Target.getTargets');
+      const row = listed.result?.targetInfos?.find((entry) => entry.targetId === targetId);
+      assert.equal(row?.openerId, undefined, `${routeName}: listed createTarget has no openerId`);
+    });
+  }
+});
+
+describe('opener really-gone and listed reuse', { concurrency: false }, () => {
+  test('live protected opener omitted once from getTargets keeps blank child held', {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const opener = wire.target(
+      'live-omit-opener',
+      plainFrame('live-omit-opener', `${ownOrigin}/opener`)
+    );
+    const child = wire.target('live-omit-child', blankFrame('live-omit-child'));
+    child.info.url = 'about:blank';
+    child.info.title = '';
+    child.info.openerId = 'live-omit-opener';
+    child.info.canAccessOpener = true;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...opener.info, attached: true } },
+    });
+    await wire.drain(8);
+    autoAttach(wire, child, 'client-live-omit-child', true);
+    await wire.drain(20);
+    const before = await wire.send('Target.attachToTarget', {
+      targetId: 'live-omit-child',
+      flatten: true,
+    });
+    assert.equal(before.error?.message, PROTECTED, JSON.stringify(before));
+    wire.omit('live-omit-opener');
+    wire.calls.getTargets = 0;
+    const after = await wire.send('Target.attachToTarget', {
+      targetId: 'live-omit-child',
+      flatten: true,
+    });
+    assert.equal(after.error?.message, PROTECTED, JSON.stringify(after));
+    assert.ok(wire.calls.getTargets <= 1, `at most one getTargets, got ${wire.calls.getTargets}`);
+  });
+
+  test('ordinary prior + unreadable listed opener keeps cached ordinary verdict', {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const opener = wire.target('ordinary-opener', plainFrame('ordinary-opener', ordinary));
+    const child = wire.target('ordinary-prior-child', plainFrame('ordinary-prior-child', ordinary));
+    child.info.openerId = 'ordinary-opener';
+    child.info.canAccessOpener = false;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...opener.info, attached: true } },
+    });
+    await wire.drain(8);
+    autoAttach(wire, child, 'client-ordinary-prior-child', false);
+    await wire.drain(20);
+    const before = await wire.send('Target.attachToTarget', {
+      targetId: 'ordinary-prior-child',
+      flatten: true,
+    });
+    assert.equal(before.error, undefined, JSON.stringify(before));
+    wire.unread('ordinary-opener');
+    wire.calls.getTargets = 0;
+    const after = await wire.send('Target.attachToTarget', {
+      targetId: 'ordinary-prior-child',
+      flatten: true,
+    });
+    assert.equal(after.error, undefined, JSON.stringify(after));
+    assert.ok(wire.calls.getTargets <= 1, `at most one getTargets, got ${wire.calls.getTargets}`);
+  });
+
+  test('settled ordinary child of ordinary opener admits after omit+getTargetInfo-fail without targetDestroyed', {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const opener = wire.target('ord-gone-opener', plainFrame('ord-gone-opener', ordinary));
+    const child = wire.target('ord-gone-child', plainFrame('ord-gone-child', ordinary));
+    child.info.openerId = 'ord-gone-opener';
+    child.info.canAccessOpener = false;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...opener.info, attached: true } },
+    });
+    await wire.drain(8);
+    autoAttach(wire, child, 'client-ord-gone-child', false);
+    await wire.drain(20);
+    const before = await wire.send('Target.attachToTarget', {
+      targetId: 'ord-gone-child',
+      flatten: true,
+    });
+    assert.equal(before.error, undefined, JSON.stringify(before));
+    wire.absent('ord-gone-opener');
+    delete child.info.openerId;
+    child.info.canAccessOpener = false;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...child.info, attached: true } },
+    });
+    await wire.drain(8);
+    wire.calls.getTargets = 0;
+    const after = await wire.send('Target.attachToTarget', {
+      targetId: 'ord-gone-child',
+      flatten: true,
+    });
+    assert.equal(after.error, undefined, JSON.stringify(after));
+    assert.ok(wire.calls.getTargets <= 1, `at most one getTargets, got ${wire.calls.getTargets}`);
+  });
+
+  test('unreadable live protected opener still holds a settled cross-origin child', {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const opener = wire.target('unread-opener', plainFrame('unread-opener', `${ownOrigin}/opener`));
+    const child = wire.target('unread-child', plainFrame('unread-child', ordinary));
+    child.info.openerId = 'unread-opener';
+    child.info.canAccessOpener = false;
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...opener.info, attached: true } },
+    });
+    await wire.drain(8);
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...child.info, attached: true } },
+    });
+    await wire.drain(8);
+    wire.unread('unread-opener');
+    wire.calls.getTargets = 0;
+    const after = await wire.send('Target.attachToTarget', {
+      targetId: 'unread-child',
+      flatten: true,
+    });
+    assert.equal(after.error?.message, PROTECTED, JSON.stringify(after));
+    assert.ok(wire.calls.getTargets <= 1, `at most one getTargets, got ${wire.calls.getTargets}`);
+  });
+});
+
+describe('popup opener provenance races', { concurrency: false }, () => {
+  const protectedFail = `${ownOrigin}/doc?popup-opener-race`;
+  for (const [routeName, route] of routes) {
+    test(`H6 stale createTarget claim then opener then chrome-error stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      wire.target('opener');
+      const id = `h6-${routeName}`;
+      const entry = wire.target(id, blankFrame(id));
+      entry.info.url = 'about:blank';
+      entry.info.title = '';
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: id,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined, JSON.stringify(attached));
+      await wire.drain(20);
+      let heldCreate;
+      wire.hold((message) => {
+        if (message.method !== 'Target.createTarget' || message.id < 2 ** 30 || heldCreate)
+          return false;
+        heldCreate = message;
+        return true;
+      });
+      const creating = wire.send('Target.createTarget', { url: ordinary, background: true });
+      await wire.drain(8);
+      assert.ok(heldCreate, 'createTarget reply is held so a stale claim window stays open');
+      entry.info.url = '';
+      entry.info.title = '';
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-h6-${routeName}`, true);
+      await wire.drain(20);
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `H6/${routeName}`);
+      wire.hold(() => false);
+      const targetId = `created-h6-${routeName}`;
+      const made = wire.target(targetId, blankFrame(targetId));
+      made.info.url = 'about:blank';
+      wire.sessions.set(`client-${targetId}`, targetId);
+      wire.emit({ id: heldCreate.id, result: { targetId } });
+      await creating.catch(() => {});
+    });
+
+    test(`H3 opener-less intermediate clears cached opener before chrome-error check (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const entry = await openPopup(wire, `h3-${routeName}`, { url: '', title: '' });
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-h3-${routeName}`, true);
+      await wire.drain(20);
+      delete entry.info.openerId;
+      entry.info.canAccessOpener = false;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      delete entry.info.openerId;
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `H3/${routeName}`);
+    });
+
+    test(`H5 opener learned after first chrome-error sighting stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      wire.target('opener');
+      const id = `h5-${routeName}`;
+      const entry = wire.target(id, { id, url: '', securityOrigin: '://' });
+      entry.info.url = '';
+      entry.info.title = '';
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-h5-${routeName}`, true);
+      await wire.drain(20);
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      await wire.tick(t.mock.timers, 500);
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `H5/${routeName}`);
+    });
+
+    test(`H7 attach provenance then opener then chrome-error stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      wire.target('opener');
+      const id = `h7-${routeName}`;
+      const entry = wire.target(id, blankFrame(id));
+      entry.info.url = 'about:blank';
+      entry.info.title = '';
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: id,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined, JSON.stringify(attached));
+      await wire.drain(20);
+      entry.info.url = '';
+      entry.info.title = '';
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, `client-h7-${routeName}`, true);
+      await wire.drain(20);
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 11000);
+      assertNoChromeErrorAttach(wire, from, `H7/${routeName}`);
+    });
+
+    test(`P1 blocked document then chrome-error then auto-attach with opener stays held (${routeName})`, {
+      timeout: 15000,
+    }, async (t) => {
+      const wire = protocol(t, ownOrigin, route);
+      t.mock.timers.reset();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      wire.target('opener');
+      const id = `p1-${routeName}`;
+      const entry = wire.target(id, blankFrame(id));
+      entry.info.url = 'about:blank';
+      entry.info.title = '';
+      const attached = await wire.send('Target.attachToTarget', {
+        targetId: id,
+        flatten: true,
+      });
+      assert.equal(attached.error, undefined, JSON.stringify(attached));
+      await wire.drain(20);
+      entry.info.url = '';
+      entry.info.title = '';
+      const sessionId = `client-p1-${routeName}`;
+      const from = wire.delivered.length;
+      autoAttach(wire, entry, sessionId, true);
+      await wire.drain(20);
+      wire.emit({
+        method: 'Network.loadingFailed',
+        sessionId,
+        params: {
+          requestId: `${id}-doc`,
+          timestamp: 1,
+          type: 'Document',
+          errorText: 'net::ERR_BLOCKED_BY_CLIENT',
+          canceled: false,
+          blockedReason: 'inspector',
+        },
+      });
+      await wire.drain(4);
+      await wire.tick(t.mock.timers, 5);
+      settleChromeError(entry, protectedFail, { tree: 'blank' });
+      entry.info.openerId = 'opener';
+      entry.info.canAccessOpener = true;
+      wire.emit({
+        method: 'Target.targetCreated',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      wire.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { ...entry.info, attached: true } },
+      });
+      await wire.drain(8);
+      await wire.tick(t.mock.timers, 5000);
+      const beforeBlank = wire.chromeErrorAttaches(from);
+      assert.deepEqual(
+        beforeBlank.map((message) => ({
+          url: message.params.targetInfo.url,
+          title: message.params.targetInfo.title,
+          name: message.params.targetInfo.name,
+        })),
+        [],
+        `P1/${routeName}: no client attachedToTarget with chrome-error url/title/name before blank`
+      );
+      await wire.tick(t.mock.timers, 6000);
+      assertNoChromeErrorAttach(wire, from, `P1/${routeName}`);
+    });
+  }
+});
+
+describe('listing cleanup and opener classify', { concurrency: false }, () => {
+  test('a target throw during current leaves no residual listing and the next judgement lists afresh', async (t) => {
+    const wire = protocol(t, ownOrigin);
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    wire.target('residual-opener', plainFrame('residual-opener', `${ownOrigin}/opener`));
+    const child = wire.target('residual-child', plainFrame('residual-child', ordinary));
+    child.info.openerId = 'residual-opener';
+    child.info.canAccessOpener = true;
+    wire.omit('residual-opener');
+    wire.unread('residual-opener');
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { ...child.info, attached: true } },
+    });
+    await wire.drain(8);
+    await wire.tick(t.mock.timers, 200);
+    let lists = 0;
+    const boom = new Error('synthetic transport');
+    wire.breakSend((message) => {
+      if (message.method === 'Target.getTargets') {
+        lists += 1;
+        return null;
+      }
+      if (
+        lists >= 2 &&
+        message.method === 'Target.getTargetInfo' &&
+        message.params?.targetId === 'residual-opener'
+      )
+        return boom;
+      return null;
+    });
+    wire.calls.getTargets = 0;
+    const listed = await wire.send('Target.getTargets');
+    assert.ok(listed.error, 'current throw refuses the listing command');
+    assert.ok(wire.calls.getTargets >= 2, 'listedTargets ran before the throw');
+    wire.breakSend(null);
+    await wire.tick(t.mock.timers, 200);
+    wire.calls.getTargets = 0;
+    await wire.send('Target.attachToTarget', {
+      targetId: 'residual-child',
+      flatten: true,
+    });
+    assert.equal(wire.calls.getTargets, 1, 'next judgement lists afresh');
+  });
+
+  test('undefined and unknown opener classify the same for a non-blank URL', () => {
+    assert.equal(
+      ordinaryIs.target({ url: ordinary, opener: undefined }),
+      ordinaryIs.target({ url: ordinary, opener: 'unknown' })
+    );
+    assert.equal(ordinaryIs.target({ url: ordinary, opener: undefined }), false);
+    assert.notEqual(
+      ordinaryIs.target({ url: 'about:blank', previous: false, opener: undefined }),
+      ordinaryIs.target({ url: 'about:blank', previous: false, opener: 'unknown' }),
+      'inheriting blank: unknown holds, undefined does not'
+    );
+  });
 });
