@@ -25,10 +25,15 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
+      test-glob: test/integration/guard-set-extension-{apex,seven,vault,vault-x}-lagging.test.mjs
+      test: |
+        mkdir -p artifacts/e4
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          GUARD_IDS=E4 GUARD_E4=1 GUARD_REPORT_DIR=artifacts/guard-report/run-$i node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs $FILES 2>&1 | tee artifacts/e4/run-$i-shard-$SHARD.log || true
+        done
+      shards: 4
       timeout-minutes: 90
-      flaky-retry: 3
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*

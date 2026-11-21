@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -83,6 +83,8 @@ const PATHS = {
     forwardAudit: true,
     clientExit: true,
     stockSetup: true,
+    requestInterception: true,
+    fetchInterception: true,
   },
   extension: {
     autoAttach: true,
@@ -100,6 +102,8 @@ const PATHS = {
     clientExit: true,
     stockSetup: true,
     syntheticAutoAttach: true,
+    requestInterception: true,
+    fetchInterception: true,
   },
   link: {
     autoAttach: true,
@@ -114,6 +118,8 @@ const PATHS = {
     clientExit: true,
     stockSetup: true,
     forwardAudit: true,
+    requestInterception: true,
+    fetchInterception: true,
   },
 };
 
@@ -181,8 +187,10 @@ function cdpError(error) {
 
 function eventsOf() {
   const events = [];
+  const arrivals = new WeakMap();
   const waiters = new Set();
   const push = (message) => {
+    if (message && typeof message === 'object') arrivals.set(message, Date.now());
     events.push(message);
     for (const waiter of waiters) {
       if (!waiter.predicate(message)) continue;
@@ -200,7 +208,7 @@ function eventsOf() {
       }, ms);
       waiters.add(waiter);
     });
-  return { events, push, waitEvent };
+  return { events, push, waitEvent, eventAt: (message) => arrivals.get(message) };
 }
 
 async function unguardedClient(browser) {
@@ -714,7 +722,7 @@ export async function guardHost(
       const capture = vector?.id === 'C8.newtab';
       count += 1;
       const row = count;
-      const { events, push, waitEvent } = eventsOf();
+      const { events, push, waitEvent, eventAt } = eventsOf();
       const messages = [];
       const transportEvents = [];
       rows.set(row, { push, messages, transportEvents });
@@ -737,6 +745,7 @@ export async function guardHost(
         transport: path,
         transportEvents,
         events,
+        eventAt,
         messages,
         waitEvent,
         async inboundDelay({ targetId, sessionId, ms, side, gate }) {
@@ -874,11 +883,13 @@ export function shared(path, { variants, except = [], group } = {}) {
         trace('run', path, target, variant);
         let current;
         let transportEvents;
+        let guardedClient;
         const evidence = new Map();
         const execution = await run(subset(target), {
           clientFactory: async (configuration) => {
             const made = await clientFactory(path)(configuration);
             transportEvents = made.client.transportEvents;
+            guardedClient = made.client;
             return made;
           },
           rowTimeoutMs: ROW_MS,
@@ -904,6 +915,49 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
+            if (process.env.GUARD_E4 && current?.id === 'E4' && data.step) {
+              const step = data.step;
+              const entry = {
+                at: Date.now(),
+                path,
+                target,
+                variant,
+                side: data.side,
+                step: step.cdp ?? (step.page ? `page:${step.page}` : step.settle ? 'settle' : '?'),
+                url: step.url,
+                ok: data.out?.ok,
+                error:
+                  data.out?.error && String(data.out.error.message ?? data.out.error).slice(0, 240),
+                result: data.out?.ok
+                  ? JSON.stringify(data.out.result ?? null).slice(0, 240)
+                  : undefined,
+              };
+              if (data.side === 'guarded' && step.cdp === 'Debugger.disable' && guardedClient) {
+                entry.forwarded = (guardedClient.forwarded ?? [])
+                  .filter((call) => /^(Debugger|Target)\./.test(call.method))
+                  .map((call) => [call.method, call.sessionId ?? null]);
+                entry.events = (guardedClient.events ?? [])
+                  .filter((event) =>
+                    [
+                      'Target.attachedToTarget',
+                      'Target.detachedFromTarget',
+                      'Target.targetInfoChanged',
+                      'Target.targetDestroyed',
+                      'Inspector.detached',
+                      'Page.frameNavigated',
+                    ].includes(event?.method)
+                  )
+                  .map((event) => ({
+                    method: event.method,
+                    at: guardedClient.eventAt?.(event),
+                    sessionId: event.sessionId,
+                    child: event.params?.sessionId,
+                    reason: event.params?.reason,
+                    url: event.params?.frame?.url ?? event.params?.targetInfo?.url,
+                  }));
+              }
+              process.stdout.write(`GUARD-E4 ${JSON.stringify(entry)}\n`);
+            }
             if (
               data.side === 'guarded' &&
               data.calls &&
@@ -1052,6 +1106,29 @@ export function shared(path, { variants, except = [], group } = {}) {
         process.env.GUARD_REPORT,
         JSON.stringify({ report, results, lines }, null, 2)
       );
+    if (process.env.GUARD_REPORT_DIR) {
+      await mkdir(process.env.GUARD_REPORT_DIR, { recursive: true });
+      await writeFile(
+        join(
+          process.env.GUARD_REPORT_DIR,
+          `${[path, group ?? 'all', ...chosen.variants].join('-')}.json`
+        ),
+        JSON.stringify(
+          {
+            path,
+            scope,
+            where,
+            target: group ?? 'all',
+            variant: chosen.variants.join(' and '),
+            report,
+            results,
+            lines,
+          },
+          null,
+          2
+        )
+      );
+    }
     if (process.env.GUARD_IDS || process.env.GUARD_TARGETS) return;
     assert.deepEqual(
       chosen.variants.filter((variant) => !Object.hasOwn(set.variants, variant)),
