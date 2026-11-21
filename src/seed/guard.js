@@ -1001,6 +1001,8 @@ class Guard {
     this.debuggerSupported = debuggerRouteSupported(route);
     this.connection = connection;
     this.tabs = tabs;
+    this.widenCloseProtected = Boolean(tabs?.widenCloseProtected);
+    this.widenLinkSetupRefusal = Boolean(tabs?.widenLinkSetupRefusal);
     this.recalled = new Set();
     this.closing = false;
     this.closed = false;
@@ -2563,18 +2565,20 @@ class Guard {
             deadline
           );
     scope.pending -= 1;
+    const setupErrors = [
+      enabled.error && { error: enabled.error },
+      owners.error && { error: owners.error },
+      attached.error && attached.error.message !== NO_AUTO_ATTACH && { error: attached.error },
+      cleanupFailed && { error: disabled.error },
+    ].filter(Boolean);
+    const { soft, broken } = await this.markSetupRefusal(targetId, setupErrors);
     scope.setup = Boolean(
-      !enabled.error && (!attached.error || attached.error.message === NO_AUTO_ATTACH)
-    );
-    const broken = Boolean(
-      enabled.error ||
-        owners.error ||
-        (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
-        cleanupFailed
+      (!enabled.error || soft) &&
+        (!attached.error || attached.error.message === NO_AUTO_ATTACH || soft)
     );
     const late = deadline !== undefined && Date.now() >= deadline;
     const moved = deadline !== undefined && this.revisions.get(targetId) !== revision;
-    scope.failed = broken || !scope.ownersReady || late || moved;
+    scope.failed = soft ? false : broken || !scope.ownersReady || late || moved;
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     await this.placePrivateFrames(targetId, deadline);
@@ -2781,7 +2785,9 @@ class Guard {
         !this.relatedHeld(targetId) &&
         nav?.session &&
         nav.done &&
-        (nav.admitted || !established) &&
+        (nav.admitted ||
+          !established ||
+          (this.route === 'link' && this.errorPageByProof(targetId))) &&
         !nav.failed &&
         !nav.held &&
         !nav.taken &&
@@ -3839,6 +3845,110 @@ class Guard {
     return foreignFrame(nav?.cause) ? EXTENSION_FRAME : UNGUARDED;
   }
 
+  errorPageByProof(targetId) {
+    const target = this.targets.get(targetId);
+    if (typeof target?.url === 'string' && target.url.startsWith('chrome-error:')) return true;
+    const root = this.frameRoots.get(targetId);
+    if (root && this.errorFrames.has(root)) return true;
+    const nav = this.navs.get(targetId);
+    if (nav?.document && this.errorFrames.has(nav.document.id)) return true;
+    if (nav?.last?.startsWith('chrome-error:') || nav?.erred) return true;
+    const record = this.tabs.get(targetId)?.error;
+    return Boolean(record?.url || record?.id);
+  }
+
+  ownSetupRefused(message) {
+    return typeof message === 'string' && message.startsWith('slicc: refused: ');
+  }
+
+  historyRestoreRefused(message) {
+    return message === "slicc: refused: the target's history may restore a protected document";
+  }
+
+  setupRefusalOnly(errors) {
+    return errors.length > 0 && errors.every((step) => this.ownSetupRefused(step.error?.message));
+  }
+
+  historyRestoreRefusal(errors) {
+    return errors.some((step) => this.historyRestoreRefused(step.error?.message));
+  }
+
+  setupRefusalRecoverable(errors, targetId) {
+    return (
+      this.route === 'link' && this.setupRefusalOnly(errors) && this.errorPageByProof(targetId)
+    );
+  }
+
+  async waitErrorPageProof(targetId, limit = HISTORY_WAIT) {
+    if (this.errorPageByProof(targetId)) return true;
+    const deadline = Date.now() + limit;
+    while (Date.now() < deadline) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      await this.proofSignal(targetId, Math.min(POLL_MS, left));
+      if (this.errorPageByProof(targetId)) return true;
+      const answer = await this.within(
+        this.call('Target.getTargetInfo', { targetId }),
+        Math.min(ANSWER_MS, Math.max(0, deadline - Date.now()))
+      );
+      const info = answer?.result?.targetInfo;
+      if (info?.targetId === targetId) this.learn(info);
+      if (this.errorPageByProof(targetId)) return true;
+      const nav = this.navs.get(targetId);
+      if (nav?.session) {
+        const tree = await this.within(
+          this.call('Page.getFrameTree', {}, nav.session),
+          Math.min(ANSWER_MS, Math.max(0, deadline - Date.now()))
+        );
+        if (tree && !tree.error) {
+          this.rememberTreeError(
+            tree.result?.frameTree,
+            nav.session,
+            nav,
+            this.revisions.get(targetId)
+          );
+          if (this.errorPageByProof(targetId)) return true;
+        }
+      }
+    }
+    return this.errorPageByProof(targetId);
+  }
+
+  async markSetupRefusal(targetId, errors) {
+    const nav = this.navs.get(targetId);
+    const history = this.route === 'link' && this.historyRestoreRefusal(errors);
+    if (history && this.widenLinkSetupRefusal) {
+      if (nav) nav.setupRefused = false;
+      return { soft: true, broken: false };
+    }
+    if (history && !this.errorPageByProof(targetId) && !nav?.setupProofWaited) {
+      if (nav) nav.setupProofWaited = true;
+      await this.waitErrorPageProof(targetId);
+    }
+    const recoverable = this.setupRefusalRecoverable(errors, targetId);
+    if (nav) {
+      if (history && !recoverable) nav.setupRefused = true;
+      if (recoverable) nav.setupRefused = false;
+    }
+    return {
+      soft: recoverable,
+      broken: errors.length > 0 && !recoverable,
+    };
+  }
+
+  linkSetupRefusalBlocks(targetId, nav = this.navs.get(targetId)) {
+    return Boolean(nav?.setupRefused && !nav.admitted && !this.errorPageByProof(targetId));
+  }
+
+  markClientTouched(targetId) {
+    if (!targetId) return;
+    const nav = this.navs.get(targetId);
+    if (nav) nav.clientTouched = true;
+    const tab = this.tabs.get(targetId) ?? {};
+    tab.clientTouched = true;
+    this.tabs.set(targetId, tab);
+  }
+
   async arm(nav, session) {
     if (nav.retired) {
       if (session) void this.call('Target.detachFromTarget', { sessionId: session });
@@ -3860,11 +3970,12 @@ class Guard {
       this.call('Page.enable', {}, session),
     ]);
     nav.holds = steps[0].result?.holdsDocuments === true;
-    nav.cause ??= steps.find((step) => step.error)?.error.message;
+    const errors = steps.filter((step) => step.error);
+    nav.cause ??= errors[0]?.error.message;
     await this.focusCreated(nav);
     this.placing.set(nav.targetId, this.place(nav.targetId, session));
     await this.placing.get(nav.targetId);
-    nav.settle(steps.some((step) => step.error));
+    nav.settle((await this.markSetupRefusal(nav.targetId, errors)).broken);
   }
 
   async focusCreated(nav) {
@@ -3910,11 +4021,13 @@ class Guard {
 
   async guarding(method, sessionId) {
     if (sessionId === undefined || UNWAITED.has(method)) return null;
-    const nav = this.navs.get(this.sessions.get(sessionId)?.targetId);
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const nav = this.navs.get(targetId);
     if (!nav) return null;
     await nav.ready;
     if (nav.scrub && !RECOVERS.has(method)) await nav.scrub;
-    return nav.failed ? this.unguarded(nav) : null;
+    if (nav.failed || this.linkSetupRefusalBlocks(targetId, nav)) return this.unguarded(nav);
+    return null;
   }
 
   async verify(sessionId, proof, loading = false) {
@@ -4039,12 +4152,16 @@ class Guard {
   }
 
   async attachmentProof(sessionId, targetId, raw, guarded, recoverable) {
+    const errorPage = this.errorPageByProof(targetId);
     const error =
       this.navs.get(targetId)?.admitted &&
-      this.targets.get(targetId)?.url?.startsWith('chrome-error:');
+      (this.targets.get(targetId)?.url?.startsWith('chrome-error:') || errorPage);
     return recoverable &&
-      (guarded || error) &&
-      (this.is.url(raw.url) || this.errorDocument(sessionId) || this.recalled.has(targetId))
+      (guarded || error || (this.route === 'link' && errorPage)) &&
+      (this.is.url(raw.url) ||
+        this.errorDocument(sessionId) ||
+        this.recalled.has(targetId) ||
+        (this.route === 'link' && errorPage))
       ? this.stranded(targetId)
       : null;
   }
@@ -4139,6 +4256,7 @@ class Guard {
     const nav = this.navs.get(targetId);
     if (nav) {
       nav.admitted = true;
+      nav.setupRefused = false;
       this.rememberTab(targetId);
     }
     if (proof) this.quarantine(sessionId, this.hints.get(targetId) ?? {});
@@ -4289,6 +4407,51 @@ class Guard {
     return true;
   }
 
+  originOnlyNoPathQueryOrFragment(value) {
+    if (typeof value !== 'string' || !URL.canParse(value)) return false;
+    return value === new URL(value).origin;
+  }
+
+  originOnlyRedirectHeader(name, value) {
+    if (typeof value !== 'string') return false;
+    const key = name.toLowerCase();
+    if (key === 'refresh') {
+      const match = /^\s*\d*\s*;?\s*url\s*=\s*(.*)$/i.exec(value);
+      return match ? this.originOnlyNoPathQueryOrFragment(match[1].trim()) : !this.is.url(value);
+    }
+    if (key === 'link') {
+      const match = /^\s*<([^>]+)>(.*)$/.exec(value);
+      return match ? this.originOnlyNoPathQueryOrFragment(match[1].trim()) : !this.is.url(value);
+    }
+    return this.originOnlyNoPathQueryOrFragment(value);
+  }
+
+  noProtectedHostSetCookie(value) {
+    return !(typeof value === 'string' && this.redact({ text: value }).changed.length);
+  }
+
+  provenRedirectExtraNeverForwardsPathQueryFragmentOrProtectedSetCookieOrLocation(params) {
+    const again = this.redact(params);
+    if (again.changed.length) return false;
+    const headers = params.headers;
+    if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
+      for (const [name, value] of Object.entries(headers)) {
+        const key = name.toLowerCase();
+        if (key === 'set-cookie' || key === 'set-cookie2') {
+          if (!this.noProtectedHostSetCookie(value)) return false;
+          continue;
+        }
+        if (!['location', 'content-location', 'refresh', 'link'].includes(key)) continue;
+        if (!this.originOnlyRedirectHeader(key, value)) return false;
+      }
+    }
+    for (const key of ['headersText', 'requestHeadersText']) {
+      if (typeof params[key] !== 'string') continue;
+      if (this.redact({ [key]: params[key] }).changed.length) return false;
+    }
+    return true;
+  }
+
   continuing(message) {
     const { method, params = {} } = message;
     if (method === 'Network.loadingFailed' || method === 'Network.loadingFinished') {
@@ -4312,9 +4475,15 @@ class Guard {
     if (method !== 'Network.responseReceivedExtraInfo') return true;
     const redirect = params.statusCode >= 300 && params.statusCode < 400;
     if (!redirect || this.extras.has(params.requestId)) return true;
-    if (!this.redact({ headers: params.headers ?? {} }).changed.length) return true;
+    const { params: scrubbed } = this.redact(params);
+    if (
+      !this.provenRedirectExtraNeverForwardsPathQueryFragmentOrProtectedSetCookieOrLocation(
+        scrubbed
+      )
+    )
+      return true;
     kept(this.extras, params.requestId);
-    this.redacted(message);
+    this.redacted({ ...message, params: scrubbed }, message);
     return true;
   }
 
@@ -7141,9 +7310,34 @@ class Guard {
     return this.reaching(method, params, sessionId, message);
   }
 
+  keptLiveDocument(url) {
+    if (typeof url !== 'string' || !URL.canParse(url)) return false;
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+    if (host === 'vault.sliccy.ai' || (host.startsWith('vault-') && host.endsWith('.sliccy.ai')))
+      return true;
+    const path = parsed.pathname || '/';
+    return host === 'seven.sliccy.ai' && path.startsWith('/os/') && path !== '/os/callback.html';
+  }
+
+  ownClosable(targetId) {
+    const tab = this.tabs.get(targetId);
+    const nav = this.navs.get(targetId);
+    if (nav?.created !== undefined || nav?.clientTouched || tab?.clientTouched) return true;
+    if (!this.widenCloseProtected) return false;
+    const url = this.targets.get(targetId)?.url;
+    return this.keptLiveDocument(url) || this.errorPageByProof(targetId);
+  }
+
   async reachTarget(message) {
     const { method, params = {} } = message;
     if (params.targetId === undefined) return false;
+    if (method === 'Target.closeTarget') {
+      const url = this.targets.get(params.targetId)?.url;
+      if (this.ownClosable(params.targetId)) return false;
+      if (this.keptLiveDocument(url)) return true;
+    }
     const limit =
       method === 'Target.attachToTarget' && this.navs.get(params.targetId)?.admitted
         ? PROBE_WAIT
@@ -7176,6 +7370,10 @@ class Guard {
       const nav = this.navs.get(params.targetId);
       if (nav) await nav.ready;
       if (nav?.scrub && !proof) await nav.scrub;
+      if (this.linkSetupRefusalBlocks(params.targetId, nav)) {
+        if (nav) nav.failed = true;
+        return this.unguarded(nav);
+      }
       if (nav?.failed) return this.unguarded(nav);
     }
     if (
@@ -7935,6 +8133,7 @@ class Guard {
       }
       this.commands.set(key, message);
       this.arrivals.set(message, ++this.clock);
+      if (message.sessionId) this.markClientTouched(this.sessions.get(message.sessionId)?.targetId);
       if (
         (this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method)) ||
         (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))

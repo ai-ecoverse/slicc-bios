@@ -83,6 +83,7 @@ const PATHS = {
     forwardAudit: true,
     clientExit: true,
     stockSetup: true,
+    closeProtected: true,
   },
   extension: {
     autoAttach: true,
@@ -100,6 +101,7 @@ const PATHS = {
     clientExit: true,
     stockSetup: true,
     syntheticAutoAttach: true,
+    closeProtected: true,
   },
   link: {
     autoAttach: true,
@@ -114,6 +116,7 @@ const PATHS = {
     clientExit: true,
     stockSetup: true,
     forwardAudit: true,
+    closeProtected: true,
   },
 };
 
