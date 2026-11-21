@@ -60,6 +60,14 @@ const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
 const bare = (url) => url.split('#')[0];
+const unanswered = (answer) =>
+  !answer
+    ? 'timeout'
+    : answer.error
+      ? `error ${answer.error.message}`
+      : answer.result?.exceptionDetails
+        ? 'exception'
+        : 'verdict';
 const SCRUB_MS = 5000;
 const CLOSE_MS = 5000;
 export const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
@@ -3419,8 +3427,24 @@ class Guard {
     );
   }
 
-  staleContext(answer, targetId) {
-    if (!answer || answer.error) this.uncertainProof(targetId);
+  unconfirmedContext(record, started, why) {
+    record.unconfirmed = `${why}, ${Date.now() - started} ms of ${ANSWER_MS} ms`;
+    console.warn(
+      `the CDP guard could not confirm a context: target ${record.targetId}, context ${record.message.params.context.id}, ${record.unconfirmed}`
+    );
+  }
+
+  droppedContext(message, why) {
+    console.warn(
+      `the CDP guard dropped ${message.method}: target ${this.sessions.get(message.sessionId)?.targetId}, context ${message.params?.context?.id ?? message.params?.executionContextId}, ${why}`
+    );
+  }
+
+  staleContext(answer, record, started) {
+    if (!answer || answer.error) {
+      this.unconfirmedContext(record, started, `stale, ${unanswered(answer)}`);
+      this.uncertainProof(record.targetId);
+    }
     return false;
   }
 
@@ -3434,9 +3458,10 @@ class Guard {
       typeof context.uniqueId === 'string'
         ? { uniqueContextId: context.uniqueId }
         : { contextId: context.id };
+    const started = Date.now();
     const answer = await this.contextAnswer(record, where);
     const targetId = record.targetId;
-    if (!current()) return this.staleContext(answer, targetId);
+    if (!current()) return this.staleContext(answer, record, started);
     if (
       answer?.error?.message === catalog.protectedOrigins.refusal &&
       (await this.retryContext(record))
@@ -3458,13 +3483,16 @@ class Guard {
       if (world.main === context.uniqueId) delete world.main;
       world.ids.set(context.id, true);
       if (context.uniqueId) world.uniques.set(context.uniqueId, true);
+      this.unconfirmedContext(record, started, unanswered(answer));
       return this.uncertainProof(targetId);
     }
     let verified = false;
     if (bare(this.frames.get(context.auxData.frameId) ?? '') !== bare(value)) {
       const nav = this.navs.get(targetId);
-      if (!nav?.session || !(await this.verify(nav.session, undefined, true)))
+      if (!nav?.session || !(await this.verify(nav.session, undefined, true))) {
+        this.unconfirmedContext(record, started, 'frame differs, unverified');
         return this.uncertainProof(targetId);
+      }
       verified = true;
     }
     if (!current()) return false;
@@ -5952,9 +5980,21 @@ class Guard {
     }
     if (message.method === 'Runtime.executionContextCreated') {
       const record = this.contextChecks.get(message.sessionId)?.get(message.params?.context?.id);
-      if (record?.message === message && (!(await record.promise) || record.loading)) return true;
+      if (record?.message === message && (!(await record.promise) || record.loading)) {
+        this.droppedContext(
+          message,
+          record.unconfirmed ?? (record.loading ? 'loading' : 'unconfirmed')
+        );
+        return true;
+      }
     }
-    return this.failedScope(message.sessionId) && contentRead(message.method);
+    const dropped = this.failedScope(message.sessionId) && contentRead(message.method);
+    if (dropped && message.method.startsWith('Runtime.')) {
+      const owner = this.sessions.get(message.sessionId)?.targetId;
+      const failed = [...this.failedProof].find((id) => this.relatedProof(owner, id));
+      this.droppedContext(message, `failed proof of ${failed}`);
+    }
+    return dropped;
   }
 
   async debuggerEventReady(message, revision) {
