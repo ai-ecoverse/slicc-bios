@@ -19,8 +19,8 @@ const release = (version, sha256) => ({
   sha256,
 });
 export const CURRENT_EXTENSION = release(
-  '7.15.7',
-  '950f030c617946a904658e0c20c3315283ad5d130ae521a44ca20fb5c64cbfe9'
+  '7.15.8',
+  '79e1c7bbf6ea0d4689a8c5326cfb29f1841852a2819fa4be05381c50f15d1e78'
 );
 export const FRAME_EXTENSION = release(
   '7.14.2',
