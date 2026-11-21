@@ -1,4 +1,5 @@
 import { asker, refused, who } from './requests.js';
+import { createSnapshots, snapshotOptions, snapshotPrompt, snapshotStore } from './snapshot.js';
 
 export const SERVED_PREFIX = '/srv/serve/';
 export const CHUNK = 64 * 1024;
@@ -312,8 +313,23 @@ export function createPreviews({
   id = serveId,
   now = Date.now,
   warn = (message) => console.warn(message),
+  store = snapshotStore({ now }),
 }) {
   const entries = new Map();
+  const snapshots = createSnapshots({
+    tray,
+    refusal: hubRefusal,
+    store,
+    id,
+    now,
+    warn,
+    prefix: SERVED_PREFIX,
+    publicUrl,
+    ready: () => {
+      if (!tray) throw new DOMException(NO_TRAY, 'NotSupportedError');
+      if (!tray.previews.ready()) throw new Error(NOT_READY);
+    },
+  });
   const byRoot = (servedRoot) =>
     [...entries.values()].find((entry) => entry.servedRoot === servedRoot) ?? null;
   const visible = (entry, uid) => uid === 0 || entry.uid === uid;
@@ -421,22 +437,28 @@ export function createPreviews({
 
   return {
     publish,
-    list: (uid = 0) =>
-      [...entries.values()]
+    snapshot: snapshots.snapshot,
+    list: (uid = 0) => [
+      ...[...entries.values()]
         .filter((entry) => entry.previewToken && visible(entry, uid))
         .map((entry) => ({
           previewToken: entry.previewToken,
           url: entry.url,
-          root: entry.root,
+          ...(entry.root ? { root: entry.root } : {}),
           port: entry.port,
           ...(entry.entry ? { entry: entry.entry } : {}),
           since: entry.since,
         })),
+      ...snapshots.list(uid),
+    ],
     async stop(token, uid = 0) {
       const entry = byToken(token);
-      if (entry && !visible(entry, uid)) throw new DOMException(UNKNOWN, 'NotFoundError');
+      const kept = entry ? false : snapshots.held(token, uid);
+      if ((entry && !visible(entry, uid)) || kept === null)
+        throw new DOMException(UNKNOWN, 'NotFoundError');
       if (entry) end(entry, STOPPED_BY_COMMAND, false);
-      if (!(await revoke(token)) && !entry) throw new DOMException(UNKNOWN, 'NotFoundError');
+      if (!(await revoke(token)) && !entry && !kept)
+        throw new DOMException(UNKNOWN, 'NotFoundError');
     },
     stopAll(reason) {
       for (const entry of [...entries.values()]) end(entry, reason, true);
@@ -447,6 +469,7 @@ export function createPreviews({
         for (const answer of answers) send(answer);
       },
       revoked(message) {
+        snapshots.revoked(message?.previewToken);
         const entry = byToken(message?.previewToken);
         if (entry) end(entry, REVOKED, false);
       },
@@ -602,6 +625,30 @@ export function serveRequests({ previews, here = () => true, on, live }) {
         },
         { highWaterMark: 0 }
       );
+    },
+    'serve.snapshot': async (request, { gesture }) => {
+      const { options, stamp, signal } = request;
+      const entry = entryOf(options?.entry);
+      if (entry === undefined) throw new TypeError('invalid entry');
+      const { ttlMs, files, bytes } = snapshotOptions(options);
+      const root = typeof options?.root === 'string' ? options.root : '';
+      enabled();
+      const registry = owner();
+      await gesture(stamp, snapshotPrompt(request), signal);
+      enabled();
+      const done = await registry.snapshot({
+        root,
+        entry,
+        ttlMs,
+        counts: { files, bytes },
+        stamp,
+        body: request.body,
+        signal,
+        progress: (text) => request.progress?.(text),
+      });
+      if (done.refused) return `${JSON.stringify(done.refused)}\n`;
+      const { url, previewToken, trayId, expiresAt } = done.item;
+      return `${JSON.stringify({ url, previewToken, ...(trayId ? { trayId } : {}), expiresAt, files, bytes })}\n`;
     },
     'serve.list': async ({ stamp }) => {
       const lines = owner()
