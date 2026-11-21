@@ -420,6 +420,28 @@ for (const mode of ['production', 'no-coop']) {
       PROTECTED
     );
   });
+  test(`opener tab ${mode}: protected opener closes, blank child stays refused`, {
+    timeout: 90000,
+  }, async (t) => {
+    const { raw, guard, ids, openerId, openerSession } = await fixture(
+      t,
+      mode,
+      'protected-opener-closes'
+    );
+    const child = await popup(raw, openerSession, 'about:blank', false, openerId);
+    ids.push(child.targetId);
+    assert.equal(
+      (await observe(t, raw, guard, child.targetId, `${mode}/protected-opener-closes: blank`)).error
+        ?.message,
+      PROTECTED
+    );
+    await closeTarget(raw, openerId);
+    assert.equal(
+      (await observe(t, raw, guard, child.targetId, `${mode}/protected-opener-closes: after close`))
+        .error?.message,
+      PROTECTED
+    );
+  });
 }
 
 for (const mode of ['production', 'no-coop']) {

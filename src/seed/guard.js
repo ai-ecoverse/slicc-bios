@@ -1082,8 +1082,11 @@ class Guard {
     this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
-    this.provenance = new Set();
-    this.clientCreates = new Set();
+    this.destroyedTargets = new Set();
+    this.listedCache = { at: 0, infos: null };
+    this.listedBag = undefined;
+    this._listedInfos = undefined;
+    this._listing = false;
     this.internal = new Map();
     this.evidence = new Set();
     this.asked = new Map();
@@ -1363,7 +1366,6 @@ class Guard {
     this.blankReads.delete(key);
     if (release && this.commands.get(key) === command) this.commands.delete(key);
     this.pendingContent.delete(command);
-    this.clientCreates.delete(command);
     const { id, sessionId } = command;
     this.deliver(
       { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } },
@@ -1373,6 +1375,7 @@ class Guard {
 
   learn(info) {
     if (!info?.targetId) return;
+    this.destroyedTargets.delete(info.targetId);
     const known = this.targets.get(info.targetId);
     const remembered = this.tabs.get(info.targetId)?.error;
     if (remembered && !this.errorFrames.has(remembered.id)) {
@@ -1384,10 +1387,15 @@ class Guard {
     }
     const failedUrl = this.errorFailedRecord(this.errored.get(info.targetId))?.url;
     const failed = info.url !== undefined && failedUrl === bare(info.url);
+    const openerId =
+      typeof info.openerId === 'string' && info.openerId.length > 0
+        ? info.openerId
+        : known?.openerId;
     this.targets.set(info.targetId, {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
-      openerId: info.openerId,
+      openerId,
+      openerVerdict: this.recordedOpenerVerdict(openerId, known?.openerVerdict),
       parentId: info.parentId ?? known?.parentId,
       parentFrameId: info.parentFrameId ?? known?.parentFrameId,
       was: known?.was || known?.guarded || false,
@@ -1407,7 +1415,7 @@ class Guard {
     return this.targets.get(targetId);
   }
 
-  async opener(openerId, depth, seen, fresh = false) {
+  async opener(openerId, depth, seen, fresh = false, bag = { infos: undefined }) {
     if (!openerId) return undefined;
     if (fresh) {
       const known = this.targets.get(openerId)?.info;
@@ -1418,7 +1426,7 @@ class Guard {
         return 'unknown';
       this.learn(info);
     } else if (!(await this.lookup(openerId))) return 'unknown';
-    return (await this.target(openerId, depth + 1, seen)) ? 'protected' : 'unprotected';
+    return (await this.target(openerId, depth + 1, seen, false, bag)) ? 'protected' : 'unprotected';
   }
 
   async openerInfo(targetId) {
@@ -1481,12 +1489,106 @@ class Guard {
     return found?.guarded || this.recalled.has(ancestor.targetId) ? 'protected' : 'unprotected';
   }
 
-  async crossOpener(targetId, found) {
+  recordedOpenerVerdict(openerId, prior) {
+    if (!openerId) return prior;
+    const opener = this.targets.get(openerId);
+    if (!opener) return prior;
+    if (isHeld(openerId) || opener.guarded || this.is.target(opener)) return 'protected';
+    if (ORDINARY.test(opener.url) && !this.is.url(opener.url)) return 'unprotected';
+    return prior;
+  }
+
+  openerGoneUnsettled(found, blank = false) {
+    return (
+      blank ||
+      this.errorPageUrl(found.url) ||
+      INHERITING.test(found.url) ||
+      !ORDINARY.test(found.url) ||
+      this.is.url(found.url)
+    );
+  }
+
+  boundDestroyedTargets() {
+    if (this.destroyedTargets.size <= 256) return;
+    const kept = new Set();
+    for (const [, found] of this.targets) {
+      if (found.openerId && this.destroyedTargets.has(found.openerId)) kept.add(found.openerId);
+    }
+    for (const id of this.destroyedTargets) {
+      if (kept.has(id)) continue;
+      this.destroyedTargets.delete(id);
+      if (this.destroyedTargets.size <= 256) break;
+    }
+  }
+
+  async listedTargets(bag) {
+    if (this._listedInfos !== undefined) {
+      if (bag) bag.infos = this._listedInfos;
+      return this._listedInfos;
+    }
+    if (bag && bag.infos !== undefined) {
+      this._listedInfos = bag.infos;
+      return bag.infos;
+    }
+    const now = Date.now();
+    const fresh =
+      Array.isArray(this.listedCache.infos) && now - this.listedCache.at < LISTED_FRESH_MS;
+    if (fresh) {
+      this._listedInfos = this.listedCache.infos;
+      if (bag) bag.infos = this.listedCache.infos;
+      return this.listedCache.infos;
+    }
+    const answer = await this.within(this.call('Target.getTargets'), ANSWER_MS);
+    const infos = answer?.error ? null : answer?.result?.targetInfos;
+    if (Array.isArray(infos)) {
+      this.listedCache = { at: now, infos };
+      for (const info of infos) if (info?.targetId) this.destroyedTargets.delete(info.targetId);
+    }
+    const listed = Array.isArray(infos) ? infos : null;
+    this._listedInfos = listed;
+    if (bag) bag.infos = listed;
+    return listed;
+  }
+
+  async openerReallyGone(openerId, bag) {
+    if (!openerId) return false;
+    const infos = await this.listedTargets(bag);
+    if (Array.isArray(infos) && infos.some((info) => info?.targetId === openerId)) {
+      this.destroyedTargets.delete(openerId);
+      return false;
+    }
+    if (this.destroyedTargets.has(openerId)) return true;
+    if (!Array.isArray(infos)) return false;
+    const answer = await this.within(
+      this.call('Target.getTargetInfo', { targetId: openerId }),
+      ANSWER_MS
+    );
+    if (!this.noSuchTarget(answer)) {
+      const info = answer?.result?.targetInfo;
+      if (
+        !answer?.error &&
+        info?.targetId === openerId &&
+        typeof info.type === 'string' &&
+        typeof info.url === 'string'
+      ) {
+        this.learn(info);
+        this.destroyedTargets.delete(openerId);
+      }
+      return false;
+    }
+    return true;
+  }
+
+  async crossOpener(targetId, found, bag) {
     if (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)) return false;
     const previous = this.targets.get(found.openerId);
     const known = previous?.info;
     const first = await this.openerInfo(found.openerId);
-    if (!first) return previous && (previous.guarded || this.is.target(previous)) ? null : false;
+    if (!first) {
+      if (!(await this.openerReallyGone(found.openerId, bag)))
+        return previous && (previous.guarded || this.is.target(previous)) ? null : false;
+      return false;
+    }
     if (first.type !== 'page' || !/^https?:/i.test(first.url) || !this.ownUrl(first.url)) {
       this.learn(first);
       return false;
@@ -1521,23 +1623,41 @@ class Guard {
     );
   }
 
-  async target(targetId, depth = 0, seen = new Set(), framedBlank = false) {
+  async target(targetId, depth = 0, seen = new Set(), framedBlank = false, bag) {
+    const rooted = depth === 0;
+    const ownsListing = rooted && !this._listing;
+    if (ownsListing) {
+      this._listing = true;
+      this._listedInfos = undefined;
+      this.listedBag = bag ?? { infos: undefined };
+    }
+    if (rooted) {
+      if (!this.listedBag) this.listedBag = bag ?? { infos: undefined };
+      bag = this.listedBag;
+    } else bag = bag ?? this.listedBag ?? { infos: undefined };
+    try {
+      return await this.judgeTarget(targetId, depth, seen, framedBlank, bag);
+    } finally {
+      if (ownsListing) {
+        this._listing = false;
+        this.listedBag = undefined;
+        this._listedInfos = undefined;
+      }
+    }
+  }
+
+  async judgeTarget(targetId, depth, seen, framedBlank, bag) {
     if (seen.has(targetId)) return true;
     const found = await this.lookup(targetId);
     if (!found) return true;
     seen = new Set(seen);
     seen.add(targetId);
-    if (isHeld(targetId)) {
+    if (isHeld(targetId) || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
       return true;
     }
-    if (isHeld(found.openerId)) {
-      hold(targetId);
-      found.guarded = true;
-      return true;
-    }
-    const cross = await this.crossOpener(targetId, found);
+    const cross = await this.crossOpener(targetId, found, bag);
     if (
       cross === null ||
       isHeld(found.openerId) ||
@@ -1552,7 +1672,7 @@ class Guard {
     if (found.type === 'iframe') {
       if (await this.frameAncestry(targetId, found, depth, seen)) return true;
     } else if (found.parentId && found.parentId !== targetId) {
-      refused = await this.target(found.parentId, depth + 1, seen);
+      refused = await this.target(found.parentId, depth + 1, seen, framedBlank, bag);
       if (isHeld(found.parentId)) {
         hold(targetId);
         found.guarded = true;
@@ -1561,7 +1681,9 @@ class Guard {
       if (refused && !this.targets.get(found.parentId)?.guarded) return true;
       refused = refused || (await this.createdOwner(found.parentId));
     }
-    return (await this.openerVerdict(targetId, found, cross, depth, seen, framedBlank)) || refused;
+    return (
+      (await this.openerVerdict(targetId, found, cross, depth, seen, framedBlank, bag)) || refused
+    );
   }
 
   inheritingBlank(found, framedBlank) {
@@ -1573,10 +1695,54 @@ class Guard {
     );
   }
 
-  async openerVerdict(targetId, found, cross, depth, seen, framedBlank) {
+  rememberOpenerVerdict(targetId, found, opener) {
+    if (opener !== 'protected' && opener !== 'unprotected') return;
+    found.openerVerdict = opener;
+    const entry = this.targets.get(targetId);
+    if (entry) entry.openerVerdict = opener;
+  }
+
+  goneOpenerVerdict(found, blank) {
+    return this.openerGoneUnsettled(found, blank) && found.openerVerdict !== 'unprotected'
+      ? 'protected'
+      : 'unprotected';
+  }
+
+  unreadOpenerVerdict(found) {
+    if (found.openerVerdict === 'unprotected') return 'unprotected';
+    if (found.openerVerdict === 'protected') return 'protected';
+    return undefined;
+  }
+
+  noSuchTarget(answer) {
+    const message = answer?.error?.message;
+    return typeof message === 'string' && /^No target\b/i.test(message);
+  }
+
+  async openerVerdict(targetId, found, cross, depth, seen, framedBlank, bag) {
     const blank = this.inheritingBlank(found, framedBlank);
     const crossed = cross && !blank;
-    const opener = crossed ? undefined : await this.opener(found.openerId, depth, seen, blank);
+    let opener;
+    if (crossed) opener = undefined;
+    else if (found.openerId) {
+      if (blank) {
+        opener = await this.opener(found.openerId, depth, seen, true, bag);
+        if (opener === 'unknown')
+          opener = (await this.openerReallyGone(found.openerId, bag))
+            ? this.goneOpenerVerdict(found, blank)
+            : 'protected';
+        else this.rememberOpenerVerdict(targetId, found, opener);
+      } else {
+        const live = await this.openerInfo(found.openerId);
+        if (live) {
+          this.learn(live);
+          opener = await this.opener(found.openerId, depth, seen, false, bag);
+          this.rememberOpenerVerdict(targetId, found, opener);
+        } else if (await this.openerReallyGone(found.openerId, bag))
+          opener = this.goneOpenerVerdict(found, blank);
+        else opener = this.unreadOpenerVerdict(found);
+      }
+    }
     const lent = found.type === 'page' && !crossed && !emptyNoAccess(found.info);
     if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
       hold(targetId);
@@ -3151,28 +3317,9 @@ class Guard {
 
   popupShaped(info, targetId = info?.targetId) {
     const id = targetId ?? info?.targetId;
-    if (!id || this.provenance.has(id)) return false;
+    if (!id) return false;
     const openerId = info?.openerId ?? this.targets.get(id)?.openerId;
     return typeof openerId === 'string' && openerId.length > 0;
-  }
-
-  claimProvenance(targetId) {
-    if (!targetId) return;
-    const info = this.targets.get(targetId);
-    if (this.popupShaped({ openerId: info?.openerId, targetId }, targetId)) return;
-    this.provenance.add(targetId);
-  }
-
-  claimCreatedTarget(info, message) {
-    const targetId = info?.targetId;
-    if (!targetId) return;
-    const openerId = info?.openerId ?? this.targets.get(targetId)?.openerId;
-    if (typeof openerId === 'string' && openerId.length > 0) return;
-    if (message) this.clientCreates.delete(message);
-    else if (this.clientCreates.size > 0)
-      this.clientCreates.delete(this.clientCreates.values().next().value);
-    else if (!this.provenance.has(targetId)) return;
-    this.provenance.add(targetId);
   }
 
   async errorUnproven(info, targetId = info?.targetId) {
@@ -3220,7 +3367,7 @@ class Guard {
     return this.createdPending(raw, targetId);
   }
 
-  async current(targetId, limit = ANSWER_MS, ...rest) {
+  async currentInfo(targetId, limit = ANSWER_MS, ...rest) {
     const prefetched = rest.length > 0;
     const early = rest[0];
     if (prefetched && early?.listedReject !== undefined) throw early.listedReject;
@@ -3234,15 +3381,32 @@ class Guard {
       : await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
     let info = answer?.result?.targetInfo;
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
-      return true;
+      return undefined;
     this.learn(info);
-    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit, rest[1]))) return true;
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit, rest[1])))
+      return undefined;
     if (this.createdPending(info, targetId)) {
       ({ raw: info } = await this.createdTargetInfo(targetId));
-      if (!info || info.targetId !== targetId || this.createdUnset(info)) return true;
+      if (!info || info.targetId !== targetId || this.createdUnset(info)) return undefined;
       this.learn(info);
     }
-    if (await this.target(targetId)) return true;
+    return info;
+  }
+
+  async current(targetId, limit = ANSWER_MS, ...rest) {
+    const info = await this.currentInfo(targetId, limit, ...rest);
+    if (!info) return true;
+    const bag = { infos: undefined };
+    this.listedBag = bag;
+    this._listing = true;
+    this._listedInfos = undefined;
+    try {
+      if (await this.target(targetId, 0, new Set(), false, bag)) return true;
+    } finally {
+      this._listing = false;
+      this.listedBag = undefined;
+      this._listedInfos = undefined;
+    }
     if (!URL.canParse(info.url)) {
       if (info.url === '' && info.type === 'tab') return false;
       if (info.url !== '' || !NAV_TYPES.has(info.type)) return true;
@@ -3253,7 +3417,15 @@ class Guard {
       if (nav.failed || !(await this.verify(nav.session))) return true;
       this.learn({ ...info, url: this.frames.get(this.frameRoots.get(targetId)) });
     }
-    return this.target(targetId);
+    this.listedBag = bag;
+    this._listing = true;
+    try {
+      return await this.target(targetId, 0, new Set(), false, bag);
+    } finally {
+      this._listing = false;
+      this.listedBag = undefined;
+      this._listedInfos = undefined;
+    }
   }
 
   relatedProof(owner, targetId) {
@@ -3991,6 +4163,7 @@ class Guard {
   }
 
   async named(targetId) {
+    let errorInfo;
     for (let waited = 0; waited < BLANK_MS; waited += POLL_MS) {
       const info = (await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo;
       if (!info) return null;
@@ -3999,11 +4172,18 @@ class Guard {
           await new Promise((resolve) => setTimeout(resolve, POLL_MS));
           continue;
         }
+        const openerId = info.openerId ?? this.targets.get(targetId)?.openerId;
+        if (this.errorPageUrl(info.url) && !(typeof openerId === 'string' && openerId.length > 0)) {
+          errorInfo = info;
+          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+          continue;
+        }
         return info;
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
-    return null;
+    if (errorInfo && (await this.errorUnproven(errorInfo, targetId))) return null;
+    return errorInfo ?? null;
   }
 
   async blank(message) {
@@ -4647,7 +4827,6 @@ class Guard {
     this.rejudgeWorkers(rejudge);
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
-      this.claimCreatedTarget(info);
       this.notePageUnderTab(message);
       if (await this.skippedAttachment(message)) return true;
       if (params.waitingForDebugger) void this.resumeArmed(info, params.sessionId, sessionId);
@@ -4662,7 +4841,6 @@ class Guard {
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
-      if (method === 'Target.targetCreated') this.claimCreatedTarget(params.targetInfo);
       void this.targetHint(message).catch(() => {
         for (const [id, ticket] of this.quarantined) if (ticket.hint === message) this.cut(id);
       });
@@ -4673,7 +4851,8 @@ class Guard {
       nav?.wiped?.();
       this.navs.delete(params.targetId);
       this.forgetFailedUrl(params.targetId);
-      this.provenance.delete(params.targetId);
+      this.destroyedTargets.add(params.targetId);
+      this.boundDestroyedTargets();
       if (nav?.session) this.navSessions.delete(nav.session);
       this.clearWorkerTarget(params.targetId);
       return this.targets.get(params.targetId)?.guarded === true;
@@ -6349,14 +6528,8 @@ class Guard {
       const ok = await this.watch(result.sessionId, params.targetId);
       if (!ok) return this.refuse(was);
       this.touch(params.targetId);
-      this.claimProvenance(params.targetId);
       return this.deliver(message);
     }
-    if (
-      ['Page.navigate', 'Page.reload', 'Page.navigateToHistoryEntry'].includes(method) &&
-      !message.error
-    )
-      this.claimProvenance(this.sessions.get(was.sessionId)?.targetId);
     if (method === 'Target.getTargets' && Array.isArray(result?.targetInfos)) {
       return this.listed(message, result);
     }
@@ -7030,8 +7203,6 @@ class Guard {
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     if (background) kept(this.backgrounded, targetId);
-    this.claimCreatedTarget({ targetId, url: 'about:blank', type: 'page' });
-    this.clientCreates.delete(message);
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
@@ -7762,7 +7933,6 @@ class Guard {
         if (this.callerIds.has(key)) return this.refuse(message, FAILED, false);
         this.callerIds.set(key, message);
       }
-      if (message.method === 'Target.createTarget') this.clientCreates.add(message);
       this.commands.set(key, message);
       this.arrivals.set(message, ++this.clock);
       if (
