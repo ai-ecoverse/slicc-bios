@@ -20,10 +20,6 @@ export const LINK = {
     allowed: new Set([...RECOVERY, ...ABSENT]),
     notLive: `not live: client attach refused: ${UNGUARDED}`,
   },
-  'slicc-cli ends the session (fail-closed)': {
-    ids: ['C2.redirect-secret', 'C2.redirect-secret-mix'],
-    allowed: new Set(['extraLocation']),
-  },
 };
 
 export function listedWrong(text) {

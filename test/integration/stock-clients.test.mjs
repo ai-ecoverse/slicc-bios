@@ -595,7 +595,7 @@ async function playwright(route, endpoint) {
       late.route('**/*', (route) => route.continue()),
       SETTINGS
     );
-    for (const open of [page, popup, late]) await open.close().catch(() => {});
+    for (const open of [page, popup, late]) await run(`close ${open.url()}`, () => open.close());
   } finally {
     await connected.close();
   }
@@ -667,7 +667,7 @@ async function puppeteerFlow(route, endpoint) {
       SCRIPTS
     );
     await assert.rejects(late.setRequestInterception(true), SETTINGS);
-    for (const open of [page, popup, late]) await open.close().catch(() => {});
+    for (const open of [page, popup, late]) await run(`close ${open.url()}`, () => open.close());
   } finally {
     await connected.disconnect();
   }
