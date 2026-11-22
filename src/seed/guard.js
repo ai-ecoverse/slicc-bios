@@ -7549,6 +7549,19 @@ class Guard {
       pattern.accepted = !message.error;
   }
 
+  logPassRefusal(message, reason) {
+    const target = this.sessions.get(message.sessionId)?.targetId;
+    this.rateLimitedWarn(
+      `pass\0${target}\0${message.method}\0${reason}`,
+      `the CDP guard refused a command: target ${target}, ${message.method}, ${reason}`
+    );
+  }
+
+  refusePass(message, reason) {
+    this.logPassRefusal(message, reason);
+    return this.refuse(message);
+  }
+
   async pass(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     this.commands.set(requestKey(message), message);
@@ -7556,14 +7569,11 @@ class Guard {
     const { id, method, sessionId } = outgoing;
     this.notePageAutoAttach(outgoing);
     if (this.finished.has(message) || !this.owns(message)) return;
-    if (!(await this.admitContent(message)) || this.departing(message)) return this.refuse(message);
-    if (
-      this.blocked.has(sessionId) &&
-      !(method === 'Page.captureScreenshot' && this.shots.has(requestKey(message)))
-    )
+    const reason = await passGate(this, message, method, sessionId);
+    if (reason) {
+      this.logPassRefusal(message, reason);
       return this.refuse(message);
-    if (pageScoped(method) && this.locked(sessionId) && !this.blankAdmission(message))
-      return this.refuse(message);
+    }
     const gate = await this.extensionGate(method, sessionId);
     if (gate) return this.refuse(message, gate);
     if (method === 'Page.startScreencast') this.casts.add(sessionId);
@@ -8082,7 +8092,7 @@ class Guard {
           (OBSERVED.has(message.method) || message.method === 'Page.captureScreenshot')
         )
       )
-        return this.refuse(message);
+        return this.refusePass(message, this.blocked.has(message.sessionId) ? 'blocked' : 'gone');
       this.queue(
         `send:${message.sessionId ?? ''}`,
         async () => {
@@ -8324,6 +8334,19 @@ export function provenRedirectExtraNeverForwardsPathQueryFragmentOrProtectedSetC
     return false;
   if (!originOnlyRedirectTargets(guard, originalHeaders, ['link'])) return false;
   return provenRedirectExtraHeaderTexts(guard, scrubbed, original);
+}
+
+export async function passGate(guard, message, method, sessionId) {
+  if (!(await guard.admitContent(message))) return 'admitContent';
+  if (guard.departing(message)) return 'departing';
+  if (
+    guard.blocked.has(sessionId) &&
+    !(method === 'Page.captureScreenshot' && guard.shots.has(requestKey(message)))
+  )
+    return 'blocked';
+  if (pageScoped(method) && guard.locked(sessionId) && !guard.blankAdmission(message))
+    return 'locked';
+  return null;
 }
 
 export function guardProtected(connection, own, tabs = new Map(), route, privateFrames, caller) {
