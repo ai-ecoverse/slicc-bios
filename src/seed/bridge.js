@@ -331,7 +331,10 @@ export class Bridge {
     const size = json(reply);
     if (size === null || bytesOf(size) > REPLY_BYTES) return refusal(-32000, TOO_BIG);
     const outcome = SHAPES[call.shape](call.world, reply);
-    const page = pageId(call.world, outcome.result?.result?.objectId);
+    const page = pageId(
+      call.world,
+      outcome.result?.result?.objectId ?? outcome.result?.object?.objectId
+    );
     if (call.group && page !== null) {
       const key = groupKey(call.conn, call.group);
       this.groups.set(key, [...(this.groups.get(key) ?? []), page]);

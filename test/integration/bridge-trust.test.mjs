@@ -67,6 +67,26 @@ const MUTANTS = {
   origin: ['bridge.js', 'origin: originOf(preview.url),', "origin: text(message, 'origin'),"],
   claims: ['bridge.js', 'from: originOf(message.origin),', "from: text(message, 'origin'),"],
   title: ['bridge.js', 'tab.title = plain(title);', 'tab.title = title;'],
+  resolved: [
+    'bridge.js',
+    'outcome.result?.result?.objectId ?? outcome.result?.object?.objectId',
+    'outcome.result?.result?.objectId',
+  ],
+  accessors: [
+    'bridge-cdp.js',
+    'const accessors = params.accessorPropertiesOnly === true;',
+    'const accessors = false;',
+  ],
+  getter: [
+    'bridge-cdp.js',
+    'if (d.get !== undefined) p.get = desc(d.get);',
+    'p.value = desc(o[name]);',
+  ],
+  scope: [
+    'bridge-cdp.js',
+    'const f = (0, eval)(${literal(`(${declaration})`)});',
+    'const f = (${declaration});',
+  ],
 };
 
 registerHooks({
@@ -92,8 +112,20 @@ registerHooks({
 const load = (file, mutant) =>
   import(`${new URL(file, SEED).href}${mutant ? `?mutant=${mutant}` : ''}`);
 
+class Node {
+  constructor(name) {
+    this.nodeType = 1;
+    this.nodeName = name.toUpperCase();
+    this.localName = name;
+    this.childNodes = [];
+    this.attributes = [];
+  }
+}
+
 function visitorPage({ href = PREVIEW, title = 'Shop' } = {}) {
   const context = createContext({
+    Node,
+    button: new Node('button'),
     Map,
     WeakMap,
     Symbol,
@@ -105,6 +137,7 @@ function visitorPage({ href = PREVIEW, title = 'Shop' } = {}) {
     BigInt,
     JSON,
     Promise,
+    Reflect,
     location: { href },
     document: { title },
   });
@@ -468,6 +501,140 @@ const ROWS = {
       "a preview bridge can't open or close the visitor's browser"
     );
   },
+  resolved: async (mutant) => {
+    const h = await hub(mutant);
+    h.connect('c1', 'A');
+    await h.settle();
+    const cdp = client(h.bridge.connection());
+    const { sessionId } = (
+      await cdp.call('Target.attachToTarget', { targetId: 'preview:A:c1', flatten: true })
+    ).result;
+    const held = (await cdp.call('Runtime.evaluate', { expression: 'button' }, sessionId)).result
+      .result.objectId;
+    const { backendNodeId } = (await cdp.call('DOM.describeNode', { objectId: held }, sessionId))
+      .result.node;
+    const resolved = await cdp.call(
+      'DOM.resolveNode',
+      { backendNodeId, objectGroup: 'g' },
+      sessionId
+    );
+    const handle = resolved.result.object.objectId;
+    const name = () =>
+      cdp.call(
+        'Runtime.callFunctionOn',
+        {
+          objectId: handle,
+          functionDeclaration: 'function () { return this.localName; }',
+          returnByValue: true,
+        },
+        sessionId
+      );
+    await cdp.call('Runtime.releaseObjectGroup', { objectGroup: 'other' }, sessionId);
+    await h.settle();
+    assert.equal(
+      (await name()).result?.result?.value,
+      'button',
+      "another group's release keeps the node"
+    );
+    await cdp.call('Runtime.releaseObjectGroup', { objectGroup: 'g' }, sessionId);
+    await h.settle();
+    assert.equal(
+      (await name()).error?.message,
+      "the object is gone from the visitor's page (it navigated, or the handle was released)",
+      "releasing its group releases a resolved node's handle"
+    );
+  },
+  accessors: async (mutant) => {
+    const h = await hub(mutant);
+    h.connect('c1', 'A');
+    await h.settle();
+    const cdp = client(h.bridge.connection());
+    const { sessionId } = (
+      await cdp.call('Target.attachToTarget', { targetId: 'preview:A:c1', flatten: true })
+    ).result;
+    const made = await cdp.call(
+      'Runtime.evaluate',
+      {
+        expression:
+          '(globalThis.reads = 0, { get total() { globalThis.reads += 1; return 42; }, n: 1 })',
+      },
+      sessionId
+    );
+    const listed = await cdp.call(
+      'Runtime.getProperties',
+      { objectId: made.result.result.objectId, ownProperties: true, accessorPropertiesOnly: true },
+      sessionId
+    );
+    const props = listed.result.result;
+    assert.deepEqual(
+      props.map((p) => p.name),
+      ['total'],
+      'only accessor properties are listed'
+    );
+    assert.deepEqual([props[0].get?.type, 'value' in props[0]], ['function', false]);
+    const reads = await cdp.call(
+      'Runtime.evaluate',
+      { expression: 'globalThis.reads', returnByValue: true },
+      sessionId
+    );
+    assert.equal(reads.result.result.value, 0, 'never run');
+  },
+  getter: async (mutant) => {
+    const h = await hub(mutant);
+    h.connect('c1', 'A');
+    await h.settle();
+    const cdp = client(h.bridge.connection());
+    const { sessionId } = (
+      await cdp.call('Target.attachToTarget', { targetId: 'preview:A:c1', flatten: true })
+    ).result;
+    const made = await cdp.call(
+      'Runtime.evaluate',
+      {
+        expression:
+          '(globalThis.reads = 0, { get total() { globalThis.reads += 1; return 42; }, n: 1 })',
+      },
+      sessionId
+    );
+    const listed = await cdp.call(
+      'Runtime.getProperties',
+      { objectId: made.result.result.objectId, ownProperties: true },
+      sessionId
+    );
+    const total = listed.result.result.find((p) => p.name === 'total');
+    assert.equal(total.get?.type, 'function');
+    const reads = await cdp.call(
+      'Runtime.evaluate',
+      { expression: 'globalThis.reads', returnByValue: true },
+      sessionId
+    );
+    assert.equal(
+      reads.result.result.value,
+      0,
+      'listing properties never runs a getter in the visitor page'
+    );
+  },
+  scope: async (mutant) => {
+    const h = await hub(mutant);
+    h.connect('c1', 'A');
+    await h.settle();
+    const cdp = client(h.bridge.connection());
+    const { sessionId } = (
+      await cdp.call('Target.attachToTarget', { targetId: 'preview:A:c1', flatten: true })
+    ).result;
+    const answer = await cdp.call(
+      'Runtime.callFunctionOn',
+      {
+        functionDeclaration: 'function () { return [typeof R, typeof keep, typeof args].join(); }',
+        returnByValue: true,
+      },
+      sessionId
+    );
+    assert.equal(
+      answer.result.result.value,
+      'undefined,undefined,undefined',
+      "a called function doesn't see the bridge's own names"
+    );
+  },
   target: async (mutant) => {
     const h = await hub(mutant);
     h.connect('c1', 'A');
@@ -626,7 +793,11 @@ const ROWS = {
 for (const [name, row] of Object.entries(ROWS)) {
   test(`bridge trust row: ${name}`, () => row(null));
   test(`bridge trust mutant: without the ${name} check, its row fails`, async () => {
-    await assert.rejects(row(name), `the ${name} row passes without its check`);
+    await assert.rejects(
+      row(name),
+      (error) => !String(error?.message).includes('is not in the source'),
+      `the ${name} row passes without its check`
+    );
   });
 }
 
