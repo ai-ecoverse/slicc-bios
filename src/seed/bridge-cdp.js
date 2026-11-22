@@ -67,13 +67,13 @@ export function argument(conn, arg) {
 export function callExpression(self, declaration, args, byValue) {
   const target = self === null ? 'undefined' : `get(${literal(self)})`;
   return wrap(
-    `const self = ${target}; const args = [${args.join(', ')}]; return Promise.resolve((${declaration}).apply(self, args)).then((v) => JSON.stringify(${finish(byValue)}(v)));`
+    `const f = (0, eval)(${literal(`(${declaration})`)}); return Promise.resolve(Reflect.apply(f, ${target}, [${args.join(', ')}])).then((v) => JSON.stringify(${finish(byValue)}(v)));`
   );
 }
 
-export function propertiesExpression(page) {
+export function propertiesExpression(page, accessorsOnly = false) {
   return wrap(
-    `const o = get(${literal(page)}); return JSON.stringify(Object.getOwnPropertyNames(o).map((name) => { let v; try { v = o[name]; } catch (e) { v = undefined; } return { name, value: desc(v) }; }));`
+    `const o = get(${literal(page)}); const all = Object.getOwnPropertyDescriptors(o); return JSON.stringify(Reflect.ownKeys(all).filter((k) => typeof k === 'string').flatMap((name) => { const d = all[name]; const accessor = 'get' in d || 'set' in d; if (${accessorsOnly === true} && !accessor) return []; const p = { name, configurable: d.configurable, enumerable: d.enumerable }; if (accessor) { if (d.get !== undefined) p.get = desc(d.get); if (d.set !== undefined) p.set = desc(d.set); } else { p.value = desc(d.value); p.writable = d.writable; } return [p]; }));`
   );
 }
 
@@ -133,6 +133,19 @@ export function remote(conn, found) {
   return out;
 }
 
+function property(world, item) {
+  const out = {
+    name: item?.name ?? null,
+    configurable: item?.configurable ?? true,
+    enumerable: item?.enumerable ?? true,
+    isOwn: true,
+  };
+  for (const key of ['value', 'get', 'set'])
+    if (item && key in item) out[key] = remote(world, item[key]);
+  if (item && 'writable' in item) out.writable = item.writable;
+  return out;
+}
+
 export const SHAPES = {
   raw: (_conn, reply) => ok(reply),
   remote(conn, reply) {
@@ -146,14 +159,7 @@ export const SHAPES = {
     if (error) return error.error ? error : failure(-32000, NO_PROPERTIES);
     const items = unpack(reply);
     return ok({
-      result: (Array.isArray(items) ? items : []).map((item) => ({
-        name: item?.name ?? null,
-        value: remote(conn, item?.value),
-        configurable: true,
-        enumerable: true,
-        writable: true,
-        isOwn: true,
-      })),
+      result: (Array.isArray(items) ? items : []).map((item) => property(conn, item)),
     });
   },
   describe(_conn, reply) {
@@ -206,7 +212,8 @@ const TRANSLATE = {
   'Runtime.getProperties': (conn, params) => {
     const page = pageId(conn, params.objectId);
     if (page === null) return failure(-32000, OBJECT_GONE);
-    return { ...evaluation(propertiesExpression(page), params), shape: 'properties' };
+    const accessors = params.accessorPropertiesOnly === true;
+    return { ...evaluation(propertiesExpression(page, accessors), params), shape: 'properties' };
   },
   'DOM.describeNode': (conn, params) => {
     const backend = backendOf(params);
