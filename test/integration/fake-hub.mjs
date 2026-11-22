@@ -1,120 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { createRequire } from 'node:module';
 import { WebSocketServer } from 'ws';
-
-let bootstrapJs;
-const bootstrap = () =>
-  (bootstrapJs ??= readFileSync(
-    createRequire(import.meta.url).resolve('@ai-ecoverse/cherry/preview-bridge.js')
-  ));
-
-function bridges(hub) {
-  const tabs = new Map();
-  hub.tabs = tabs;
-  hub.states = [];
-  const leader = (tray) => hub.sockets.findLast((s) => s.path.startsWith(`/controller/c${tray}`));
-  const tell = (tray, message) => leader(tray)?.socket.send(JSON.stringify(message));
-  const forget = (connId, reason) => {
-    const tab = tabs.get(connId);
-    if (!tab) return;
-    tabs.delete(connId);
-    tell(tab.record.tray, { type: 'bridge.disconnected', connId, ...(reason ? { reason } : {}) });
-  };
-  hub.bridged = (record) => [...tabs.values()].filter((tab) => tab.record === record);
-  hub.closePreviewTabs = (record) => {
-    for (const tab of hub.bridged(record)) {
-      tabs.delete(tab.connId);
-      tab.socket.close(1000, 'preview revoked');
-    }
-  };
-  hub.replay = (tray) => {
-    for (const tab of tabs.values())
-      if (tab.record.tray === tray)
-        tell(tray, { type: 'bridge.connected', ...tab.meta, replay: true });
-  };
-  hub.emitFrom = (connId, name, detail) => {
-    const tab = tabs.get(connId);
-    tell(tab.record.tray, {
-      type: 'webhook.event',
-      webhookId: tab.record.webhookId,
-      headers: { 'x-slicc-preview-conn': connId, 'x-slicc-preview-token': tab.record.previewToken },
-      body: { name, detail },
-      timestamp: new Date().toISOString(),
-    });
-  };
-  return {
-    script: (record, host) =>
-      `<script src="http://${host}/__slicc/preview-bridge.js" data-slicc-token="${record.previewToken}" data-slicc-ws="ws://${host}/__slicc/bridge?preview=${encodeURIComponent(record.previewToken)}"></script>`,
-    bootstrap,
-    open(socket, request) {
-      const token = new URL(request.url, hub.url).searchParams.get('preview');
-      const record = hub.previews.get(token);
-      if (!record?.bridge) return socket.close(1008, 'Bridge not enabled');
-      if (hub.bridged(record).length >= record.maxTabs)
-        return socket.close(1008, 'Too many bridged tabs');
-      const connId = randomUUID();
-      const meta = {
-        connId,
-        previewToken: token,
-        origin: request.headers.origin ?? '',
-        userAgent: request.headers['user-agent'] ?? '',
-        connectedAt: new Date().toISOString(),
-      };
-      tabs.set(connId, { connId, record, socket, meta, seen: [] });
-      socket.on('message', (data) => {
-        let frame;
-        try {
-          frame = JSON.parse(data);
-        } catch {
-          return;
-        }
-        if (frame.t === 'cdp.res')
-          tell(record.tray, {
-            type: 'bridge.cdp.response',
-            connId,
-            id: frame.id,
-            result: frame.result,
-            error: frame.error,
-          });
-        else if (frame.t === 'emit' && record.webhookId)
-          hub.emitFrom(connId, frame.name, frame.detail);
-      });
-      socket.on('close', () => forget(connId));
-      socket.send(JSON.stringify({ t: 'welcome', connId }));
-      tell(record.tray, { type: 'bridge.connected', ...meta });
-    },
-    fromLeader(message) {
-      const tab = tabs.get(message.connId);
-      if (message.type === 'preview.state.update') hub.states.push(message);
-      if (message.type === 'bridge.close') {
-        forget(message.connId);
-        tab?.socket.close(1000, 'closed by leader');
-      }
-      if (message.type !== 'bridge.cdp.request') return;
-      if (!tab)
-        return hub.sockets.at(-1)?.socket.send(
-          JSON.stringify({
-            type: 'bridge.cdp.response',
-            connId: message.connId,
-            id: message.id,
-            error: { code: -32000, message: 'Preview bridge connection is gone' },
-          })
-        );
-      tab.seen.push(message.method);
-      tab.socket.send(
-        JSON.stringify({
-          t: 'cdp.req',
-          id: message.id,
-          method: message.method,
-          params: message.params,
-          sessionId: message.sessionId,
-        })
-      );
-    },
-  };
-}
 
 function bootstraps(hub) {
   const all = new Map();
@@ -294,211 +179,10 @@ function biscotti(hub, followers) {
   };
 }
 
-const segments = (value) =>
-  typeof value === 'string' &&
-  value.length > 0 &&
-  !value.startsWith('/') &&
-  !value.split('/').some((part) => !part || part === '.' || part === '..');
-
-function previewRecords(hub) {
-  const records = new Map();
-  const pending = new Map();
-  hub.previews = records;
-  hub.minting = [];
-  let made = 0;
-  let asked = 0;
-  const leaderOf = (tray) => hub.sockets.findLast((s) => s.path.startsWith(`/controller/c${tray}`));
-  const add = (tray, body, extra = {}) => {
-    made += 1;
-    const entryRel = body.entryPath?.startsWith(`${body.servedRoot}/`)
-      ? body.entryPath.slice(body.servedRoot.length + 1)
-      : null;
-    const record = {
-      previewToken: `t${tray}.p${made}`,
-      tray,
-      servedRoot: body.servedRoot,
-      entryPath: body.entryPath,
-      entryRel,
-      allowLive: body.allowLive,
-      mode: 'live',
-      state: 'ready',
-      createdAt: new Date().toISOString(),
-      url: body.bridge
-        ? `${hub.url}/__preview/${encodeURIComponent(`t${tray}.p${made}`)}/${entryRel}`
-        : `http://p${made}.preview.test/${entryRel}`,
-      ...(body.bridge
-        ? { bridge: true, maxTabs: body.maxTabs, quiet: body.quiet, webhookId: body.webhookId }
-        : {}),
-      ...extra,
-    };
-    records.set(record.previewToken, record);
-    return record;
-  };
-  hub.addPreview = add;
-  hub.answered = (message) => pending.get(message.reqId)?.(message);
-  hub.ask = (tray, message) =>
-    new Promise((resolve) => {
-      asked += 1;
-      const reqId = `q${asked}`;
-      const chunks = new Map();
-      const timer = setTimeout(() => {
-        pending.delete(reqId);
-        resolve({ ok: false, status: 504, reason: 'leader timeout' });
-      }, 30_000);
-      pending.set(reqId, (chunk) => {
-        if (!chunk.ok || chunks.size + 1 === (chunk.totalChunks ?? 1)) {
-          clearTimeout(timer);
-          pending.delete(reqId);
-        }
-        if (!chunk.ok) return resolve(chunk);
-        chunks.set(chunk.chunkIndex ?? 0, chunk);
-        if (chunks.size !== (chunk.totalChunks ?? 1)) return;
-        const ordered = [...chunks.keys()].sort((a, b) => a - b).map((k) => chunks.get(k));
-        const body = Buffer.concat(
-          ordered.map((c) => Buffer.from(c.content, c.encoding === 'base64' ? 'base64' : 'utf8'))
-        );
-        resolve({ ...chunk, chunks: ordered.length, body });
-      });
-      leaderOf(tray)?.socket.send(JSON.stringify({ type: 'preview.request', reqId, ...message }));
-    });
-  hub.visit = (previewToken, path = '/', range) => {
-    const record = records.get(previewToken);
-    if (!record) return Promise.resolve({ ok: false, status: 404, reason: 'Preview not found' });
-    const vfsPath = path === '/' ? record.entryPath : `${record.servedRoot}${path}`;
-    const asText = /\.(html?|css|js|mjs|json|svg|txt|xml|md)$/i.test(vfsPath);
-    return hub.ask(record.tray, {
-      servedRoot: record.servedRoot,
-      vfsPath,
-      asText,
-      ...(range ? { range } : {}),
-    });
-  };
-  const stop = (tray, token) => {
-    const record = records.get(token);
-    if (!record || record.tray !== tray) return false;
-    records.delete(token);
-    hub.closePreviewTabs?.(record);
-    leaderOf(tray)?.socket.send(JSON.stringify({ type: 'preview.revoked', previewToken: token }));
-    return true;
-  };
-  hub.revoke = (token) => stop(records.get(token)?.tray, token);
-  hub.uploads = [];
-  hub.fetchSnapshot = (previewToken, path = '/') => {
-    const record = records.get(previewToken);
-    if (record?.mode !== 'persistent' || record.state !== 'ready') return { status: 404 };
-    const file = record.files.get(path === '/' ? record.entryRel : path.slice(1));
-    return file ? { status: 200, type: file.type, body: file.bytes } : { status: 404 };
-  };
-  const finalize = (record) => {
-    record.state = 'ready';
-    record.expiresAt = new Date(Date.now() + record.ttlMs).toISOString();
-    return [200, { previewToken: record.previewToken, url: record.url }];
-  };
-  const uploaded = (request, url, bytes) => {
-    const route = /^\/api\/tray\/t(\d+)\/preview\/([^/]+)\/(file|finalize)$/.exec(url.pathname);
-    if (!route) return null;
-    const record = records.get(decodeURIComponent(route[2]));
-    if (record?.tray !== route[1] || record.mode !== 'persistent' || record.state !== 'pending')
-      return [404, { error: 'persistent preview is not accepting uploads' }];
-    if (request.headers.authorization !== `Bearer ${record.uploadToken}`)
-      return [403, { error: 'invalid upload capability' }];
-    if (route[3] === 'finalize') {
-      if (request.method !== 'POST') return [405, { error: 'method not allowed' }];
-      if (!record.files.has(record.entryRel))
-        return [400, { error: 'persistent preview entry file was not uploaded' }];
-      if (hub.holdFinalize) return hub.holdFinalize(record).then(() => finalize(record));
-      return finalize(record);
-    }
-    if (request.method !== 'PUT') return [405, { error: 'method not allowed' }];
-    const path = url.searchParams.get('path') ?? '';
-    if (!segments(path)) return [400, { error: 'invalid preview file path' }];
-    const refused = hub.uploadFails?.(path);
-    if (refused) return refused;
-    hub.uploads.push(path);
-    record.files.set(path, { bytes, type: request.headers['content-type'] });
-    return [200, { ok: true }];
-  };
-  return (request, url, body, bytes) => {
-    const upload = uploaded(request, url, bytes);
-    if (upload) return upload;
-    const route = /^\/api\/tray\/t(\d+)\/(preview|preview\/stop|previews)$/.exec(url.pathname);
-    if (!route) return null;
-    const tray = route[1];
-    if (request.headers.authorization !== `Bearer c${tray}`)
-      return [403, { error: 'Invalid controller capability' }];
-    if (route[2] === 'previews' && request.method === 'GET')
-      return [
-        200,
-        {
-          previews: [...records.values()]
-            .filter((record) => record.tray === tray)
-            .map(
-              ({
-                previewToken,
-                url,
-                servedRoot,
-                entryPath,
-                allowLive,
-                createdAt,
-                mode,
-                state,
-              }) => ({
-                previewToken,
-                url,
-                servedRoot,
-                entryPath,
-                allowLive,
-                createdAt,
-                mode,
-                state,
-              })
-            ),
-        },
-      ];
-    if (request.method !== 'POST') return [405, { error: 'method not allowed' }];
-    if (route[2] === 'preview/stop') {
-      if (hub.stopFails) return hub.stopFails;
-      hub.stops = [...(hub.stops ?? []), body.previewToken];
-      return [200, { revoked: stop(tray, body.previewToken) }];
-    }
-    hub.minting.push(body);
-    if (hub.mintFails) return hub.mintFails;
-    const entryRel = body.entryPath?.startsWith(`${body.servedRoot}/`)
-      ? body.entryPath.slice(body.servedRoot.length + 1)
-      : null;
-    if (!segments(body.servedRoot?.slice(1)) || !segments(entryRel))
-      return [400, { error: 'invalid preview entry path' }];
-    const persistent = body.ttlMs !== undefined;
-    const record = add(
-      tray,
-      body,
-      persistent
-        ? {
-            mode: 'persistent',
-            state: 'pending',
-            ttlMs: body.ttlMs,
-            uploadToken: `u${made + 1}`,
-            files: new Map(),
-          }
-        : {}
-    );
-    return [
-      200,
-      {
-        previewToken: record.previewToken,
-        url: record.url,
-        ...(persistent ? { uploadToken: record.uploadToken } : {}),
-      },
-    ];
-  };
-}
-
 export function startHub() {
   const hub = { trays: 0, sockets: [], fromLeader: [], waiters: [] };
   const followers = bootstraps(hub);
   const guests = biscotti(hub, followers);
-  const previews = previewRecords(hub);
-  const bridged = bridges(hub);
   const server = createServer(async (request, response) => {
     const cors = {
       'access-control-allow-origin': '*',
@@ -508,27 +192,9 @@ export function startHub() {
     };
     if (request.method === 'OPTIONS') return response.writeHead(204, cors).end();
     const url = new URL(request.url, hub.url);
-    if (url.pathname === '/__slicc/preview-bridge.js')
-      return response
-        .writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' })
-        .end(bridged.bootstrap());
-    const visiting = /^\/__preview\/([^/]+)(\/.*)$/.exec(url.pathname);
-    if (visiting) {
-      const record = hub.previews.get(decodeURIComponent(visiting[1]));
-      const answer = await hub.visit(record?.previewToken, visiting[2]);
-      if (!answer.ok) return response.writeHead(answer.status).end(answer.reason ?? 'error');
-      let page = answer.body;
-      if (record.bridge && /^text\/html/i.test(answer.mime ?? ''))
-        page = Buffer.from(
-          `${bridged.script(record, request.headers.host)}${page.toString('utf8')}`
-        );
-      return response.writeHead(200, { 'content-type': answer.mime }).end(page);
-    }
     const bytes = url.pathname.startsWith('/api/tray/') ? await raw(request) : null;
     const sent = bytes ? parsed(bytes) : null;
-    const api = sent
-      ? ((await previews(request, url, sent, bytes)) ?? (await guests.api(request, url, sent)))
-      : null;
+    const api = sent ? await guests.api(request, url, sent) : null;
     if (api) return response.writeHead(api[0], cors).end(JSON.stringify(api[1]));
     const seated = /^\/join\/(g\d+)$/.exec(url.pathname);
     const guest = seated ? guests.join(seated[1], await body(request)) : null;
@@ -562,14 +228,11 @@ export function startHub() {
   });
   const sockets = new WebSocketServer({ server });
   sockets.on('connection', (socket, request) => {
-    if (request.url.startsWith('/__slicc/bridge')) return bridged.open(socket, request);
     hub.sockets.push({ socket, path: request.url });
     socket.on('message', (data) => {
       const message = JSON.parse(data);
       if (message.type === 'ping') return;
-      if (message.type === 'preview.response') return hub.answered(message);
       followers.fromLeader(message);
-      bridged.fromLeader(message);
       hub.fromLeader.push(message);
       for (const wake of hub.waiters.splice(0)) wake();
     });

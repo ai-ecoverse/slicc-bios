@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { actPackage, boot, ready, run } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
-import { startHub } from './fake-hub.mjs';
+import { startServeHub } from './fake-serve-hub.mjs';
 
 const chrome = await launch({ extension: false, timeout: 120000 });
 const { port: devtoolsPort } = await devtools(chrome);
@@ -58,7 +58,7 @@ async function visit(url) {
 }
 
 async function seven(t, { extension = false } = {}) {
-  const hub = await startHub();
+  const hub = await startServeHub();
   t.after(() => hub.close());
   const page = await chrome.page(t);
   if (extension) {
@@ -66,10 +66,9 @@ async function seven(t, { extension = false } = {}) {
     t.after(over.close);
   }
   await boot(page);
-  await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await page.evaluate((url) => localStorage.setItem('slicc-os.serve-hub', url), hub.url);
   await page.reload();
   await ready(page);
-  await page.until(() => document.querySelector('slicc-app').model.network.status().links?.joinUrl);
   await page.until(() =>
     document
       .querySelector('slicc-app')
@@ -104,11 +103,11 @@ test('serve.publish with the bridge: kernel playwright-cli drives a visitor tab 
   const published = await until(async () => (await lines(page, 'pub.jsonl'))[0], 'the publish');
   const { previewToken, url, webhook } = published;
   assert.match(webhook, /^serve-[0-9a-f]{16}$/);
-  assert.equal(url, `${hub.url}/__preview/${encodeURIComponent(previewToken)}/`);
-  const minted = hub.minting.at(-1);
+  assert.equal(url, `http://${previewToken}.localhost:${hub.port}/`);
+  const minted = hub.mints.at(-1);
   assert.deepEqual(
-    [minted.bridge, minted.maxTabs, minted.quiet, minted.webhookId],
-    [true, 2, false, webhook]
+    [minted.bridge, minted.maxTabs, minted.quiet, 'webhookId' in minted],
+    [true, 2, false, false]
   );
   const hook = JSON.parse(await shell(page, 'hook', `cat /root/.slicc/webhooks/${webhook}.json`));
   assert.equal(hook.target, 'cone');
@@ -125,7 +124,7 @@ test('serve.publish with the bridge: kernel playwright-cli drives a visitor tab 
   );
   assert.deepEqual(
     [connected.previewToken, connected.connId, connected.announced, connected.origin],
-    [previewToken, tab.connId, true, hub.url]
+    [previewToken, tab.connId, true, new URL(url).origin]
   );
   assert.deepEqual(hub.states.at(-1), {
     type: 'preview.state.update',
@@ -242,7 +241,7 @@ test('next to a browser the guard drives, a quiet bridged preview adds its visit
     async () => (await lines(page, 'quiet.jsonl'))[0],
     'the publish'
   );
-  assert.deepEqual([hub.minting.at(-1).maxTabs, hub.minting.at(-1).quiet], [1, true]);
+  assert.deepEqual([hub.mints.at(-1).maxTabs, hub.mints.at(-1).quiet], [1, true]);
   const visitor = await visit(url);
   t.after(() => visitor.close().catch(() => undefined));
   const connected = await until(
@@ -257,7 +256,7 @@ test('next to a browser the guard drives, a quiet bridged preview adds its visit
   });
   const target = `preview:${previewToken}:${connected.connId}`;
   const listed = await shell(page, 'both-list', 'playwright-cli tab-list');
-  const rows = listed.split('\n').filter((row) => row.includes('/__preview/'));
+  const rows = listed.split('\n').filter((row) => row.includes(`${previewToken}.localhost`));
   assert.equal(rows.length, 2, listed);
   const index = /^\D*(\d+)/.exec(rows.find((row) => row.includes(`[${target}]`)) ?? '')?.[1];
   assert.ok(index, listed);

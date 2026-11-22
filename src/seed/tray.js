@@ -172,22 +172,7 @@ export function trayHub(origin, fetcher) {
     return claimed;
   }
 
-  async function upload(current, previewToken, uploadToken, tail, init) {
-    if (!current?.trayId) throw new Error(NOT_LEADING);
-    const response = await fetcher(
-      `${origin}/api/tray/${encodeURIComponent(current.trayId)}/preview/${encodeURIComponent(previewToken)}/${tail}`,
-      { ...init, headers: { ...init.headers, authorization: `Bearer ${uploadToken}` } }
-    );
-    const value = await response.json().catch(() => ({}));
-    return {
-      status: response.status,
-      ok: response.ok,
-      value: value ?? {},
-      headers: response.headers,
-    };
-  }
-
-  return { lead, seat, upload };
+  return { lead, seat };
 }
 
 const refusal = (send) => (message, code, text) =>
@@ -471,63 +456,14 @@ function joins(follower, seats) {
   };
 }
 
-const previewGone = (message) => ({
-  type: 'preview.response',
-  reqId: message.reqId,
-  ok: false,
-  status: 404,
-  reason: 'this preview is no longer served',
-});
-
-const webhookHandler = (onWebhook, previews) => (message) => {
-  if (previews()?.bridge?.emitted(message) || WEBHOOK.test(message?.webhookId ?? '')) return;
+const webhookHandler = (onWebhook) => (message) => {
+  if (WEBHOOK.test(message?.webhookId ?? '')) return;
   const found = webhookDelivery(message);
   if (!found || !onWebhook) return;
   Promise.resolve()
     .then(() => onWebhook(found.name, found.delivery))
     .catch((failed) => console.warn(`webhook ${found.name}: ${failed.message}`));
 };
-
-function previewHandlers(previews, send) {
-  return {
-    'preview.request': (message) => {
-      const control = previews();
-      if (!control) return send(previewGone(message));
-      Promise.resolve()
-        .then(() => control.request(message, send))
-        .catch((failed) => {
-          console.warn(`preview ${message.reqId}: ${failed.message}`);
-          send({ ...previewGone(message), status: 500, reason: failed.message });
-        });
-    },
-    'preview.revoked': (message) => previews()?.revoked(message),
-    'preview.state': (message) => previews()?.state(message),
-    'bridge.connected': (message) => previews()?.bridge?.connected(message),
-    'bridge.disconnected': (message) => previews()?.bridge?.disconnected(message),
-    'bridge.cdp.response': (message) => previews()?.bridge?.responded(message),
-  };
-}
-
-const previewApi = (hub, now, send, onWebhook) => ({
-  ready: () => now().ready,
-  send,
-  deliver: async (name, delivery) => onWebhook?.(name, delivery),
-  trayId: () => now().session?.trayId ?? null,
-  mint: (body) => hub.seat(now().session, 'preview', body),
-  stop: (previewToken) => hub.seat(now().session, 'preview/stop', { previewToken }),
-  list: () => hub.seat(now().session, 'previews', undefined, 'GET'),
-  file: ({ previewToken, uploadToken, path, type, bytes }) =>
-    hub.upload(now().session, previewToken, uploadToken, `file?path=${encodeURIComponent(path)}`, {
-      method: 'PUT',
-      headers: { 'content-type': type },
-      body: bytes,
-    }),
-  finalize: ({ previewToken, uploadToken }) =>
-    hub.upload(now().session, previewToken, uploadToken, 'finalize', {
-      method: 'POST',
-      headers: {},
-    }),
-});
 
 const failed = (answered) =>
   new Error(answered.value.error ?? `the tray hub answered ${answered.status}`);
@@ -616,7 +552,6 @@ export function createTray({
   timers = globalThis,
   onWebhook = null,
   onGuest = null,
-  previews = () => null,
   makePeer = (config) => new RTCPeerConnection(config),
   now = Date.now,
 }) {
@@ -668,11 +603,9 @@ export function createTray({
       error = null;
       attempts = 0;
       changed();
-      previews()?.connected();
     },
     ...joins(follower, seats),
-    ...previewHandlers(previews, send),
-    'webhook.event': webhookHandler(onWebhook, previews),
+    'webhook.event': webhookHandler(onWebhook),
   };
 
   function open(claimed) {
@@ -766,7 +699,6 @@ export function createTray({
       changed();
     },
     guests: guestHub,
-    previews: previewApi(hub, () => ({ session, ready: state === 'ready' }), send, onWebhook),
     status: () => described(state, error, session, page),
     away: () => awayDevices(devices, links),
     known: (id) => id in devices,

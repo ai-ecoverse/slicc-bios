@@ -216,24 +216,23 @@ export function snapshotStore({ storage = globalThis.localStorage, now = Date.no
   };
 }
 
-async function minted(tray, refusal, stop, request) {
-  const { servedRoot, entryPath, ttlMs } = request;
-  const answer = await tray.previews.mint({ servedRoot, entryPath, allowLive: false, ttlMs });
+async function minted(hub, refusal, stop, request) {
+  const { tag, entry, ttlMs } = request;
+  const answer = await hub.mint({ entry, tag, ttlMs });
   const refused = refusal(answer);
   if (refused) return { refused: { ...refused, during: 'mint' } };
-  const { previewToken, url, uploadToken } = answer.value ?? {};
-  if (typeof previewToken === 'string' && typeof url === 'string' && uploadToken)
-    return { previewToken, url, uploadToken };
+  const { previewToken, url } = answer.value;
+  if (typeof previewToken === 'string' && typeof url === 'string') return { previewToken, url };
   if (typeof previewToken === 'string') await stop(previewToken);
-  throw new Error("the tray hub's mint answer has no previewToken, url or uploadToken");
+  throw new Error("the serve hub's mint answer has no previewToken or url");
 }
 
-function uploads(tray, refusal, { previewToken, uploadToken }, { counts, progress }) {
+function uploads(hub, refusal, { previewToken }, { counts, progress }) {
   const pending = new Set();
   let failure = null;
   let uploaded = 0;
   const send = async (file) => {
-    const refused = refusal(await tray.previews.file({ previewToken, uploadToken, ...file }));
+    const refused = refusal(await hub.file({ previewToken, ...file }));
     if (refused) failure ??= new Refused({ ...refused, during: 'upload', path: file.path });
     uploaded += 1;
     progress?.(`uploaded ${uploaded} of ${counts.files} files`);
@@ -259,23 +258,23 @@ function uploads(tray, refusal, { previewToken, uploadToken }, { counts, progres
   };
 }
 
-async function finalized(tray, refusal, held) {
-  const answer = await tray.previews.finalize(held);
+async function finalized(hub, refusal, held) {
+  const answer = await hub.finalize(held.previewToken);
   const refused = refusal(answer);
   if (refused) throw new Refused({ ...refused, during: 'finalize' });
-  return typeof answer.value?.url === 'string' ? answer.value.url : held.url;
+  return typeof answer.value.url === 'string' ? answer.value.url : held.url;
 }
 
-export function publishSnapshot({ tray, refusal, warn = () => {} }) {
+export function publishSnapshot({ hub, refusal, warn = () => {} }) {
   const stop = (previewToken) =>
-    tray.previews
+    hub
       .stop(previewToken)
       .catch((error) => warn(`serve: stopping an unfinished snapshot: ${error.message}`));
   return async (request) => {
     const { body, signal } = request;
-    const held = await minted(tray, refusal, stop, request);
+    const held = await minted(hub, refusal, stop, request);
     if (held.refused) return held;
-    const sending = uploads(tray, refusal, held, request);
+    const sending = uploads(hub, refusal, held, request);
     const reader = bodyReader(body);
     try {
       for await (const file of snapshotFiles(reader, request.counts)) {
@@ -284,7 +283,7 @@ export function publishSnapshot({ tray, refusal, warn = () => {} }) {
       }
       await sending.settle();
       if (signal?.aborted) throw signal.reason;
-      const url = await finalized(tray, refusal, held);
+      const url = await finalized(hub, refusal, held);
       if (signal?.aborted) throw signal.reason;
       return { previewToken: held.previewToken, url };
     } catch (error) {
@@ -297,16 +296,33 @@ export function publishSnapshot({ tray, refusal, warn = () => {} }) {
   };
 }
 
-export function createSnapshots({ tray, refusal, store, id, now, warn, prefix, publicUrl, ready }) {
-  const upload = publishSnapshot({ tray, refusal, warn });
+export function createSnapshots({
+  hub,
+  refusal,
+  store,
+  id,
+  now,
+  warn,
+  prefix,
+  publicUrl,
+  entryUrl,
+  ready,
+}) {
+  const upload = publishSnapshot({ hub, refusal, warn });
   const visible = (item, uid) => uid === 0 || item.uid === uid;
   return {
     async snapshot({ root, entry, ttlMs, counts, stamp, body, signal, progress }) {
       ready();
-      const servedRoot = `${prefix}${id()}`;
-      const entryPath = `${servedRoot}/${entry ?? 'index.html'}`;
-      const trayId = tray.previews.trayId();
-      const done = await upload({ servedRoot, entryPath, ttlMs, counts, body, signal, progress });
+      const tag = `${prefix}${id()}`;
+      const done = await upload({
+        tag,
+        entry: entryUrl(entry),
+        ttlMs,
+        counts,
+        body,
+        signal,
+        progress,
+      });
       if (done.refused) return done;
       const since = now();
       const item = {
@@ -318,7 +334,6 @@ export function createSnapshots({ tray, refusal, store, id, now, warn, prefix, p
         mode: 'persistent',
         expiresAt: since + ttlMs,
         uid: stamp?.uid ?? null,
-        ...(trayId ? { trayId } : {}),
         ...counts,
       };
       store.add(item);
@@ -337,6 +352,7 @@ export function createSnapshots({ tray, refusal, store, id, now, warn, prefix, p
           mode,
           expiresAt,
         })),
+    legacy: (token) => typeof store.find(token)?.trayId === 'string',
     held(token, uid) {
       const item = store.find(token);
       if (!item) return false;

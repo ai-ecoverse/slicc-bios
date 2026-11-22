@@ -1,0 +1,12 @@
+{
+  "name": "relay-fixture",
+  "private": true,
+  "slicc": {
+    "commands": {
+      "relay-fixture": {
+        "abi": "js",
+        "module": "index.mjs"
+      }
+    }
+  }
+}

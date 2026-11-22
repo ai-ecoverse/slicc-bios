@@ -33,7 +33,6 @@ import {
   targetInfo,
   translate,
   URL_CHARS,
-  WEBHOOK,
 } from './bridge-cdp.js';
 
 const PROBE = '[location.href, document.title]';
@@ -541,30 +540,23 @@ export class Bridge {
   }
 
   emitted(message) {
-    if (!WEBHOOK.test(text(message, 'webhookId'))) return false;
-    const headers = message.headers && typeof message.headers === 'object' ? message.headers : {};
-    const token = text(headers, TOKEN_HEADER);
-    const conn = text(headers, CONN_HEADER);
+    const token = text(message, 'previewToken');
+    const conn = text(message, 'connId');
     const tab = this.tabs.get(conn);
     const live = tab?.token === token;
     const preview = live ? this.previews.get(tab.token) : undefined;
     if (!preview) {
-      this.warn(
-        `serve: dropped an emit for ${message.webhookId} from a connection seven doesn't hold`
-      );
-      return true;
+      this.warn(`serve: dropped an emit from a connection seven doesn't hold`);
+      return;
     }
-    if (preview.webhook !== message.webhookId) return true;
-    const body = message.body && typeof message.body === 'object' ? message.body : {};
-    const name = nameOf(body.name);
-    const payload = { name, ...bounded(body.detail) };
-    this.tell(preview, this.record('emit', token, conn, { name, detail: cut(body.detail) }));
+    const name = nameOf(message.name);
+    const payload = { name, ...bounded(message.detail) };
+    this.tell(preview, this.record('emit', token, conn, { name, detail: cut(message.detail) }));
     void this.handOn(preview.webhook, {
       id: null,
       headers: { 'content-type': 'application/json', [CONN_HEADER]: conn, [TOKEN_HEADER]: token },
       body: JSON.stringify(payload),
     });
-    return true;
   }
 
   relinked() {

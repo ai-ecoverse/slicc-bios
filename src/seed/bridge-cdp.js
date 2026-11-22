@@ -16,9 +16,9 @@ export const NO_DESCRIPTION = "the node can't be described";
 export const NO_NODE_IDS =
   'the preview bridge has no DOM node ids; describe a node by its objectId';
 export const BY_BACKEND = 'the preview bridge resolves nodes by backendNodeId only';
-export const NO_HUB = "seven isn't connected to the tray hub";
+export const NO_HUB = "seven isn't connected to the serve hub";
 export const NO_TARGET = 'No target with given id found';
-export const STALE = 'the tray hub no longer had it after seven reconnected';
+export const STALE = 'the serve hub no longer had it after seven reconnected';
 export const HANDLE = '7';
 export const PREVIEW_ROUTE = { kind: 'preview' };
 export const TARGET_PREFIX = 'preview:';

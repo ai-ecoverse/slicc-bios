@@ -98,7 +98,7 @@ import {
 } from './requests.js';
 import { entersInFrame, showsSecrets, withSecrets } from './secrets.js';
 import { serialPorts } from './serial.js';
-import { publicPreviews } from './serve.js';
+import { publicPreviews, serveHubBase } from './serve.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -316,14 +316,14 @@ const leaders = createLeaders({
   }),
   name: `seven on ${location.host}`,
 });
+const toAgent = (name, delivery) => deliverWebhook(owner, name, delivery);
 const tray = hub
   ? createTray({
       links,
       origin: hub,
       page: home(),
-      onWebhook: (name, delivery) => deliverWebhook(owner, name, delivery),
+      onWebhook: toAgent,
       onGuest: (seat, stream) => bridgeAgent(owner, stream, { guest: seat }),
-      previews: () => served.control(),
     })
   : null;
 tray?.on(() => cdpIn.revoked());
@@ -444,7 +444,14 @@ const remoteBrowser = switches.add({
   off: () => cdpIn.off(),
 });
 const serial = serialPorts({ create: createDevices, switches, clicks, live });
-const served = publicPreviews({ tray, kernel: () => kernel, switches, live });
+const served = publicPreviews({
+  base: serveHubBase({ hostname: location.hostname, home: home(), storage: localStorage }),
+  kernel: () => kernel,
+  switches,
+  live,
+  deliver: toAgent,
+});
+const sweepPreviews = served.start;
 const displays = displayer();
 const recorder = composerCapture({
   audio: personal(audio, guarded),
@@ -1082,6 +1089,7 @@ async function own() {
   installLocal(links);
   pairing.start();
   tray?.start();
+  void sweepPreviews();
   leaders.start();
   files = await folders.attach(kernel, model);
   files.files.on('mounts', links.changed);
