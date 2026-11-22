@@ -4420,9 +4420,17 @@ class Guard {
     if (method !== 'Network.responseReceivedExtraInfo') return true;
     const redirect = params.statusCode >= 300 && params.statusCode < 400;
     if (!redirect || this.extras.has(params.requestId)) return true;
-    if (!this.redact({ headers: params.headers ?? {} }).changed.length) return true;
+    const { params: scrubbed } = this.redact(params);
+    if (
+      !provenRedirectExtraNeverForwardsPathQueryFragmentOrProtectedSetCookieOrLocation(
+        this,
+        scrubbed,
+        params
+      )
+    )
+      return true;
     kept(this.extras, params.requestId);
-    this.redacted(message);
+    this.redacted({ ...message, params: scrubbed }, message);
     return true;
   }
 
@@ -8162,6 +8170,161 @@ const ordinaryFrame = (frame) =>
 
 const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
+
+export function originOnlyNoPathQueryOrFragment(value) {
+  if (typeof value !== 'string' || !URL.canParse(value)) return false;
+  return value === new URL(value).origin;
+}
+
+export function originOnlyRedirectHeader(isUrl, name, value) {
+  if (typeof value !== 'string') return false;
+  const key = name.toLowerCase();
+  if (key === 'refresh') {
+    const match = /^\s*\d*\s*;?\s*url\s*=\s*(.*)$/i.exec(value);
+    return match ? originOnlyNoPathQueryOrFragment(match[1].trim()) : !isUrl(value);
+  }
+  if (key === 'link') {
+    const uris = [...value.matchAll(/<([^>]+)>/g)].map((match) => match[1].trim());
+    if (!uris.length) return !isUrl(value);
+    return uris.every((uri) => originOnlyNoPathQueryOrFragment(uri));
+  }
+  return originOnlyNoPathQueryOrFragment(value);
+}
+
+export function unfoldSetCookieLines(value) {
+  if (Array.isArray(value)) return value.flatMap((item) => unfoldSetCookieLines(item));
+  if (typeof value !== 'string') return null;
+  const lines = [];
+  let current = '';
+  for (const part of value.split(LINES)) {
+    if (current.length && /^[ \t]/.test(part)) {
+      current += part.trimStart();
+      continue;
+    }
+    if (current.length) lines.push(current);
+    current = part;
+  }
+  if (current.length) lines.push(current);
+  return lines;
+}
+
+export function setCookieLinesFromHeaderText(text) {
+  if (typeof text !== 'string') return [];
+  const lines = [];
+  let current = null;
+  for (const raw of text.split(LINES)) {
+    const trimmed = raw.trimStart();
+    if (COOKIE_LINE.test(trimmed)) {
+      if (current !== null) lines.push(current);
+      current = trimmed.replace(/^(?:set-)?cookie2?\s*:\s*/i, '');
+      continue;
+    }
+    if (current !== null && /^[ \t]/.test(raw)) {
+      current += raw.trimStart();
+      continue;
+    }
+    if (current !== null) {
+      lines.push(current);
+      current = null;
+    }
+  }
+  if (current !== null) lines.push(current);
+  return lines;
+}
+
+export function protectedSetCookieLine(guard, line) {
+  const named = guard.lineDomains(line);
+  if (named !== null) return named === true;
+  return true;
+}
+
+export function noProtectedHostSetCookie(guard, value) {
+  const lines = unfoldSetCookieLines(value);
+  if (lines === null) return false;
+  return !lines.some((line) => protectedSetCookieLine(guard, line));
+}
+
+export function noProtectedCookiePartitionKey(guard, key) {
+  if (key === undefined || key === null) return true;
+  const site =
+    typeof key === 'string' ? key : typeof key === 'object' ? key.topLevelSite : undefined;
+  if (typeof key === 'object' && key !== null && site === undefined) return true;
+  if (typeof site !== 'string') return false;
+  if (site === '' || site === 'null') return true;
+  return !guard.is.url(site);
+}
+
+function headerMap(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function headerName(name) {
+  return typeof name === 'string' ? name.trim().toLowerCase() : '';
+}
+
+function noProtectedSetCookiesInHeaders(guard, headers) {
+  const map = headerMap(headers);
+  if (!map) return true;
+  return Object.entries(map).every(([name, value]) => {
+    const key = headerName(name);
+    if (key !== 'set-cookie' && key !== 'set-cookie2') return true;
+    return noProtectedHostSetCookie(guard, value);
+  });
+}
+
+function originOnlyRedirectTargets(guard, headers, names) {
+  const map = headerMap(headers);
+  if (!map) return true;
+  const isUrl = (url) => guard.is.url(url);
+  return Object.entries(map).every(([name, value]) => {
+    const key = headerName(name);
+    if (!names.includes(key)) return true;
+    return originOnlyRedirectHeader(isUrl, key, value);
+  });
+}
+
+function noProtectedLinksInHeaderText(guard, text) {
+  const isUrl = (url) => guard.is.url(url);
+  return text.split(LINES).every((line) => {
+    if (!/^\s*link\s*:/i.test(line)) return true;
+    return originOnlyRedirectHeader(isUrl, 'link', line.replace(/^\s*link\s*:\s*/i, ''));
+  });
+}
+
+function provenRedirectExtraHeaderTexts(guard, scrubbed, original) {
+  for (const key of ['headersText', 'requestHeadersText']) {
+    const scrubbedText = scrubbed[key];
+    const originalText = original[key] ?? scrubbedText;
+    if (typeof scrubbedText === 'string' && guard.redact({ [key]: scrubbedText }).changed.length)
+      return false;
+    if (typeof originalText !== 'string') continue;
+    if (!noProtectedHostSetCookie(guard, setCookieLinesFromHeaderText(originalText))) return false;
+    if (!noProtectedLinksInHeaderText(guard, originalText)) return false;
+  }
+  return true;
+}
+
+export function provenRedirectExtraNeverForwardsPathQueryFragmentOrProtectedSetCookieOrLocation(
+  guard,
+  scrubbed,
+  original = scrubbed
+) {
+  if (guard.redact(scrubbed).changed.length) return false;
+  if (
+    !noProtectedCookiePartitionKey(guard, original.cookiePartitionKey) ||
+    !noProtectedCookiePartitionKey(guard, scrubbed.cookiePartitionKey)
+  )
+    return false;
+  const scrubbedHeaders = scrubbed.headers;
+  const originalHeaders = original.headers ?? scrubbedHeaders;
+  if (!noProtectedSetCookiesInHeaders(guard, originalHeaders)) return false;
+  if (
+    !originOnlyRedirectTargets(guard, scrubbedHeaders, ['location', 'content-location', 'refresh'])
+  )
+    return false;
+  if (!originOnlyRedirectTargets(guard, originalHeaders, ['link'])) return false;
+  return provenRedirectExtraHeaderTexts(guard, scrubbed, original);
+}
 
 export function guardProtected(connection, own, tabs = new Map(), route, privateFrames, caller) {
   return new Guard(connection, own, tabs, route, privateFrames, caller).start();
