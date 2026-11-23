@@ -249,25 +249,11 @@ test('slicc-extension with frames() keeps a page with a protected cross-site fra
     'function',
     `slicc-extension ${CURRENT_EXTENSION.version} offers frames()`
   );
-  if (measured.row.attached) {
-    assert.match(
-      measured.row.attached.error?.message ?? '',
-      /^slicc: refused:/,
-      'the page that holds the protected frame is refused at attach'
-    );
-    if (!measured.childRequested) {
-      const loaded = await measure(t, { frames: true, childOrigin: SEVEN });
-      controlPassed(loaded.control, 'protected');
-      assert.ok(loaded.childRequested, 'child never requested');
-      assert.equal(
-        loaded.row.attached,
-        undefined,
-        'the parent attaches so the protected frame is loaded and refused'
-      );
-      stayedClosed(loaded, 'a protected remote owner', 'protected');
-    }
-  } else {
-    assert.ok(measured.childRequested, 'child never requested');
-    stayedClosed(measured, 'a protected remote owner', 'protected');
-  }
+  assert.ok(measured.childRequested, 'child never requested');
+  assert.equal(
+    measured.row.attached,
+    undefined,
+    'the parent attaches so the protected frame is loaded and refused'
+  );
+  stayedClosed(measured, 'a protected remote owner', 'protected');
 });
