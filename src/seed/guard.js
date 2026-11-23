@@ -92,6 +92,7 @@ const PLACE_RETRIES = 2;
 const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
+const HINT_MS = 5000;
 export const DROP_LOG_MS = 60_000;
 export const DROP_LOG_CAP = 20;
 const LISTED_CHECKS = 8;
@@ -4970,7 +4971,8 @@ class Guard {
       return this.cut(sessionId);
     const answer = await this.answered(this.call('Page.getFrameTree', {}, sessionId));
     if (this.quarantined.get(sessionId) !== ticket) return;
-    const frames = answer && !answer.error ? this.documentFrames(answer.result?.frameTree) : null;
+    const tree = answer && !answer.error ? answer.result?.frameTree : undefined;
+    const frames = tree ? (this.documentFrames(tree) ?? this.loadingChildren(tree)) : null;
     if (!frames || frames.some((frame) => this.frameLive(frame)) || isHeld(entry.targetId))
       return this.cut(sessionId);
     for (const frame of frames) this.noteError(frame, sessionId);
@@ -5029,11 +5031,17 @@ class Guard {
     }
   }
 
+  hintCurrent(info) {
+    if (this.hinted(info) || this.is.url(info?.url))
+      return this.answered(this.current(info?.targetId));
+    return this.within(this.current(info?.targetId, HINT_MS), HINT_MS + ANSWER_MS);
+  }
+
   async targetHint(message) {
     const info = message.params?.targetInfo;
     this.learn(info);
     const targetId = info?.targetId;
-    const guarded = await this.answered(this.current(targetId));
+    const guarded = await this.hintCurrent(info);
     if (this.hints.get(targetId) !== message) return;
     const unproven = await this.errorUnproven(info, targetId);
     if (guarded === false && !this.is.url(info?.url)) {
