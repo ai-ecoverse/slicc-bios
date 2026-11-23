@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
 import { test } from 'node:test';
-import { guardProtected, PROTECTED } from '../../src/seed/guard.js';
+import { FAILED, PROTECTED, guardProtected as stockGuard } from '../../src/seed/guard.js';
 
 const SEVEN = 'https://seven.invalid';
 const SEVEN_PAGE = `${SEVEN}/os/`;
@@ -8,6 +9,7 @@ const VAULT = 'https://vault.sliccy.ai/doc?n=lag';
 const ORDINARY = 'https://ordinary.invalid/doc?n=lag';
 const SECRET = 'lagging-attach-secret';
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+const SEED = new URL('../../src/seed/', import.meta.url);
 
 const routes = [
   ['devtools', undefined],
@@ -29,6 +31,54 @@ const reads = [
   ['DOM.getDocument', {}],
   ['Page.captureScreenshot', {}],
 ];
+
+const contentClasses = [
+  ['Page.printToPDF', {}],
+  ['DOMSnapshot.captureSnapshot', { computedStyles: [] }],
+  ['Accessibility.getFullAXTree', {}],
+  ['Input.dispatchKeyEvent', { type: 'keyDown', key: 'a' }],
+  ['Input.dispatchMouseEvent', { type: 'mousePressed', x: 1, y: 1, button: 'left' }],
+  ['DOM.getOuterHTML', { nodeId: 1 }],
+];
+
+const MUTANTS = {
+  'skip-recheck': [
+    'guard.js',
+    '    if (await this.recheck(message)) return;\n    return this.pass(message);',
+    '    return this.pass(message);',
+  ],
+};
+
+registerHooks({
+  resolve(specifier, context, next) {
+    const mutant = context.parentURL && URL.parse(context.parentURL)?.searchParams.get('mutant');
+    const resolved = next(specifier, context);
+    if (
+      !mutant ||
+      !MUTANTS[mutant] ||
+      !specifier.startsWith('./') ||
+      specifier.slice(2) !== 'guard.js'
+    )
+      return resolved;
+    return { ...resolved, url: `${resolved.url}?mutant=${mutant}` };
+  },
+  load(url, context, next) {
+    const mutant = URL.parse(url)?.searchParams.get('mutant');
+    const loaded = next(url, context);
+    if (!mutant || !MUTANTS[mutant] || !url.split('?')[0].endsWith('/guard.js')) return loaded;
+    const [, from, to] = MUTANTS[mutant];
+    const source = String(loaded.source);
+    assert.ok(source.includes(from), `mutant ${mutant}: patch site missing`);
+    return { ...loaded, source: source.replace(from, to) };
+  },
+});
+
+const loadGuard = async (mutant) => {
+  if (!mutant) return stockGuard;
+  return (await import(`${new URL('guard.js', SEED).href}?mutant=${mutant}`)).guardProtected;
+};
+
+const guardProtected = stockGuard;
 
 function originOf(url) {
   for (const scheme of ['view-source:', 'blob:', 'filesystem:']) {
@@ -160,6 +210,24 @@ function chrome(pages, { staleInfo = false } = {}) {
           return reply({ result: { body: SECRET, base64Encoded: false } });
         case 'Page.captureScreenshot':
           return reply({ result: { data: Buffer.from(SECRET).toString('base64') } });
+        case 'Page.printToPDF':
+          return reply({ result: { data: Buffer.from(SECRET).toString('base64') } });
+        case 'DOMSnapshot.captureSnapshot':
+          return reply({
+            result: { documents: [{ nodes: { nodeName: [SECRET] } }], strings: [SECRET] },
+          });
+        case 'Accessibility.getFullAXTree':
+          return reply({
+            result: { nodes: [{ role: { value: 'WebArea' }, name: { value: SECRET } }] },
+          });
+        case 'CSS.getComputedStyleForNode':
+        case 'CSS.getMatchedStylesForNode':
+          return reply({ result: { computedStyle: [{ name: 'content', value: SECRET }] } });
+        case 'DOM.getOuterHTML':
+          return reply({ result: { outerHTML: `<div>${SECRET}</div>` } });
+        case 'Input.dispatchKeyEvent':
+        case 'Input.dispatchMouseEvent':
+          return reply({ result: {} });
         default:
           return reply({ result: {} });
       }
@@ -168,9 +236,9 @@ function chrome(pages, { staleInfo = false } = {}) {
   return connection;
 }
 
-function harness(t, pages, route, options) {
+function harness(t, pages, route, options, protect = guardProtected) {
   const raw = chrome(pages, options);
-  const guarded = guardProtected(raw, [SEVEN], new Map(), route);
+  const guarded = protect(raw, [SEVEN], new Map(), route);
   t.after(() => guarded.close?.());
   const got = [];
   guarded.onmessage = (text) => got.push(JSON.parse(text));
@@ -288,4 +356,79 @@ for (const [name, route] of routes) {
     h.raw.announce('foreign');
     await tick();
   });
+
+  for (const [method, params] of contentClasses) {
+    test(`on ${name}, lagging attach refuses ${method} before targetInfoChanged of the vault`, async (t) => {
+      const pages = { foreign: blankPage() };
+      const h = harness(t, pages, route, { staleInfo: true });
+      h.created('foreign');
+      await tick();
+      const attached = await h.send('Target.attachToTarget', {
+        targetId: 'foreign',
+        flatten: true,
+      });
+      assert.equal(attached?.error, undefined, JSON.stringify(attached));
+      h.raw.navigate('foreign', `view-source:${VAULT}`);
+      const answer = await h.send(method, params, attached.result.sessionId);
+      assert.equal(answer?.error?.message, PROTECTED, JSON.stringify({ method, answer }));
+      assert.equal(answer?.result, undefined, JSON.stringify({ method, answer }));
+      assert.ok(!h.contentReached('foreign', [method]));
+      assert.deepEqual(h.leaked(SECRET, 'vault.sliccy.ai'), []);
+    });
+  }
 }
+
+test('mutant: skipping recheck lets a lagging first read reach the browser', {
+  timeout: 10000,
+}, async (t) => {
+  const protect = await loadGuard('skip-recheck');
+  const pages = { foreign: blankPage() };
+  const h = harness(t, pages, undefined, { staleInfo: true }, protect);
+  h.created('foreign');
+  await tick();
+  const attached = await h.send('Target.attachToTarget', {
+    targetId: 'foreign',
+    flatten: true,
+  });
+  assert.equal(attached?.error, undefined, JSON.stringify(attached));
+  h.raw.navigate('foreign', `view-source:${VAULT}`);
+  const answer = await h.send('Page.printToPDF', {}, attached.result.sessionId);
+  assert.ok(
+    h.contentReached('foreign', ['Page.printToPDF']) ||
+      answer?.result?.data === Buffer.from(SECRET).toString('base64'),
+    'mutant must turn the lagging printToPDF refusal row red'
+  );
+});
+
+test('a lagging first read whose private frame tree never answers refuses with the check-failed message', {
+  timeout: 10000,
+}, async (t) => {
+  const pages = { foreign: blankPage() };
+  const h = harness(t, pages, undefined, { staleInfo: true });
+  h.created('foreign');
+  await tick();
+  const attached = await h.send('Target.attachToTarget', {
+    targetId: 'foreign',
+    flatten: true,
+  });
+  assert.equal(attached?.error, undefined, JSON.stringify(attached));
+  h.raw.navigate('foreign', `view-source:${VAULT}`);
+  const holdTree = h.raw.send;
+  h.raw.send = (text) => {
+    const command = JSON.parse(text);
+    if (command.method === 'Page.getFrameTree' && command.id >= 2 ** 30) return;
+    return holdTree.call(h.raw, text);
+  };
+  const answer = await h.send('DOM.getOuterHTML', { nodeId: 1 }, attached.result.sessionId);
+  assert.ok(answer?.error, JSON.stringify(answer));
+  assert.match(answer.error.message, /^slicc: refused:/);
+  assert.ok(
+    answer.error.message === PROTECTED ||
+      answer.error.message === FAILED ||
+      /timeout/i.test(answer.error.message),
+    `client refusal names the check failure or timeout: ${answer.error.message}`
+  );
+  assert.equal(answer?.result, undefined);
+  assert.ok(!h.contentReached('foreign', ['DOM.getOuterHTML']));
+  assert.deepEqual(h.leaked(SECRET), []);
+});
