@@ -2598,18 +2598,22 @@ class Guard {
             deadline
           );
     scope.pending -= 1;
+    const setupErrors = [
+      enabled.error && { error: enabled.error },
+      owners.error && { error: owners.error },
+      attached.error && attached.error.message !== NO_AUTO_ATTACH && { error: attached.error },
+      cleanupFailed && { error: disabled.error },
+    ].filter(Boolean);
+    const { soft, broken } = await this.markSetupRefusal(targetId, setupErrors);
     scope.setup = Boolean(
-      !enabled.error && (!attached.error || attached.error.message === NO_AUTO_ATTACH)
+      (!enabled.error || soft) &&
+        (!attached.error || attached.error.message === NO_AUTO_ATTACH || soft)
     );
-    const broken = Boolean(
-      enabled.error ||
-        owners.error ||
-        (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
-        cleanupFailed
-    );
+    const provenErrorPage = soft;
+    if (provenErrorPage) scope.ownersReady = true;
     const late = deadline !== undefined && Date.now() >= deadline;
     const moved = deadline !== undefined && this.revisions.get(targetId) !== revision;
-    scope.failed = broken || !scope.ownersReady || late || moved;
+    scope.failed = (soft ? false : broken) || !scope.ownersReady || late || moved;
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     await this.placePrivateFrames(targetId, deadline);
@@ -2816,7 +2820,9 @@ class Guard {
         !this.relatedHeld(targetId) &&
         nav?.session &&
         nav.done &&
-        (nav.admitted || !established) &&
+        (nav.admitted ||
+          !established ||
+          (this.route === 'link' && this.errorPageByProof(targetId))) &&
         !nav.failed &&
         !nav.held &&
         !nav.taken &&
@@ -3947,6 +3953,123 @@ class Guard {
     return foreignFrame(nav?.cause) ? EXTENSION_FRAME : UNGUARDED;
   }
 
+  errorPageByProof(targetId, tree) {
+    if (tree !== undefined) {
+      const frames = this.documentFrames(tree);
+      return Boolean(
+        frames?.length &&
+          !frames[0].parentId &&
+          typeof frames[0].url === 'string' &&
+          frames[0].url.startsWith('chrome-error:')
+      );
+    }
+    const urls = [];
+    const target = this.targets.get(targetId);
+    if (typeof target?.url === 'string' && target.url) urls.push(target.url);
+    const root = this.frameRoots.get(targetId);
+    if (root) {
+      if (this.errorFrames.has(root)) urls.push(ERROR_PAGE);
+      else {
+        const url = this.frames.get(root);
+        if (typeof url === 'string' && url) urls.push(url);
+      }
+    }
+    const nav = this.navs.get(targetId);
+    if (typeof nav?.last === 'string' && nav.last) urls.push(nav.last);
+    if (nav?.document && typeof nav.document.url === 'string' && nav.document.url)
+      urls.push(nav.document.url);
+    return urls.length > 0 && urls.every((url) => url.startsWith('chrome-error:'));
+  }
+
+  ownSetupRefused(message) {
+    return typeof message === 'string' && message.startsWith('slicc: refused: ');
+  }
+
+  historyRestoreRefused(message) {
+    return message === "slicc: refused: the target's history may restore a protected document";
+  }
+
+  setupRefusalOnly(errors) {
+    return errors.length > 0 && errors.every((step) => this.ownSetupRefused(step.error?.message));
+  }
+
+  historyRestoreRefusal(errors) {
+    return errors.some((step) => this.historyRestoreRefused(step.error?.message));
+  }
+
+  setupRefusalRecoverable(errors, proven) {
+    return this.route === 'link' && this.setupRefusalOnly(errors) && proven;
+  }
+
+  async waitErrorPageProof(targetId, limit = HISTORY_WAIT) {
+    if (this.errorPageByProof(targetId)) return true;
+    const deadline = Date.now() + limit;
+    while (Date.now() < deadline) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      await this.proofSignal(targetId, Math.min(POLL_MS, left));
+      if (this.errorPageByProof(targetId)) return true;
+      const answer = await this.within(
+        this.call('Target.getTargetInfo', { targetId }),
+        Math.min(ANSWER_MS, Math.max(0, deadline - Date.now()))
+      );
+      const info = answer?.result?.targetInfo;
+      if (info?.targetId === targetId) this.learn(info);
+      if (this.errorPageByProof(targetId)) return true;
+      const nav = this.navs.get(targetId);
+      if (nav?.session) {
+        const tree = await this.within(
+          this.call('Page.getFrameTree', {}, nav.session),
+          Math.min(ANSWER_MS, Math.max(0, deadline - Date.now()))
+        );
+        if (tree && !tree.error) {
+          this.rememberTreeError(
+            tree.result?.frameTree,
+            nav.session,
+            nav,
+            this.revisions.get(targetId)
+          );
+          if (this.errorPageByProof(targetId, tree.result?.frameTree)) return true;
+        }
+      }
+    }
+    return this.errorPageByProof(targetId);
+  }
+
+  async freshErrorPageTree(targetId, nav = this.navs.get(targetId)) {
+    if (!nav?.session) return false;
+    const tree = await this.within(this.call('Page.getFrameTree', {}, nav.session), ANSWER_MS);
+    return Boolean(tree && !tree.error && this.errorPageByProof(targetId, tree.result?.frameTree));
+  }
+
+  async markSetupRefusal(targetId, errors) {
+    const nav = this.navs.get(targetId);
+    const history = this.route === 'link' && this.historyRestoreRefusal(errors);
+    const revision = this.revisions.get(targetId);
+    let proven = this.errorPageByProof(targetId);
+    if (history && !proven) {
+      if (!nav?.setupProofWaited) {
+        if (nav) nav.setupProofWaited = true;
+        proven = await this.waitErrorPageProof(targetId);
+      } else proven = await this.freshErrorPageTree(targetId, nav);
+    }
+    let soft = this.setupRefusalRecoverable(errors, proven);
+    if (soft && this.revisions.get(targetId) !== revision) soft = false;
+    if (soft) soft = await this.freshErrorPageTree(targetId, nav);
+    if (nav) {
+      if (history && !soft) nav.setupRefused = true;
+      if (soft) nav.setupRefused = false;
+    }
+    return {
+      soft,
+      broken: errors.length > 0 && !soft,
+    };
+  }
+
+  linkSetupRefusalBlocks(targetId, nav = this.navs.get(targetId)) {
+    return Boolean(nav?.setupRefused && !nav.admitted && !this.errorPageByProof(targetId));
+  }
+
   async arm(nav, session) {
     if (nav.retired) {
       if (session) void this.call('Target.detachFromTarget', { sessionId: session });
@@ -3968,11 +4091,12 @@ class Guard {
       this.call('Page.enable', {}, session),
     ]);
     nav.holds = steps[0].result?.holdsDocuments === true;
-    nav.cause ??= steps.find((step) => step.error)?.error.message;
+    const errors = steps.filter((step) => step.error);
+    nav.cause ??= errors[0]?.error.message;
     await this.focusCreated(nav);
     this.placing.set(nav.targetId, this.place(nav.targetId, session));
     await this.placing.get(nav.targetId);
-    nav.settle(steps.some((step) => step.error));
+    nav.settle((await this.markSetupRefusal(nav.targetId, errors)).broken);
   }
 
   async focusCreated(nav) {
@@ -4018,11 +4142,13 @@ class Guard {
 
   async guarding(method, sessionId) {
     if (sessionId === undefined || UNWAITED.has(method)) return null;
-    const nav = this.navs.get(this.sessions.get(sessionId)?.targetId);
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const nav = this.navs.get(targetId);
     if (!nav) return null;
     await nav.ready;
     if (nav.scrub && !RECOVERS.has(method)) await nav.scrub;
-    return nav.failed ? this.unguarded(nav) : null;
+    if (nav.failed || this.linkSetupRefusalBlocks(targetId, nav)) return this.unguarded(nav);
+    return null;
   }
 
   async verify(sessionId, proof, loading = false) {
@@ -4147,12 +4273,16 @@ class Guard {
   }
 
   async attachmentProof(sessionId, targetId, raw, guarded, recoverable) {
+    const errorPage = this.errorPageByProof(targetId);
     const error =
       this.navs.get(targetId)?.admitted &&
-      this.targets.get(targetId)?.url?.startsWith('chrome-error:');
+      (this.targets.get(targetId)?.url?.startsWith('chrome-error:') || errorPage);
     return recoverable &&
-      (guarded || error) &&
-      (this.is.url(raw.url) || this.errorDocument(sessionId) || this.recalled.has(targetId))
+      (guarded || error || (this.route === 'link' && errorPage)) &&
+      (this.is.url(raw.url) ||
+        this.errorDocument(sessionId) ||
+        this.recalled.has(targetId) ||
+        (this.route === 'link' && errorPage))
       ? this.stranded(targetId)
       : null;
   }
@@ -4247,6 +4377,7 @@ class Guard {
     const nav = this.navs.get(targetId);
     if (nav) {
       nav.admitted = true;
+      nav.setupRefused = false;
       this.rememberTab(targetId);
     }
     if (proof) this.quarantine(sessionId, this.hints.get(targetId) ?? {});
@@ -7310,6 +7441,10 @@ class Guard {
       const nav = this.navs.get(params.targetId);
       if (nav) await nav.ready;
       if (nav?.scrub && !proof) await nav.scrub;
+      if (this.linkSetupRefusalBlocks(params.targetId, nav)) {
+        if (nav) nav.failed = true;
+        return this.unguarded(nav);
+      }
       if (nav?.failed) return this.unguarded(nav);
     }
     if (
@@ -7549,6 +7684,19 @@ class Guard {
       pattern.accepted = !message.error;
   }
 
+  logPassRefusal(message, reason) {
+    const target = this.sessions.get(message.sessionId)?.targetId;
+    this.rateLimitedWarn(
+      `pass\0${target}\0${message.method}\0${reason}`,
+      `the CDP guard refused a command: target ${target}, ${message.method}, ${reason}`
+    );
+  }
+
+  refusePass(message, reason) {
+    this.logPassRefusal(message, reason);
+    return this.refuse(message);
+  }
+
   async pass(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     this.commands.set(requestKey(message), message);
@@ -7556,14 +7704,11 @@ class Guard {
     const { id, method, sessionId } = outgoing;
     this.notePageAutoAttach(outgoing);
     if (this.finished.has(message) || !this.owns(message)) return;
-    if (!(await this.admitContent(message)) || this.departing(message)) return this.refuse(message);
-    if (
-      this.blocked.has(sessionId) &&
-      !(method === 'Page.captureScreenshot' && this.shots.has(requestKey(message)))
-    )
+    const reason = await passGate(this, message, method, sessionId);
+    if (reason) {
+      this.logPassRefusal(message, reason);
       return this.refuse(message);
-    if (pageScoped(method) && this.locked(sessionId) && !this.blankAdmission(message))
-      return this.refuse(message);
+    }
     const gate = await this.extensionGate(method, sessionId);
     if (gate) return this.refuse(message, gate);
     if (method === 'Page.startScreencast') this.casts.add(sessionId);
@@ -8082,7 +8227,7 @@ class Guard {
           (OBSERVED.has(message.method) || message.method === 'Page.captureScreenshot')
         )
       )
-        return this.refuse(message);
+        return this.refusePass(message, this.blocked.has(message.sessionId) ? 'blocked' : 'gone');
       this.queue(
         `send:${message.sessionId ?? ''}`,
         async () => {
@@ -8324,6 +8469,19 @@ export function provenRedirectExtraNeverForwardsPathQueryFragmentOrProtectedSetC
     return false;
   if (!originOnlyRedirectTargets(guard, originalHeaders, ['link'])) return false;
   return provenRedirectExtraHeaderTexts(guard, scrubbed, original);
+}
+
+export async function passGate(guard, message, method, sessionId) {
+  if (!(await guard.admitContent(message))) return 'admitContent';
+  if (guard.departing(message)) return 'departing';
+  if (
+    guard.blocked.has(sessionId) &&
+    !(method === 'Page.captureScreenshot' && guard.shots.has(requestKey(message)))
+  )
+    return 'blocked';
+  if (pageScoped(method) && guard.locked(sessionId) && !guard.blankAdmission(message))
+    return 'locked';
+  return null;
 }
 
 export function guardProtected(connection, own, tabs = new Map(), route, privateFrames, caller) {
