@@ -76,6 +76,11 @@ test('an unanswered target check on a page whose lazy iframes never loaded leave
     undefined
   );
   assert.equal((await wire.send('Fetch.disable', {}, session)).error, undefined);
+  for (const method of ['DOM.getDocument', 'Page.captureScreenshot']) {
+    const before = wire.sent.length;
+    assert.match((await wire.send(method, {}, session)).error?.message ?? '', /^slicc: refused:/);
+    assert.deepEqual(wire.clients(before), []);
+  }
 });
 
 test('a lazy iframe that commits on seven while the page is checked again still cuts it', async (t) => {
