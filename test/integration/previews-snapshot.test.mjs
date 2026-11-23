@@ -252,3 +252,49 @@ test('serve.snapshot mints a snapshot on the serve hub, uploads the body’s fil
   assert.equal((await homeFile(page, 'list3.txt')).trim(), 'listed-0');
   assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.snapshots')), '[]');
 });
+
+test('a kept snapshot minted on the tray hub can’t be stopped on the serve hub: serve.stop says where it lives and seven keeps listing it', async (t) => {
+  const hub = await startServeHub();
+  t.after(() => hub.close());
+  const page = await chrome.page(t);
+  await boot(page);
+  const legacy = {
+    previewToken: 't1.p9',
+    url: 'https://legacy.sliccy.now/',
+    root: '/home/old',
+    since: Date.now() - 1000,
+    mode: 'persistent',
+    expiresAt: Date.now() + 3600000,
+    uid: 0,
+    trayId: 't1',
+    files: 1,
+    bytes: 10,
+  };
+  await page.evaluate(
+    ([url, kept]) => {
+      localStorage.setItem('slicc-os.serve-hub', url);
+      localStorage.setItem('slicc-os.snapshots', JSON.stringify([kept]));
+    },
+    [hub.url, legacy]
+  );
+  await page.reload();
+  await ready(page, undefined, { tools: false });
+  await run(
+    page,
+    `printf '%s\\n' '{"kind":"serve.stop","previewToken":"t1.p9"}' | cat > /dev/embedder 2> /home/legacy.err; echo "legacy-stop-$?" > /home/legacy.done`
+  );
+  assert.equal((await homeFile(page, 'legacy.done')).trim(), 'legacy-stop-1');
+  assert.match(
+    await homeFile(page, 'legacy.err'),
+    /the snapshot t1\.p9 lives on the tray hub, which seven no longer publishes through, so it ends only at its expiry/
+  );
+  await run(
+    page,
+    'exec 4<>/dev/embedder; printf \'{"kind":"serve.list"}\\n\' >&4; cat <&4 > /home/legacy-list.txt; exec 4>&-'
+  );
+  assert.equal(
+    JSON.parse((await homeFile(page, 'legacy-list.txt')).trim()).previewToken,
+    't1.p9',
+    'seven still lists it'
+  );
+});
