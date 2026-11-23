@@ -73,7 +73,8 @@ const PATHS = {
     autoAttach: true,
     errorFrameClass: true,
     iframeAutoAttach: true,
-    signInHold: false,
+    signInHold: true,
+    jsonList: true,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: true,
@@ -90,7 +91,7 @@ const PATHS = {
     autoAttach: true,
     errorFrameClass: false,
     iframeAutoAttach: false,
-    signInHold: false,
+    signInHold: true,
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: false,
@@ -287,6 +288,11 @@ async function unguardedClient(browser) {
       return seen;
     },
     releaseGate,
+    async jsonList() {
+      const response = await fetch(new URL('/json/list', browser.replace(/^ws/, 'http')));
+      if (!response.ok) throw new Error(`/json/list answered ${response.status}`);
+      return response.json();
+    },
     send: (method, params = {}, sessionId) =>
       new Promise((resolve, reject) => {
         next += 1;
@@ -699,6 +705,44 @@ export async function guardHost(
         guards.get(row)?.connection.close();
         guards.delete(row);
       },
+      async list(own, path, wait) {
+        const { tabs, route, frames } = routes[path]();
+        const connection = guardProtected(
+          await hosts[path](),
+          [location.origin, own].flat(),
+          tabs,
+          route,
+          frames
+        );
+        try {
+          return await new Promise((resolve) => {
+            const timer = setTimeout(
+              () =>
+                resolve({
+                  error: { message: 'Target.getTargets got no answer through the guard' },
+                }),
+              wait
+            );
+            connection.onmessage = (text) => {
+              const message = JSON.parse(text);
+              if (message.id !== 1) return;
+              clearTimeout(timer);
+              resolve(message);
+            };
+            connection.onclose = () => {
+              clearTimeout(timer);
+              resolve({ error: { message: 'the guard closed before it listed the targets' } });
+            };
+            connection.send(JSON.stringify({ id: 1, method: 'Target.getTargets' }));
+          });
+        } finally {
+          connection.close();
+        }
+      },
+      async ask(marker) {
+        const { askHold } = await import(new URL('held.js', location.href).href);
+        return askHold(marker);
+      },
     };
   };
   const ensure = async () => {
@@ -742,6 +786,32 @@ export async function guardHost(
         close,
         transport: path,
         transportEvents,
+        signInHold: {
+          ask: ({ marker }) => seven.evaluate((marker) => window.guards.ask(marker), marker),
+        },
+        ...(path === 'devtools'
+          ? {
+              async jsonList() {
+                const answer = await seven.evaluate(
+                  ([own, path, wait]) => window.guards.list(own, path, wait),
+                  [own, path, COMMAND_MS]
+                );
+                const text = JSON.stringify(answer);
+                if (!exposure.listed && listedWrong(text)) {
+                  exposure.listed = true;
+                  exposure.sample = text.slice(0, 400);
+                }
+                if (answer.error) throw cdpError(answer.error);
+                return (answer.result?.targetInfos ?? []).map((info) => ({
+                  description: '',
+                  id: info.targetId,
+                  title: info.title,
+                  type: info.type,
+                  url: info.url,
+                }));
+              },
+            }
+          : {}),
         events,
         messages,
         waitEvent,
