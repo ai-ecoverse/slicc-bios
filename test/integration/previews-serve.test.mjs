@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { actPackage, boot, ready, run, shows } from './bios.mjs';
 import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
-import { startHub } from './fake-hub.mjs';
+import { startServeHub } from './fake-serve-hub.mjs';
 
 const chrome = await launch({ tools: false, timeout: 120000 });
 after(() => chrome.close());
@@ -30,15 +30,14 @@ async function until(check, what, ms = 60000) {
   }
 }
 
-test('serve from the catalog: its kernel server answers the tray relay with ranges, binary files, 404s and a 25 MiB limit', async (t) => {
-  const hub = await startHub();
+test('serve from the catalog: its kernel server answers the serve hub over full HTTP with ranges, binary files, 404s and a body over 25 MiB', async (t) => {
+  const hub = await startServeHub();
   t.after(() => hub.close());
   const page = await chrome.page(t);
   await boot(page);
-  await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await page.evaluate((url) => localStorage.setItem('slicc-os.serve-hub', url), hub.url);
   await page.reload();
   await ready(page, undefined, { tools: false });
-  await page.until(() => document.querySelector('slicc-app').model.network.status().links?.joinUrl);
   await page.until(() =>
     document
       .querySelector('slicc-app')
@@ -69,11 +68,12 @@ test('serve from the catalog: its kernel server answers the tray relay with rang
   const { previewToken, url } = JSON.parse(
     await until(() => home(page, 'pub.json'), 'the publish')
   );
-  assert.equal(url, `http://p1.preview.test/`);
+  assert.equal(url, `http://${previewToken}.localhost:${hub.port}/`);
+  assert.deepEqual(hub.mints.at(-1).entry, '/');
 
   const index = await hub.visit(previewToken, '/');
-  assert.deepEqual([index.ok, index.status, index.encoding], [true, 200, 'utf-8']);
-  assert.match(index.mime, /^text\/html/);
+  assert.equal(index.status, 200);
+  assert.match(index.headers['content-type'], /^text\/html/);
   assert.equal(index.body.toString(), '<h1>héllo</h1>');
 
   const blob = await page.evaluate(async () => {
@@ -88,30 +88,25 @@ test('serve from the catalog: its kernel server answers the tray relay with rang
   });
   const expected = Buffer.from(blob, 'base64');
   const whole = await hub.visit(previewToken, '/sub/blob.bin');
-  assert.deepEqual(
-    [whole.status, whole.encoding, whole.size, whole.chunks],
-    [200, 'base64', 300000, 7]
-  );
+  assert.equal(whole.status, 200);
   assert.ok(whole.body.equals(expected));
 
-  const part = await hub.visit(previewToken, '/sub/blob.bin', 'bytes=100-199');
-  assert.deepEqual(
-    [part.status, part.encoding, part.size, part.range],
-    [206, 'base64', 300000, { start: 100, end: 199 }]
-  );
+  const part = await hub.visit(previewToken, '/sub/blob.bin', {
+    headers: { range: 'bytes=100-199' },
+  });
+  assert.deepEqual([part.status, part.headers['content-range']], [206, 'bytes 100-199/300000']);
   assert.ok(part.body.equals(expected.subarray(100, 200)));
-  const tail = await hub.visit(previewToken, '/sub/blob.bin', 'bytes=-10');
-  assert.deepEqual(tail.range, { start: 299990, end: 299999 });
-  const beyond = await hub.visit(previewToken, '/sub/blob.bin', 'bytes=400000-');
-  assert.deepEqual([beyond.ok, beyond.status, beyond.size], [false, 416, 300000]);
+  const tail = await hub.visit(previewToken, '/sub/blob.bin', { headers: { range: 'bytes=-10' } });
+  assert.ok(tail.body.equals(expected.subarray(299990)));
+  const beyond = await hub.visit(previewToken, '/sub/blob.bin', {
+    headers: { range: 'bytes=400000-' },
+  });
+  assert.equal(beyond.status, 416);
 
   const missing = await hub.visit(previewToken, '/nope.html');
-  assert.deepEqual([missing.ok, missing.status], [false, 404]);
+  assert.equal(missing.status, 404);
   const huge = await hub.visit(previewToken, '/huge.bin');
-  assert.deepEqual([huge.ok, huge.status], [false, 413]);
-  const window = await hub.visit(previewToken, '/huge.bin', 'bytes=0-');
-  assert.deepEqual(
-    [window.status, window.range, window.size],
-    [206, { start: 0, end: 8 * 1024 * 1024 - 1 }, 26214401]
-  );
+  assert.equal(huge.status, 200);
+  assert.equal(huge.body.length, 26214401, 'a body over 25 MiB comes through whole');
+  assert.ok(huge.body.every((byte) => byte === 0));
 });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { startHub } from './fake-hub.mjs';
+import { startServeHub } from './fake-serve-hub.mjs';
 
 const chrome = await launch({ tools: false });
 const debug = () => {
@@ -93,39 +93,38 @@ async function ask(page, name, body) {
   return (await homeFile(page, `${name}.done`)).trim();
 }
 
-test('serve.snapshot mints a persistent preview, uploads the body’s files with the upload token, finalizes it, and keeps it for serve.list and serve.stop across a reload', async (t) => {
-  const hub = await startHub();
+test('serve.snapshot mints a snapshot on the serve hub, uploads the body’s files with the host’s bearer, finalizes it, and keeps it for serve.list and serve.stop across a reload', async (t) => {
+  const hub = await startServeHub();
   t.after(() => hub.close());
   const page = await chrome.page(t);
   await page.init(debug);
   await boot(page);
-  await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await page.evaluate((url) => localStorage.setItem('slicc-os.serve-hub', url), hub.url);
   await page.reload();
   await ready(page, undefined, { tools: false });
-  await page.until(() => document.querySelector('slicc-app').model.network.status().links?.joinUrl);
-
   assert.equal(await ask(page, 'one', snapshotBody(FILES)), 'ended-0');
   const one = JSON.parse(await homeFile(page, 'one.json'));
-  const minted = hub.minting.at(-1);
-  assert.match(minted.servedRoot, /^\/srv\/serve\/[0-9a-f]{32}$/);
-  assert.deepEqual(minted, {
-    servedRoot: minted.servedRoot,
-    entryPath: `${minted.servedRoot}/index.html`,
-    allowLive: false,
-    ttlMs: 3600000,
-  });
-  assert.equal(one.url, `http://p1.preview.test/`);
-  assert.equal(one.trayId, 't1');
+  const minted = hub.mints.at(-1);
+  assert.match(minted.tag, /^\/srv\/serve\/[0-9a-f]{32}$/);
+  assert.deepEqual(minted, { entry: '/', tag: minted.tag, ttlMs: 3600000 });
+  assert.equal(one.url, `http://${one.previewToken}.localhost:${hub.port}/`);
+  assert.equal('trayId' in one, false);
+  const host = JSON.parse(await page.evaluate(() => localStorage.getItem('slicc-os.serve-host')));
   assert.deepEqual([one.files, one.bytes], [3, FILES.reduce((n, f) => n + f.bytes.length, 0)]);
   assert.ok(one.expiresAt > Date.now() + 3500000 && one.expiresAt <= Date.now() + 3600000);
-  assert.deepEqual(hub.uploads.sort(), ['css/a.css', 'img/blob.bin', 'index.html']);
+  assert.deepEqual(hub.uploads.map((upload) => upload.path).sort(), [
+    'css/a.css',
+    'img/blob.bin',
+    'index.html',
+  ]);
+  assert.ok(hub.uploads.every((upload) => upload.authorization === `Bearer ${host.secret}`));
   for (const file of FILES) {
-    const got = hub.fetchSnapshot(one.previewToken, `/${file.path}`);
+    const got = await hub.visit(one.previewToken, `/${file.path}`);
     assert.equal(got.status, 200, file.path);
-    assert.equal(got.type, file.type, file.path);
+    assert.equal(got.headers['content-type'], file.type, file.path);
     assert.ok(got.body.equals(file.bytes), file.path);
   }
-  assert.equal(hub.fetchSnapshot(one.previewToken, '/').body.toString(), '<h1>snapshot</h1>');
+  assert.equal((await hub.visit(one.previewToken, '/')).body.toString(), '<h1>snapshot</h1>');
 
   await run(
     page,
@@ -144,11 +143,7 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     }
   );
 
-  const orphan = hub.addPreview(
-    '1',
-    { servedRoot: '/srv/serve/orphan', entryPath: '/srv/serve/orphan/index.html' },
-    { previewToken: 't1.orphan' }
-  );
+  const orphan = hub.addPreview(host.hostId, { tag: '/srv/serve/orphan' });
   await page.reload();
   await ready(page, undefined, { tools: false });
   await until(() => hub.stops?.includes(orphan.previewToken), 'the boot sweep');
@@ -157,34 +152,36 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
     page,
     'exec 4<>/dev/embedder; printf \'{"kind":"serve.list"}\\n\' >&4; cat <&4 > /home/list2.txt; exec 4>&-'
   );
-  assert.match(await homeFile(page, 'list2.txt'), new RegExp(one.previewToken.replace('.', '\\.')));
+  assert.match(await homeFile(page, 'list2.txt'), new RegExp(one.previewToken));
 
-  hub.uploadFails = (path) => (path === 'css/a.css' ? [413, { error: 'too big' }] : null);
+  hub.uploadFails = (path) =>
+    path === 'css/a.css' ? [413, { error: 'too big', code: 'FILE_TOO_LARGE' }] : null;
+  let before = hub.stops.length;
   assert.equal(await ask(page, 'two', snapshotBody(FILES)), 'ended-0');
   const two = JSON.parse(await homeFile(page, 'two.json'));
-  assert.deepEqual(two, { error: 'too big', status: 413, during: 'upload', path: 'css/a.css' });
-  await until(
-    () => hub.stops?.includes(`t1.p${hub.minting.length + 1}`),
-    'the refused snapshot stopped'
-  );
+  assert.deepEqual(two, {
+    error: 'too big',
+    status: 413,
+    code: 'FILE_TOO_LARGE',
+    during: 'upload',
+    path: 'css/a.css',
+  });
+  await until(() => hub.stops.length > before, 'the refused snapshot stopped');
+  assert.notEqual(hub.stops.at(-1), one.previewToken);
   hub.uploadFails = null;
-
+  before = hub.stops.length;
   assert.equal(await ask(page, 'three', snapshotBody(FILES, { bytes: 5 })), 'ended-1');
   assert.match(
     await homeFile(page, 'three.err'),
     /bad snapshot body: more than the 5 bytes it announced/
   );
-  await until(
-    () => hub.stops?.includes(`t1.p${hub.minting.length + 1}`),
-    'the bad snapshot stopped'
-  );
-
-  hub.mintFails = [429, { error: 'Too many snapshots', code: 'PREVIEW_LIMIT' }];
+  await until(() => hub.stops.length > before, 'the bad snapshot stopped');
+  hub.mintFails = [400, { error: 'ttlMs is out of range', code: 'BAD_REQUEST' }];
   assert.equal(await ask(page, 'four', snapshotBody(FILES)), 'ended-0');
   assert.deepEqual(JSON.parse(await homeFile(page, 'four.json')), {
-    error: 'Too many snapshots',
-    status: 429,
-    code: 'PREVIEW_LIMIT',
+    error: 'ttlMs is out of range',
+    status: 400,
+    code: 'BAD_REQUEST',
     during: 'mint',
   });
   hub.mintFails = null;
@@ -247,7 +244,7 @@ test('serve.snapshot mints a persistent preview, uploads the body’s files with
   await run(page, `${stop}; echo "stop-$?-$((40 + 2))"`);
   await shows(page, 'stop-0-42');
   assert.ok(hub.stops.includes(one.previewToken));
-  assert.equal(hub.fetchSnapshot(one.previewToken, '/').status, 404);
+  assert.equal((await hub.visit(one.previewToken, '/')).status, 404);
   await run(
     page,
     'exec 4<>/dev/embedder; printf \'{"kind":"serve.list"}\\n\' >&4; cat <&4 > /home/list3.txt; echo "listed-$?" >> /home/list3.txt; exec 4>&-'

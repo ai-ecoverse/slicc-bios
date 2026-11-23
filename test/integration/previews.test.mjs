@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { startHub } from './fake-hub.mjs';
+import { startServeHub } from './fake-serve-hub.mjs';
 
 const chrome = await launch({ tools: false });
 const debug = () => {
@@ -81,33 +81,33 @@ const chips = (page) =>
       .filter((item) => item.kind === 'preview')
   );
 
-test('serve.publish mints a live preview, the tray relays preview.request to the kernel server, and every way it ends revokes it', async (t) => {
-  const hub = await startHub();
+const bootHub = async (page, hub, host) => {
+  await page.evaluate(
+    ([url, host]) => {
+      localStorage.setItem('slicc-os.serve-hub', url);
+      if (host) localStorage.setItem('slicc-os.serve-host', JSON.stringify(host));
+    },
+    [hub.url, host]
+  );
+  await page.reload();
+  await ready(page, undefined, { tools: false });
+};
+
+test('serve.publish mints a live preview on the serve hub, relays full HTTP to the kernel server, and every way it ends revokes it', async (t) => {
+  const hub = await startServeHub();
   t.after(() => hub.close());
+  const made = await (await fetch(`${hub.url}/api/serve/host`, { method: 'POST' })).json();
+  const orphan = hub.addPreview(made.hostId, { tag: '/srv/serve/orphan' });
+  const kept = hub.addPreview(made.hostId, { tag: '/srv/serve/kept', ttlMs: 60_000 });
+  const six = hub.addPreview(made.hostId, { tag: '/home/six' });
   const page = await chrome.page(t);
   await page.init(debug);
   await boot(page);
   await install(page);
-  await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
-  await page.reload();
-  await ready(page, undefined, { tools: false });
-  await page.until(() => document.querySelector('slicc-app').model.network.status().links?.joinUrl);
-  hub.addPreview('1', {
-    servedRoot: '/srv/serve/orphan',
-    entryPath: '/srv/serve/orphan/index.html',
-  });
-  hub.addPreview(
-    '1',
-    { servedRoot: '/srv/serve/kept', entryPath: '/srv/serve/kept/index.html' },
-    {
-      mode: 'persistent',
-    }
-  );
-  hub.addPreview('1', { servedRoot: '/home/six', entryPath: '/home/six/index.html' });
-  hub.send({ type: 'leader.connected', trayId: 't1', controllerId: 'leader' });
-  await until(() => hub.stops?.includes('t1.p1'), 'the orphan revoked');
-  assert.deepEqual(hub.stops, ['t1.p1']);
-  assert.deepEqual([...hub.previews.keys()], ['t1.p2', 't1.p3']);
+  await bootHub(page, hub, made);
+  await until(() => hub.stops.includes(orphan.previewToken), 'the orphan revoked at boot');
+  assert.deepEqual(hub.stops, [orphan.previewToken]);
+  assert.deepEqual([...hub.previews.keys()], [kept.previewToken, six.previewToken]);
 
   await run(page, 'httptest 8400 &');
   await shows(page, 'listening 8400');
@@ -116,44 +116,42 @@ test('serve.publish mints a live preview, the tray relays preview.request to the
     hold('one', { kind: 'serve.publish', port: 8400, root: '~/demo', entry: 'file' })
   );
   const one = JSON.parse(await homeFile(page, 'one.json'));
-  const minted = hub.minting.at(-1);
-  assert.match(minted.servedRoot, /^\/srv\/serve\/[0-9a-f]{32}$/);
-  assert.deepEqual(minted, {
-    servedRoot: minted.servedRoot,
-    entryPath: `${minted.servedRoot}/file`,
-    allowLive: true,
-  });
-  assert.deepEqual(one, {
-    url: 'http://p4.preview.test/file',
-    previewToken: 't1.p4',
-    trayId: 't1',
-  });
+  const minted = hub.mints.at(-1);
+  assert.match(minted.tag, /^\/srv\/serve\/[0-9a-f]{32}$/);
+  assert.deepEqual(minted, { entry: '/file', tag: minted.tag });
+  assert.equal(hub.created, 1, 'the page keeps the host it has');
+  const record = hub.previews.get(one.previewToken);
+  assert.equal(record.hostId, made.hostId);
+  assert.deepEqual(one, { url: record.url, previewToken: record.previewToken });
+  assert.equal(one.url, `http://${one.previewToken}.localhost:${hub.port}/file`);
   const [chip] = await until(async () => (await chips(page)).length && chips(page), 'the chip');
   assert.deepEqual(
     [chip.label, chip.what, chip.asker, chip.action.label],
     ['Serving publicly', '~/demo', 'a terminal', 'Stop']
   );
 
-  const file = await hub.visit('t1.p4', '/');
-  assert.equal(file.ok, true);
+  const file = await hub.visit(one.previewToken, '/file');
   assert.equal(file.status, 200);
-  assert.equal(file.mime, 'text/plain');
-  assert.match(file.body.toString(), /\S/);
-  assert.equal(file.size, file.body.length);
-  const missing = await hub.visit('t1.p4', '/nope');
-  assert.deepEqual([missing.ok, missing.status], [false, 404]);
-  const escaped = await hub.ask('1', {
-    servedRoot: minted.servedRoot,
-    vfsPath: `${minted.servedRoot}/../../etc/passwd`,
-    asText: true,
-  });
-  assert.deepEqual([escaped.ok, escaped.status], [false, 403]);
-  const unknown = await hub.ask('1', {
-    servedRoot: '/srv/serve/unknown',
-    vfsPath: '/srv/serve/unknown/index.html',
-    asText: true,
-  });
-  assert.deepEqual([unknown.status, unknown.reason], [404, 'this preview is no longer served']);
+  assert.equal(file.headers['content-type'], 'text/plain');
+  assert.equal(file.body.toString(), 'hello from the kernel\n');
+  const missing = await hub.visit(one.previewToken, '/nope');
+  assert.equal(missing.status, 404);
+  const sent = Buffer.alloc(300_000, 'a');
+  const echoed = await hub.visit(one.previewToken, '/echo', { method: 'POST', body: sent });
+  assert.equal(echoed.status, 200);
+  assert.ok(echoed.body.equals(sent), 'a 300 000-byte POST body comes back whole');
+  const events = await hub.visit(one.previewToken, '/events');
+  assert.equal(events.headers['content-type'], 'text/event-stream');
+  assert.equal(events.body.toString(), 'data: event 1\n\ndata: event 2\n\ndata: event 3\n\n');
+  const request = hub.requests.find((r) => r.path === '/file');
+  assert.equal(request.previewToken, one.previewToken);
+  const stranger = hub.addPreview(made.hostId, { tag: '/srv/serve/stranger' });
+  const unknown = await hub.visit(stranger.previewToken, '/file');
+  assert.deepEqual(
+    [unknown.status, unknown.body.toString()],
+    [404, 'this preview is no longer served']
+  );
+  hub.previews.delete(stranger.previewToken);
 
   await run(
     page,
@@ -171,22 +169,17 @@ test('serve.publish mints a live preview, the tray relays preview.request to the
       port,
       entry,
     })),
-    [
-      {
-        previewToken: 't1.p4',
-        url: 'http://p4.preview.test/file',
-        root: '~/demo',
-        port: 8400,
-        entry: 'file',
-      },
-    ]
+    [{ previewToken: one.previewToken, url: one.url, root: '~/demo', port: 8400, entry: 'file' }]
   );
 
   await run(page, 'kill -- -$(cat /home/one.pid)');
-  await until(() => hub.stops.includes('t1.p4'), 'the preview revoked when its holder ends');
+  await until(
+    () => hub.stops.includes(one.previewToken),
+    'the preview revoked when its holder ends'
+  );
   await until(async () => (await chips(page)).length === 0, 'the chip gone');
-  const after = await hub.visit('t1.p4', '/');
-  assert.deepEqual([after.ok, after.status], [false, 404]);
+  const after = await hub.visit(one.previewToken, '/file');
+  assert.equal(after.status, 404);
 
   await run(page, hold('two', { kind: 'serve.publish', port: 8400, root: '~/two', entry: 'file' }));
   const two = JSON.parse(await homeFile(page, 'two.json'));
@@ -201,7 +194,7 @@ test('serve.publish mints a live preview, the tray relays preview.request to the
   hub.revoke(three.previewToken);
   assert.equal((await homeFile(page, 'three.done')).trim(), 'ended 0');
   assert.deepEqual(JSON.parse(await homeFile(page, 'three.rest')), {
-    stopped: 'revoked by the tray hub',
+    stopped: 'revoked by the serve hub',
   });
 
   await run(page, hold('held', { kind: 'serve.publish', port: 8400, entry: 'file' }));
@@ -233,7 +226,7 @@ test('serve.publish mints a live preview, the tray relays preview.request to the
   });
   assert.deepEqual(cone.list, [0, '0'], JSON.stringify(cone));
   assert.notEqual(cone.stop[0], 0);
-  assert.match(cone.stop[1], /the tray hub has no such preview/);
+  assert.match(cone.stop[1], /the serve hub has no such preview/);
   assert.ok(!hub.stops.includes(held.previewToken), "a cone can't stop root's preview");
   await run(page, 'cat /tmp/stop.json > /dev/embedder; echo "root-stop-$?-$((40 + 2))"');
   await shows(page, 'root-stop-0-42');
@@ -242,18 +235,28 @@ test('serve.publish mints a live preview, the tray relays preview.request to the
     stopped: 'stopped with serve --stop',
   });
 
-  hub.mintFails = [429, { error: 'Too many live previews', code: 'LIVE_PREVIEW_LIMIT' }];
-  await run(page, hold('limited', { kind: 'serve.publish', port: 8400, entry: 'file' }));
-  assert.deepEqual(JSON.parse(await homeFile(page, 'limited.json')), {
-    error: 'Too many live previews',
-    status: 429,
-    code: 'LIVE_PREVIEW_LIMIT',
+  hub.mintFails = [400, { error: 'entry must start with /', code: 'BAD_REQUEST' }];
+  await run(page, hold('refused', { kind: 'serve.publish', port: 8400, entry: 'file' }));
+  assert.deepEqual(JSON.parse(await homeFile(page, 'refused.json')), {
+    error: 'entry must start with /',
+    status: 400,
+    code: 'BAD_REQUEST',
   });
-  assert.equal((await homeFile(page, 'limited.done')).trim(), 'ended 0');
+  assert.equal((await homeFile(page, 'refused.done')).trim(), 'ended 0');
   hub.mintFails = null;
 
+  await run(page, hold('lost', { kind: 'serve.publish', port: 8400, entry: 'file' }));
+  JSON.parse(await homeFile(page, 'lost.json'));
+  hub.deleteHost(made.hostId);
+  assert.deepEqual(JSON.parse(await homeFile(page, 'lost.rest')), {
+    stopped: 'seven lost its serve host',
+  });
+  await until(() => hub.created === 2, 'a new host once the old one is deleted');
+  const fresh = [...hub.hosts.keys()].at(-1);
   await run(page, hold('four', { kind: 'serve.publish', port: 8400, entry: 'file' }));
   const four = JSON.parse(await homeFile(page, 'four.json'));
+  assert.equal(hub.previews.get(four.previewToken).hostId, fresh);
+  assert.equal((await hub.visit(four.previewToken, '/file')).status, 200);
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.switches.set('previews', false)
   );
@@ -261,25 +264,36 @@ test('serve.publish mints a live preview, the tray relays preview.request to the
   assert.deepEqual(JSON.parse(await homeFile(page, 'four.rest')), {
     stopped: 'public previews were switched off',
   });
-  const minting = hub.minting.length;
+  const minting = hub.mints.length;
   await run(page, hold('five', { kind: 'serve.publish', port: 8400, entry: 'file' }));
   assert.equal((await homeFile(page, 'five.done')).trim(), 'ended 1');
   assert.equal(await home(page, 'five.json'), '');
   assert.match(await home(page, 'five.err'), /public previews are off in seven's settings/);
-  assert.equal(hub.minting.length, minting);
+  assert.equal(hub.mints.length, minting);
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.switches.set('previews', true)
   );
 
   await run(page, hold('six', { kind: 'serve.publish', port: 8400, entry: 'file' }));
-  const six = JSON.parse(await homeFile(page, 'six.json'));
+  const last = JSON.parse(await homeFile(page, 'six.json'));
   const stopsBefore = hub.stops.length;
   await page.reload();
   await ready(page, undefined, { tools: false });
   await until(
-    () => hub.stops.slice(stopsBefore).includes(six.previewToken),
+    () => hub.stops.slice(stopsBefore).includes(last.previewToken),
     'revoked after a reload'
   );
-  assert.ok(hub.previews.has('t1.p2'), 'a persistent preview stays');
-  assert.ok(hub.previews.has('t1.p3'), "a preview outside /srv/serve/ isn't seven's to revoke");
+});
+
+test('a seven without a serve hub refuses serve.publish with ENOTSUP', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(debug);
+  await boot(page);
+  await install(page);
+  await run(page, hold('none', { kind: 'serve.publish', port: 8400 }));
+  assert.equal((await homeFile(page, 'none.done')).trim(), 'ended 1');
+  assert.match(
+    await home(page, 'none.err'),
+    /seven publishes previews only through the serve hub, and it has none here/
+  );
 });

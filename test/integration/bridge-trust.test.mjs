@@ -30,14 +30,13 @@ const MUTANTS = {
     'return claim(name, NAME_CHARS);',
     "return [...name].slice(0, NAME_CHARS).join('');",
   ],
-  webhook: ['bridge.js', 'if (preview.webhook !== message.webhookId) return true;', ''],
   attribution: [
     'bridge.js',
     'const preview = live ? this.previews.get(tab.token) : undefined;',
     'const preview = this.previews.get(token);',
   ],
-  unheld: ['tray.js', " || WEBHOOK.test(message?.webhookId ?? '')", ''],
-  oversize: ['bridge.js', '...bounded(body.detail)', 'detail: body.detail ?? null'],
+  unheld: ['tray.js', "  if (WEBHOOK.test(message?.webhookId ?? '')) return;\n", ''],
+  oversize: ['bridge.js', '...bounded(message.detail)', 'detail: message.detail ?? null'],
   answer: ['bridge.js', " || text(message, 'connId') !== call.conn", ''],
   reply: ['bridge.js', 'bytesOf(size) > REPLY_BYTES', 'false'],
   target: [
@@ -234,11 +233,13 @@ function client(connection) {
   };
 }
 
-const emit = (webhookId, headers, name = 'bought') => ({
-  type: 'webhook.event',
-  webhookId,
-  headers,
-  body: { name, detail: { n: 1 } },
+const emit = (previewToken, connId, name = 'bought') => ({
+  type: 'bridge.emit',
+  previewToken,
+  connId,
+  name,
+  detail: { n: 1 },
+  at: new Date().toISOString(),
 });
 
 const ROWS = {
@@ -247,37 +248,13 @@ const ROWS = {
     h.connect('c1', 'A');
     await h.settle();
     h.delivered.length = 0;
-    assert.equal(h.bridge.control.emitted(emit(HOOK_A, { 'x-slicc-preview-conn': 'c1' })), true);
-    assert.equal(
-      h.bridge.control.emitted(
-        emit(HOOK_A, { 'x-slicc-preview-token': 'Z', 'x-slicc-preview-conn': 'c1' })
-      ),
-      true
-    );
+    h.bridge.control.emitted(emit(undefined, 'c1'));
+    h.bridge.control.emitted(emit('Z', 'c1'));
+    h.bridge.control.emitted(emit('B', 'c1'));
     await h.settle();
     assert.deepEqual(h.delivered, [], 'an emit without the preview token is never delivered');
     assert.deepEqual(
       h.bridge.logs('A', 0).filter((r) => r.event === 'emit'),
-      []
-    );
-  },
-  webhook: async (mutant) => {
-    const h = await hub(mutant);
-    h.connect('c1', 'A');
-    h.connect('c2', 'B');
-    await h.settle();
-    h.delivered.length = 0;
-    h.bridge.control.emitted(
-      emit(HOOK_A, { 'x-slicc-preview-token': 'B', 'x-slicc-preview-conn': 'c2' })
-    );
-    await h.settle();
-    assert.deepEqual(
-      h.delivered,
-      [],
-      "preview A's emit carrying B's token reaches neither webhook"
-    );
-    assert.deepEqual(
-      h.bridge.logs('B', 0).filter((r) => r.event === 'emit'),
       []
     );
   },
@@ -316,15 +293,20 @@ const ROWS = {
       storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) },
       timers: { setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {} },
       onWebhook: async (name) => webhooks.push(name),
-      previews: () => null,
     });
     tray.start();
     await new Promise((resolve) => setTimeout(resolve, 20));
     const say = (message) => {
       for (const fn of socket.listeners) fn({ data: JSON.stringify(message) });
     };
-    say(emit(HOOK_A, { 'x-slicc-preview-token': 'A' }));
-    say(emit('deploy', {}));
+    const delivery = (webhookId) => ({
+      type: 'webhook.event',
+      webhookId,
+      headers: { 'x-slicc-preview-token': 'A', 'x-slicc-preview-conn': 'c1' },
+      body: { name: 'bought', detail: { n: 1 } },
+    });
+    say(delivery(HOOK_A));
+    say(delivery('deploy'));
     await new Promise((resolve) => setTimeout(resolve, 20));
     tray.stop();
     assert.deepEqual(
@@ -339,15 +321,12 @@ const ROWS = {
     h.connect('c2', 'B');
     await h.settle();
     h.delivered.length = 0;
-    for (const conn of ['c2', 'c9', ''])
-      h.bridge.control.emitted(
-        emit(HOOK_A, { 'x-slicc-preview-token': 'A', 'x-slicc-preview-conn': conn })
-      );
+    for (const conn of ['c2', 'c9', '', null]) h.bridge.control.emitted(emit('A', conn));
     await h.settle();
     assert.deepEqual(
       h.delivered,
       [],
-      "an emit carrying another visitor's or no live connection is dropped"
+      "an emit carrying another visitor's or no live connection (a beacon) is dropped"
     );
     assert.deepEqual(
       h.bridge.logs('A', 0).filter((r) => r.event === 'emit'),
@@ -355,7 +334,7 @@ const ROWS = {
     );
     assert.equal(
       h.warned.filter((line) => line.includes("from a connection seven doesn't hold")).length,
-      3
+      4
     );
   },
   oversize: async (mutant) => {
@@ -366,10 +345,7 @@ const ROWS = {
     let deep = 'end';
     for (let n = 0; n < 5000; n += 1) deep = { a: deep };
     for (const detail of ['x'.repeat(100 * 1024), deep])
-      h.bridge.control.emitted({
-        ...emit(HOOK_A, { 'x-slicc-preview-token': 'A', 'x-slicc-preview-conn': 'c1' }),
-        body: { name: 'n'.repeat(5000), detail },
-      });
+      h.bridge.control.emitted({ ...emit('A', 'c1'), name: 'n'.repeat(5000), detail });
     await h.settle();
     assert.equal(h.delivered.length, 2);
     for (const [, delivery] of h.delivered) {
@@ -385,8 +361,7 @@ const ROWS = {
     await h.settle();
     h.delivered.length = 0;
     h.bridge.previews.delete('A');
-    const headers = { 'x-slicc-preview-token': 'A', 'x-slicc-preview-conn': 'c1' };
-    assert.doesNotThrow(() => h.bridge.control.emitted(emit(HOOK_A, headers)));
+    assert.doesNotThrow(() => h.bridge.control.emitted(emit('A', 'c1')));
     await h.settle();
     assert.deepEqual(h.delivered, [], "a lingering tab whose preview is gone can't emit");
     assert.ok(h.warned.some((line) => line.includes("from a connection seven doesn't hold")));
@@ -396,8 +371,7 @@ const ROWS = {
     h.connect('c1', 'A');
     await h.settle();
     h.delivered.length = 0;
-    const headers = { 'x-slicc-preview-token': 'A', 'x-slicc-preview-conn': 'c1' };
-    h.bridge.control.emitted(emit(HOOK_A, headers, 'buy\u001b[2J\u009b31m\nnow\r'));
+    h.bridge.control.emitted(emit('A', 'c1', 'buy\u001b[2J\u009b31m\nnow\r'));
     await h.settle();
     const { name } = JSON.parse(h.delivered[0][1].body);
     assert.doesNotMatch(

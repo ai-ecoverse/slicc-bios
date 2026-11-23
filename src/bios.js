@@ -280,6 +280,8 @@ await step('seed', async () => {
     'secrets.js',
     'serial.js',
     'serve.js',
+    'serve-hub.js',
+    'serve-http.js',
     'site.js',
     'six.js',
     'skills.js',
