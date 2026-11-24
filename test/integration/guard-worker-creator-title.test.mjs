@@ -46,37 +46,24 @@ const MUTANTS = {
   ],
   'refresh-at-on-skip': [
     'guard.js',
-    `    const keepAt = known?.info && this.onlySkippableTargetChange(known.info, info);
-    this.targets.set(info.targetId, {
-      url: failed ? ERROR_PAGE : (info.url ?? ''),
-      type: info.type ?? known?.type,
-      openerId,
-      openerVerdict: this.recordedOpenerVerdict(openerId, known?.openerVerdict),
-      parentId: info.parentId ?? known?.parentId,
-      parentFrameId: info.parentFrameId ?? known?.parentFrameId,
-      was: known?.was || known?.guarded || false,
-      guarded: known?.guarded || false,
-      real: known?.real || false,
-      context: info.browserContextId ?? known?.context,
-      reported: info.url ?? known?.reported,
-      at: keepAt ? known.at : Date.now(),
-      info,
-    });`,
-    `    this.targets.set(info.targetId, {
-      url: failed ? ERROR_PAGE : (info.url ?? ''),
-      type: info.type ?? known?.type,
-      openerId,
-      openerVerdict: this.recordedOpenerVerdict(openerId, known?.openerVerdict),
-      parentId: info.parentId ?? known?.parentId,
-      parentFrameId: info.parentFrameId ?? known?.parentFrameId,
-      was: known?.was || known?.guarded || false,
-      guarded: known?.guarded || false,
-      real: known?.real || false,
-      context: info.browserContextId ?? known?.context,
-      reported: info.url ?? known?.reported,
-      at: Date.now(),
-      info,
-    });`,
+    `  learnTargetHint(info) {
+    const known = info?.targetId && this.targets.get(info.targetId);
+    const keepAt = Boolean(known?.info && this.onlySkippableTargetChange(known.info, info));
+    const stamped = keepAt ? known.at : undefined;
+    this.learn(info);
+    if (stamped !== undefined) {
+      const entry = this.targets.get(info.targetId);
+      if (entry) entry.at = stamped;
+    }
+  }`,
+    `  learnTargetHint(info) {
+    this.learn(info);
+  }`,
+  ],
+  'keep-at-on-live-read': [
+    'guard.js',
+    `      at: Date.now(),`,
+    `      at: known?.info && this.onlySkippableTargetChange(known.info, info) ? known.at : Date.now(),`,
   ],
 };
 
@@ -121,6 +108,7 @@ function chrome(infos, { failing = new Set(), slow = new Map(), throwing = new S
   const sent = [];
   const owners = new Map();
   let sessions = 0;
+  let guardRef;
   const own = (sessionId) => owners.get(sessionId) ?? sessionId?.split('~')[0];
   const origin = (url) => (URL.canParse(url) ? new URL(url).origin : '://');
   const connection = {
@@ -129,6 +117,9 @@ function chrome(infos, { failing = new Set(), slow = new Map(), throwing = new S
     onmessage: null,
     onclose: null,
     close() {},
+    captureGuard(g) {
+      guardRef = g;
+    },
     emit(message) {
       connection.onmessage?.(JSON.stringify(message));
     },
@@ -200,11 +191,11 @@ function chrome(infos, { failing = new Set(), slow = new Map(), throwing = new S
       else queueMicrotask(reply);
     },
   };
-  return connection;
+  return { connection, getGuard: () => guardRef };
 }
 
 function client(infos, route, faults, guardProtected = stockGuard) {
-  const raw = chrome(infos, faults);
+  const { connection: raw, getGuard } = chrome(infos, faults);
   const guarded = guardProtected(raw, [SEVEN], new Map(), route);
   const got = [];
   guarded.onmessage = (text) => got.push(JSON.parse(text));
@@ -231,7 +222,7 @@ function client(infos, route, faults, guardProtected = stockGuard) {
   const settle = async (done, rounds = 200) => {
     for (let n = 0; n < rounds && !done(); n++) await tick();
   };
-  return { raw, got, send, attach, settle, infos };
+  return { raw, got, send, attach, settle, infos, getGuard };
 }
 
 const attachedTo = (got, sessionId) =>
@@ -413,27 +404,53 @@ for (const [name, route] of routes) {
     assert.equal(detachesOf(raw, worker), 0);
   });
 
-  test(`on the ${name} route, a title-only change on a stale creator still re-reads it`, async () => {
-    const harness = popupWithWorker(`${name}-stale`, route);
-    const { raw, got, settle, infos, pageId } = harness;
+  test(`on the ${name} route, a live re-read of an unchanged stale creator refreshes freshness`, async () => {
+    const harness = popupWithWorker(`${name}-fresh`, route);
+    const { raw, got, settle, pageId } = harness;
     const { worker } = await shownWorker(harness);
     await new Promise((resolve) => setTimeout(resolve, CREATOR_FRESH_MS + 100));
+    const readsOf = () =>
+      raw.sent.filter(
+        (command) =>
+          command.method === 'Target.getTargetInfo' && command.params?.targetId === pageId
+      ).length;
+    said(raw, worker, `FRESH-FIRST-${name}`);
+    await settle(() => JSON.stringify(got).includes(`FRESH-FIRST-${name}`), 200);
+    assert.ok(JSON.stringify(got).includes(`FRESH-FIRST-${name}`));
+    const afterFirst = readsOf();
+    assert.ok(afterFirst > 0, 'the stale creator is re-read once');
+    for (let i = 0; i < 20; i++) said(raw, worker, `FRESH-BURST-${name}-${i}`);
+    await settle(() => JSON.stringify(got).includes(`FRESH-BURST-${name}-19`), 200);
+    assert.ok(JSON.stringify(got).includes(`FRESH-BURST-${name}-19`));
+    assert.equal(
+      readsOf(),
+      afterFirst,
+      'a live re-read refreshes freshness so the next events do not re-read'
+    );
+  });
+
+  test(`on the ${name} route, a title-only change on a stale creator still re-reads it`, async () => {
+    const harness = popupWithWorker(`${name}-stale`, route);
+    const { raw, infos, pageId, getGuard, slow } = harness;
+    await shownWorker(harness);
+    const guard = getGuard();
+    assert.ok(guard, 'captureGuard');
+    const stamped = Date.now() - CREATOR_FRESH_MS - 500;
+    guard.targets.get(pageId).at = stamped;
+    slow.set(`Target.getTargetInfo:${pageId}`, 5000);
     infos[pageId] = { ...infos[pageId], title: 'Popup, renamed' };
     raw.emit({
       method: 'Target.targetInfoChanged',
       params: { targetInfo: { targetId: pageId, ...infos[pageId] } },
     });
-    await settle(() => false, 20);
-    infos[pageId] = { ...infos[pageId], url: SEVEN_PAGE };
-    said(raw, worker, `STALE-READ-${name}`);
-    await settle(() => detachesOf(raw, worker) > 0, 200);
-    assert.ok(
-      !JSON.stringify(got).includes(`STALE-READ-${name}`),
-      'a stale creator that already moved onto seven is re-read despite title-only noise'
-    );
-    assert.equal(detachesOf(raw, worker), 1, 'one real detach');
-    const evaluate = await harness.send('Runtime.evaluate', { expression: '1' }, worker);
-    assert.equal(evaluate.error?.message, PROTECTED, JSON.stringify(evaluate));
+    let entry;
+    for (let n = 0; n < 100; n++) {
+      entry = guard.targets.get(pageId);
+      if (entry?.info?.title === 'Popup, renamed') break;
+      await tick();
+    }
+    assert.equal(entry?.info?.title, 'Popup, renamed', 'the title update is kept');
+    assert.equal(entry.at, stamped, 'a title-only notification must not refresh creator freshness');
   });
 
   test(`on the ${name} route, a title-only change while the creator is held still cuts the worker`, async () => {
@@ -526,21 +543,43 @@ test('mutant: refreshing at on a title-only skip skips the stale re-read', {
 }, async () => {
   const guardProtected = await loadGuard('refresh-at-on-skip');
   const harness = popupWithWorker('mutant-stale', undefined, {}, guardProtected);
-  const { raw, got, settle, infos, pageId } = harness;
-  const { worker } = await shownWorker(harness);
-  await new Promise((resolve) => setTimeout(resolve, CREATOR_FRESH_MS + 100));
+  const { raw, infos, pageId, getGuard, slow } = harness;
+  await shownWorker(harness);
+  const guard = getGuard();
+  const stamped = Date.now() - CREATOR_FRESH_MS - 500;
+  guard.targets.get(pageId).at = stamped;
+  slow.set(`Target.getTargetInfo:${pageId}`, 5000);
   infos[pageId] = { ...infos[pageId], title: 'Popup, renamed' };
   raw.emit({
     method: 'Target.targetInfoChanged',
     params: { targetInfo: { targetId: pageId, ...infos[pageId] } },
   });
-  await settle(() => false, 20);
-  infos[pageId] = { ...infos[pageId], url: SEVEN_PAGE };
-  said(raw, worker, 'MUTANT-STALE-READ');
-  await settle(() => JSON.stringify(got).includes('MUTANT-STALE-READ'), 40);
-  assert.ok(
-    JSON.stringify(got).includes('MUTANT-STALE-READ'),
-    'mutant must turn the stale-creator re-read row red'
-  );
-  assert.equal(detachesOf(raw, worker), 0);
+  let entry;
+  for (let n = 0; n < 100; n++) {
+    entry = guard.targets.get(pageId);
+    if (entry?.info?.title === 'Popup, renamed') break;
+    await tick();
+  }
+  assert.equal(entry?.info?.title, 'Popup, renamed');
+  assert.notEqual(entry.at, stamped, 'mutant must turn the title-only freshness row red');
+});
+
+test('mutant: keeping at on a live read re-reads every worker event', {
+  concurrency: false,
+}, async () => {
+  const guardProtected = await loadGuard('keep-at-on-live-read');
+  const harness = popupWithWorker('mutant-live', undefined, {}, guardProtected);
+  const { raw, got, settle, pageId } = harness;
+  const { worker } = await shownWorker(harness);
+  await new Promise((resolve) => setTimeout(resolve, CREATOR_FRESH_MS + 100));
+  const readsOf = () =>
+    raw.sent.filter(
+      (command) => command.method === 'Target.getTargetInfo' && command.params?.targetId === pageId
+    ).length;
+  said(raw, worker, 'MUTANT-LIVE-FIRST');
+  await settle(() => JSON.stringify(got).includes('MUTANT-LIVE-FIRST'), 200);
+  const afterFirst = readsOf();
+  for (let i = 0; i < 20; i++) said(raw, worker, `MUTANT-LIVE-BURST-${i}`);
+  await settle(() => JSON.stringify(got).includes('MUTANT-LIVE-BURST-19'), 200);
+  assert.ok(readsOf() > afterFirst, 'mutant must turn the live-read freshness row red');
 });

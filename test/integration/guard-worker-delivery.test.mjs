@@ -210,7 +210,7 @@ for (const route of [undefined, { kind: 'link' }]) {
     const { raw, got, settle, infos, slow, pageId } = harness;
     const { worker } = await shownWorker(harness);
     slow.set('Target.getTargetInfo:shop-opener', 300);
-    infos[pageId] = { ...infos[pageId], title: 'Popup, renamed' };
+    infos[pageId] = { ...infos[pageId], url: `${ORDINARY}?renamed`, title: 'Popup' };
     raw.emit({
       method: 'Target.targetInfoChanged',
       params: { targetInfo: { targetId: pageId, attached: true, ...infos[pageId] } },
@@ -375,7 +375,7 @@ for (const route of [undefined, { kind: 'link' }]) {
           throw new Error('the fake connection broke');
         return send(text);
       })(raw.send);
-      infos[pageId] = { ...infos[pageId], title: 'Popup, renamed' };
+      infos[pageId] = { ...infos[pageId], url: `${ORDINARY}?renamed`, title: 'Popup' };
       raw.emit({
         method: 'Target.targetInfoChanged',
         params: { targetInfo: { targetId: pageId, attached: true, ...infos[pageId] } },

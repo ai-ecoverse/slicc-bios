@@ -98,6 +98,7 @@ export const DROP_LOG_CAP = 20;
 const LISTED_CHECKS = 8;
 const LISTED_FRESH_MS = 100;
 const CREATOR_FRESH_MS = 1000;
+const SKIPPABLE_TARGET_INFO = new Set(['title']);
 const SHARE_MS = 100;
 const QUIET = new Set([
   'DOM.describeNode',
@@ -1490,6 +1491,15 @@ class Guard {
     return ['targetId', 'type', 'url', 'openerId', 'parentId', 'browserContextId'].every(
       (key) => a?.[key] === b?.[key]
     );
+  }
+
+  onlySkippableTargetChange(before, after) {
+    if (!before || !after) return false;
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      if (SKIPPABLE_TARGET_INFO.has(key)) continue;
+      if (before[key] !== after[key]) return false;
+    }
+    return true;
   }
 
   async heldAncestry(info, seen = new Set()) {
@@ -3326,6 +3336,23 @@ class Guard {
       const chain = this.workerChain(creator);
       if (!chain || chain.has(targetId)) void this.judgeWorker(worker, creator);
     }
+  }
+
+  creatorChainRejudge(method, params, targetId) {
+    if (method !== 'Target.targetInfoChanged') return true;
+    const known = this.targets.get(targetId)?.info;
+    const next = params.targetInfo;
+    if (!known || !next) return true;
+    return !this.onlySkippableTargetChange(known, next);
+  }
+
+  rejudgeFromTargetEvent(message) {
+    const { method, params = {} } = message;
+    const fromInfo = params.targetInfo?.targetId;
+    const fromParams = params.targetId;
+    const fromSession = this.sessions.get(params.sessionId)?.targetId;
+    const targetId = fromInfo || fromParams || fromSession;
+    if (this.creatorChainRejudge(method, params, targetId)) this.rejudgeWorkers(targetId);
   }
 
   judgeWorker(worker, creator) {
@@ -5196,9 +5223,20 @@ class Guard {
     return this.within(this.current(info?.targetId, HINT_MS), HINT_MS + ANSWER_MS);
   }
 
+  learnTargetHint(info) {
+    const known = info?.targetId && this.targets.get(info.targetId);
+    const keepAt = Boolean(known?.info && this.onlySkippableTargetChange(known.info, info));
+    const stamped = keepAt ? known.at : undefined;
+    this.learn(info);
+    if (stamped !== undefined) {
+      const entry = this.targets.get(info.targetId);
+      if (entry) entry.at = stamped;
+    }
+  }
+
   async targetHint(message) {
     const info = message.params?.targetInfo;
-    this.learn(info);
+    this.learnTargetHint(info);
     const targetId = info?.targetId;
     const guarded = await this.hintCurrent(info);
     if (this.hints.get(targetId) !== message) return;
@@ -5234,11 +5272,7 @@ class Guard {
 
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
-    const rejudge =
-      params.targetInfo?.targetId ||
-      params.targetId ||
-      this.sessions.get(params.sessionId)?.targetId;
-    this.rejudgeWorkers(rejudge);
+    this.rejudgeFromTargetEvent(message);
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
       this.notePageUnderTab(message);
