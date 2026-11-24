@@ -42,8 +42,8 @@ importers:
         specifier: 4.11.0-5
         version: 4.11.0-5
       '@ai-ecoverse/wasm-tls-engine':
-        specifier: 4.2.0-12
-        version: 4.2.0-12
+        specifier: 4.3.0-1
+        version: 4.3.0-1
 
 packages:
 
@@ -135,8 +135,8 @@ packages:
   '@ai-ecoverse/wasm-findutils@4.11.0-5':
     resolution: {integrity: sha512-UNQgX1BFtHUa8HE5M7D1gSZmfl9HztvamvhrZbQENVlKcqZdCiQo/Bzi8WPhklU7+SpglSVe5PFVggLrfKQ1Tw==}
 
-  '@ai-ecoverse/wasm-tls-engine@4.2.0-12':
-    resolution: {integrity: sha512-s/BeMGFK4SmaoG3l2e7eV9H3iXH2GjHxZzMqKhPufE3WfjaTuL8BziZGCcfA/gd7VtqTldMAXErAQWwpvhG2pg==}
+  '@ai-ecoverse/wasm-tls-engine@4.3.0-1':
+    resolution: {integrity: sha512-G4DVJRquxkZ/PaoTO0wEVYT+RUOUI7fxlouIOmqXAg5ugypKFTT01dgRXhOM7gdVa49XtWWUKXtPC0EENIoa6Q==}
 
   '@huggingface/jinja@0.5.10':
     resolution: {integrity: sha512-SgS1D1bglQ94ceD4ZCL6eayUDy9uV1xuyk61OjgSxU5GJh7upqZCKII0JoTYMc6wWsg3JUgaPRX0ElQzXPk3Cw==}
@@ -302,7 +302,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-findutils@4.11.0-5': {}
 
-  '@ai-ecoverse/wasm-tls-engine@4.2.0-12': {}
+  '@ai-ecoverse/wasm-tls-engine@4.3.0-1': {}
 
   '@huggingface/jinja@0.5.10':
     optional: true
