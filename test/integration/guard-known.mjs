@@ -15,7 +15,7 @@ const unmet = (items) =>
   items.every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
 const ABSENT = new Set(['listRedacted', 'infoRedacted']);
 export const LINK = {
-  'slicc-cli#366 (fail-closed)': {
+  'slicc-cli#914 (fail-closed)': {
     ids: ERROR_RECOVERY,
     allowed: new Set([...RECOVERY, ...ABSENT]),
     notLive: `not live: client attach refused: ${UNGUARDED}`,
