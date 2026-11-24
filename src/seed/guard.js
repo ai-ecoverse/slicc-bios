@@ -1085,6 +1085,8 @@ class Guard {
     this.targets = new Map();
     this.sessions = new Map();
     this.shown = new Set();
+    this.clientAttached = new Set();
+    this.pendingClientAttaches = new Map();
     this.blocked = new Set();
     this.quarantined = new Map();
     this.hints = new Map();
@@ -1912,11 +1914,123 @@ class Guard {
     });
     if (verdict && !INHERITING.test(found.url)) found.real = true;
     if (!found.real && ORDINARY.test(found.url) && !this.is.url(found.url)) {
-      found.guarded = false;
-      found.was = false;
+      if (found.url === BLANKED && (found.was || found.guarded)) {
+        found.was = true;
+        found.guarded = false;
+      } else {
+        found.guarded = false;
+        found.was = false;
+      }
     }
     found.guarded = found.guarded || verdict;
     return found.guarded;
+  }
+
+  clientAttachPending(targetId) {
+    for (const command of [...this.asked.values(), ...this.callerIds.values()]) {
+      if (command.method === 'Target.attachToTarget' && command.params?.targetId === targetId)
+        return command;
+    }
+    return null;
+  }
+
+  replacedBlank(info) {
+    if (info?.url !== BLANKED) return false;
+    const known = this.targets.get(info.targetId);
+    if (!known) return false;
+    const sticky = known.was || known.guarded;
+    const committed = this.proofCommits.get(info.targetId)?.url === BLANKED;
+    return sticky || committed;
+  }
+
+  boundClientAttached() {
+    for (const sessionId of [...this.clientAttached]) {
+      if (!this.sessions.has(sessionId) && !this.shown.has(sessionId))
+        this.clientAttached.delete(sessionId);
+    }
+    while (this.clientAttached.size > 256) {
+      const first = this.clientAttached.values().next().value;
+      this.clientAttached.delete(first);
+    }
+  }
+
+  forgetClientAttach(sessionId) {
+    if (sessionId === undefined) return;
+    this.clientAttached.delete(sessionId);
+    for (const [targetId, entry] of this.pendingClientAttaches) {
+      entry.held = entry.held.filter((item) => item.sessionId !== sessionId);
+      if (!entry.held.length) {
+        clearTimeout(entry.timer);
+        this.pendingClientAttaches.delete(targetId);
+      }
+    }
+  }
+
+  forgetClientAttachesForTarget(targetId) {
+    for (const sessionId of [...this.clientAttached]) {
+      if (this.sessions.get(sessionId)?.targetId === targetId)
+        this.clientAttached.delete(sessionId);
+    }
+    const pending = this.pendingClientAttaches.get(targetId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingClientAttaches.delete(targetId);
+    for (const item of pending.held) this.cut(item.sessionId, item.parent, false);
+  }
+
+  expireClientAttachHold(targetId) {
+    const pending = this.pendingClientAttaches.get(targetId);
+    if (!pending) return;
+    this.pendingClientAttaches.delete(targetId);
+    for (const item of pending.held) this.cut(item.sessionId, item.parent, false);
+  }
+
+  holdClientAttachEvent(targetId, message, parent, sessionId, viaBlank = false) {
+    let pending = this.pendingClientAttaches.get(targetId);
+    if (!pending) {
+      pending = {
+        held: [],
+        timer: setTimeout(() => this.expireClientAttachHold(targetId), ANSWER_MS),
+      };
+      pending.timer.unref?.();
+      this.pendingClientAttaches.set(targetId, pending);
+    }
+    pending.held.push({ message, parent, sessionId, viaBlank });
+  }
+
+  async resumeClientAttachEvent(item, replySessionId) {
+    if (item.sessionId !== replySessionId) {
+      this.cut(item.sessionId, item.parent, false);
+      return;
+    }
+    const { message, parent } = item;
+    if (item.viaBlank) {
+      await this.blank(message, true);
+      return;
+    }
+    const info = message.params?.targetInfo ?? {};
+    if (await this.watch(item.sessionId, info.targetId, parent))
+      await this.showAttachment(message, info);
+    else void this.reprove(message);
+  }
+
+  releaseClientAttachHold(targetId, replySessionId) {
+    const pending = this.pendingClientAttaches.get(targetId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingClientAttaches.delete(targetId);
+    for (const item of pending.held) void this.resumeClientAttachEvent(item, replySessionId);
+  }
+
+  suppressReplacedBlankAttach(sessionId, info, parent, message, viaBlank = false) {
+    if (!this.replacedBlank(info)) return false;
+    if (this.clientAttached.has(sessionId)) return false;
+    if (this.clientAttachPending(info.targetId)) {
+      this.holdClientAttachEvent(info.targetId, message, parent, sessionId, viaBlank);
+      return true;
+    }
+    this.cut(sessionId, parent, false);
+    return true;
   }
 
   scope(targetId) {
@@ -4455,7 +4569,7 @@ class Guard {
     return errorInfo ?? null;
   }
 
-  async blank(message) {
+  async blank(message, admitted = false) {
     const { params, sessionId: parent } = message;
     const { sessionId, targetInfo } = params;
     const { targetId } = targetInfo;
@@ -4466,8 +4580,24 @@ class Guard {
     await nav?.ready;
     const info = await this.named(targetId);
     if (!info || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
+    const prior = this.targets.get(info.targetId);
     this.targets.delete(info.targetId);
     this.learn(info);
+    if (prior?.was || prior?.guarded) {
+      const entry = this.targets.get(info.targetId);
+      if (entry) entry.was = true;
+    }
+    if (
+      !admitted &&
+      this.suppressReplacedBlankAttach(
+        sessionId,
+        info,
+        parent,
+        { ...message, params: { ...params, targetInfo: info } },
+        true
+      )
+    )
+      return;
     if (await this.watch(sessionId, info.targetId, parent)) {
       const guarded = await this.target(info.targetId);
       if (guarded || nav?.taken || nav?.failed || (await this.errorUnproven(info, info.targetId)))
@@ -5119,6 +5249,7 @@ class Guard {
         return true;
       }
       this.learn(info);
+      if (this.suppressReplacedBlankAttach(params.sessionId, info, sessionId, message)) return true;
       if (await this.watch(params.sessionId, info.targetId, sessionId))
         await this.showAttachment(message, info);
       else void this.reprove(message);
@@ -5137,6 +5268,8 @@ class Guard {
       this.forgetFailedUrl(params.targetId);
       this.destroyedTargets.add(params.targetId);
       this.boundDestroyedTargets();
+      this.forgetClientAttachesForTarget(params.targetId);
+      this.boundClientAttached();
       if (nav?.session) this.navSessions.delete(nav.session);
       this.clearWorkerTarget(params.targetId);
       return this.targets.get(params.targetId)?.guarded === true;
@@ -5148,6 +5281,8 @@ class Guard {
       this.forgetProbeSession(params.sessionId);
       this.runtimes.delete(params.sessionId);
       this.primed.delete(params.sessionId);
+      this.forgetClientAttach(params.sessionId);
+      this.boundClientAttached();
       if (this.navSessions.has(params.sessionId)) {
         this.lost(params.sessionId);
         return true;
@@ -6843,6 +6978,9 @@ class Guard {
       const ok = await this.watch(result.sessionId, params.targetId);
       if (!ok) return this.refuse(was);
       this.touch(params.targetId);
+      this.clientAttached.add(result.sessionId);
+      this.boundClientAttached();
+      this.releaseClientAttachHold(params.targetId, result.sessionId);
       return this.deliver(message);
     }
     if (method === 'Target.getTargets' && Array.isArray(result?.targetInfos)) {
@@ -8248,6 +8386,7 @@ class Guard {
 
   start() {
     const { connection, guarded } = this;
+    if (typeof connection.captureGuard === 'function') connection.captureGuard(this);
     connection.onmessage = (text) => this.received(text);
     connection.onclose = (why) => {
       this.closing = true;

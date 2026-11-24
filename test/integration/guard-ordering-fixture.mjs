@@ -31,6 +31,7 @@ export function protocol(t, protect = guardProtected) {
   let next = 0;
   let hold = () => false;
   let privateFailure = false;
+  let inner;
   const raw = {
     send(text) {
       const message = JSON.parse(text);
@@ -46,6 +47,9 @@ export function protocol(t, protect = guardProtected) {
       );
     },
     close() {},
+    captureGuard(instance) {
+      inner = instance;
+    },
   };
   const guard = protect(raw, protectedOrigin);
   guard.onmessage = (text) => {
@@ -152,6 +156,7 @@ export function protocol(t, protect = guardProtected) {
     attached,
     clients,
     release,
+    inner: () => inner,
     privateFailure(value) {
       privateFailure = value;
     },
