@@ -1,12 +1,51 @@
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
 import { test } from 'node:test';
-import { guardProtected, PROTECTED } from '../../src/seed/guard.js';
+import { PROTECTED, guardProtected as stockGuard } from '../../src/seed/guard.js';
 
 const SEVEN = 'https://seven.invalid';
 const VAULT = 'https://vault.sliccy.ai/doc?n=lag-css';
 const ORDINARY = 'https://ordinary.invalid/doc?n=lag-css';
 const SECRET = 'lagging-css-secret';
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+const SEED = new URL('../../src/seed/', import.meta.url);
+
+const MUTANTS = {
+  'skip-style-reaches': [
+    'guard.js',
+    '    return DOCUMENT_STYLE_READS.has(method);',
+    '    return false;',
+  ],
+};
+
+registerHooks({
+  resolve(specifier, context, next) {
+    const mutant = context.parentURL && URL.parse(context.parentURL)?.searchParams.get('mutant');
+    const resolved = next(specifier, context);
+    if (
+      !mutant ||
+      !MUTANTS[mutant] ||
+      !specifier.startsWith('./') ||
+      specifier.slice(2) !== 'guard.js'
+    )
+      return resolved;
+    return { ...resolved, url: `${resolved.url}?mutant=${mutant}` };
+  },
+  load(url, context, next) {
+    const mutant = URL.parse(url)?.searchParams.get('mutant');
+    const loaded = next(url, context);
+    if (!mutant || !MUTANTS[mutant] || !url.split('?')[0].endsWith('/guard.js')) return loaded;
+    const [, from, to] = MUTANTS[mutant];
+    const source = String(loaded.source);
+    assert.ok(source.includes(from), `mutant ${mutant}: patch site missing`);
+    return { ...loaded, source: source.replace(from, to) };
+  },
+});
+
+const loadGuard = async (mutant) => {
+  if (!mutant) return stockGuard;
+  return (await import(`${new URL('guard.js', SEED).href}?mutant=${mutant}`)).guardProtected;
+};
 
 const routes = [
   ['devtools', undefined],
@@ -225,7 +264,7 @@ function chrome(pages, { staleInfo = false } = {}) {
   return connection;
 }
 
-function harness(t, pages, route, options, protect = guardProtected) {
+function harness(t, pages, route, options, protect = stockGuard) {
   const raw = chrome(pages, options);
   const guarded = protect(raw, [SEVEN], new Map(), route);
   t.after(() => guarded.close?.());
@@ -362,3 +401,29 @@ for (const [method, params] of [
     });
   }
 }
+
+test('mutant: skipping document-style reads in reaches lets a lagging CSS read reach the browser', {
+  timeout: 10000,
+}, async (t) => {
+  const protect = await loadGuard('skip-style-reaches');
+  const pages = { foreign: blankPage() };
+  const h = harness(t, pages, undefined, { staleInfo: true }, protect);
+  h.created('foreign');
+  await tick();
+  const attached = await h.send('Target.attachToTarget', {
+    targetId: 'foreign',
+    flatten: true,
+  });
+  assert.equal(attached?.error, undefined, JSON.stringify(attached));
+  h.raw.navigate('foreign', `view-source:${VAULT}`);
+  const answer = await h.send(
+    'CSS.getComputedStyleForNode',
+    { nodeId: 1 },
+    attached.result.sessionId
+  );
+  assert.ok(
+    h.contentReached('foreign', ['CSS.getComputedStyleForNode']) ||
+      answer?.result?.computedStyle?.[0]?.value === SECRET,
+    'mutant must turn the lagging CSS refusal row red'
+  );
+});
