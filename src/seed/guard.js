@@ -5659,11 +5659,23 @@ class Guard {
     ]);
   }
 
+  pendingCarrier(message) {
+    const sessionId = message.sessionId;
+    if (sessionId && this.pendingCommit.has(sessionId)) return true;
+    const targetId =
+      message.params?.targetInfo?.targetId ??
+      message.params?.frameId ??
+      message.params?.frame?.id ??
+      this.scopeTarget(sessionId);
+    return this.pendingTarget(targetId);
+  }
+
   eventError(message) {
     return (
       this.quarantined.has(message.sessionId) ||
       this.frameError(message.params, message.sessionId, this.eventFrames(message.method)) ||
-      this.errorDocument(message.sessionId, message.method)
+      this.errorDocument(message.sessionId, message.method) ||
+      (ERROR_METADATA.has(message.method) && this.pendingCarrier(message))
     );
   }
 
