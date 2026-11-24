@@ -1161,7 +1161,36 @@ class Guard {
     this.recoveries = new WeakMap();
     this.next = GUARD_IDS;
     this.listedEvents = 0;
+    this.begun = Date.now();
     this.guarded = { onmessage: null, onclose: null };
+  }
+
+  wireTarget(sessionId) {
+    return (
+      this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId ?? ''
+    );
+  }
+
+  wireLog(kind, method, sessionId, reply) {
+    if (this.route !== 'link') return;
+    const error = reply?.error;
+    const targetId = this.wireTarget(sessionId);
+    console.log(
+      `${kind} ${JSON.stringify({
+        t: Date.now() - this.begun,
+        targetId: targetId ? String(targetId).slice(0, 8) : '',
+        session: sessionId ? String(sessionId).slice(0, 8) : '',
+        method,
+        ok: !error,
+        code: error?.code ?? null,
+        message: error?.message ?? null,
+      })}`
+    );
+  }
+
+  wireClient(caller, message) {
+    if (message.id === undefined || !caller?.method) return;
+    this.wireLog('GUARD-CLIENT', caller.method, message.sessionId ?? caller.sessionId, message);
   }
 
   redacted(message, source = message) {
@@ -1339,6 +1368,7 @@ class Guard {
       message = this.workerGate(message);
       if (message === null) return;
     }
+    this.wireClient(caller, message);
     if (release && message.id !== undefined) {
       const key = requestKey(message);
       const command = this.commands.get(key);
@@ -1359,8 +1389,11 @@ class Guard {
   }
 
   call(method, params, sessionId, deadline) {
-    if (this.closed || this.gone.has(sessionId))
-      return Promise.resolve({ error: { code: -32000, message: UNGUARDED } });
+    if (this.closed || this.gone.has(sessionId)) {
+      const refused = { error: { code: -32000, message: UNGUARDED } };
+      this.wireLog('GUARD-WIRE', method, sessionId, refused);
+      return Promise.resolve(refused);
+    }
     const placement = this.placements.get(sessionId);
     const placementRevision = this.revisions.get(placement);
     const nav = this.navSessions.get(sessionId);
@@ -1381,6 +1414,7 @@ class Guard {
           (placement === undefined || current === undefined || current === sessionId)
         )
           this.recordPlacement(placement, method, message.result);
+        this.wireLog('GUARD-WIRE', method, sessionId, message);
         resolve(message);
       };
       answer.sessionId = sessionId;
