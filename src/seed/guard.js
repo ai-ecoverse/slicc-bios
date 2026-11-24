@@ -163,6 +163,35 @@ const PAGE_CONTENT = new Set([
   'Page.stopLoading',
 ]);
 const REACHES = /^(?:DOMSnapshot|Input|Accessibility|IO)\./;
+const DOCUMENT_STYLE_READS = new Set([
+  'CSS.collectClassNames',
+  'CSS.getAnimatedStylesForNode',
+  'CSS.getBackgroundColors',
+  'CSS.getComputedStyleForNode',
+  'CSS.getInlineStylesForNode',
+  'CSS.getLayersForNode',
+  'CSS.getLocationForSelector',
+  'CSS.getLonghandProperties',
+  'CSS.getMatchedStylesForNode',
+  'CSS.getMediaQueries',
+  'CSS.getPlatformFontsForNode',
+  'CSS.getStyleSheetText',
+  'CSS.resolveValues',
+  'CSS.stopRuleUsageTracking',
+  'CSS.takeComputedStyleUpdates',
+  'CSS.takeCoverageDelta',
+  'LayerTree.compositingReasons',
+  'LayerTree.loadSnapshot',
+  'LayerTree.makeSnapshot',
+  'LayerTree.profileSnapshot',
+  'LayerTree.replaySnapshot',
+  'LayerTree.snapshotCommandLog',
+]);
+const PENDING_STYLE_HOLDS = new Set([
+  'CSS.stopRuleUsageTracking',
+  'CSS.takeComputedStyleUpdates',
+  'CSS.takeCoverageDelta',
+]);
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const UNSAFE = new Set([
@@ -5701,7 +5730,19 @@ class Guard {
     if (typeof method !== 'string') return false;
     if (debuggerAdmitted(method) || PAGE_CONTENT.has(method) || REACHES.test(method)) return true;
     if (method.startsWith('DOM.')) return method !== 'DOM.enable' && method !== 'DOM.disable';
-    return method.startsWith('Runtime.') && !RUNTIME_META.has(method);
+    if (method.startsWith('Runtime.') && !RUNTIME_META.has(method)) return true;
+    return DOCUMENT_STYLE_READS.has(method);
+  }
+
+  currentDocumentOrdinary(sessionId) {
+    const targetId = this.scopeTarget(sessionId);
+    if (!targetId) return false;
+    const target = this.targets.get(targetId);
+    if (!target?.url || this.is.url(target.url)) return false;
+    const root = this.scopes.get(targetId)?.root;
+    const frameUrl = root !== undefined ? this.frames.get(root) : undefined;
+    if (frameUrl !== undefined && this.is.url(frameUrl)) return false;
+    return true;
   }
 
   moveFrom(message) {
@@ -6194,8 +6235,15 @@ class Guard {
     if (
       (this.pendingCommit.has(sessionId) || this.pendingTarget(this.scopeTarget(sessionId))) &&
       !NAVIGATES.has(method)
-    )
+    ) {
+      if (
+        DOCUMENT_STYLE_READS.has(method) &&
+        !PENDING_STYLE_HOLDS.has(method) &&
+        this.currentDocumentOrdinary(sessionId)
+      )
+        return false;
       return PROTECTED;
+    }
     return false;
   }
 
