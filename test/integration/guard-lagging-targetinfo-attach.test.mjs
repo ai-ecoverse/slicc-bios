@@ -375,6 +375,27 @@ for (const [name, route] of routes) {
       assert.ok(!h.contentReached('foreign', [method]));
       assert.deepEqual(h.leaked(SECRET, 'vault.sliccy.ai'), []);
     });
+
+    if (name !== 'extension') {
+      test(`on ${name}, an ordinary foreign target still answers ${method}`, async (t) => {
+        const pages = { foreign: blankPage() };
+        const h = harness(t, pages, route);
+        h.created('foreign');
+        await tick();
+        const attached = await h.send('Target.attachToTarget', {
+          targetId: 'foreign',
+          flatten: true,
+        });
+        assert.equal(attached?.error, undefined, JSON.stringify(attached));
+        h.raw.navigate('foreign', ORDINARY);
+        const answer = await h.send(method, params, attached.result.sessionId);
+        assert.equal(answer?.error, undefined, JSON.stringify({ method, answer }));
+        assert.ok(answer?.result !== undefined, JSON.stringify({ method, answer }));
+        assert.ok(h.contentReached('foreign', [method]));
+        h.raw.announce('foreign');
+        await tick();
+      });
+    }
   }
 }
 
