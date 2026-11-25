@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:https';
 import { after, test } from 'node:test';
-import { ready } from './bios.mjs';
+import { pressDeep, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeOpspile } from './fake-opspile.mjs';
 import { certificate } from './real-extension.mjs';
@@ -148,25 +148,14 @@ test('on www.sliccy.ai/7/ the Support port signs in through six’s relay and ca
     const file = await (await dir.getFileHandle('threads', { create: true })).createWritable();
     await file.write('{"items":[{"id":"planted","title":"Planted"}],"changeCursor":"c0"}');
     await file.close();
-    const support = () => document.querySelector('slicc-app').model.support;
-    window.support = support;
-    const button = document.createElement('button');
-    button.id = 'support-sign-in';
-    button.textContent = 'Sign in';
-    button.style.cssText = 'position:fixed;top:0;left:0;z-index:99999';
-    button.addEventListener('click', () => {
-      window.supportSignedIn = support()
-        .signIn()
-        .then(
-          () => 'resolved',
-          (error) => error.message
-        );
-    });
-    document.body.append(button);
-    document.getElementById('support-sign-in').focus();
+    const app = document.querySelector('slicc-app');
+    window.support = () => app.model.support;
+    window.inPanel = (selector) =>
+      app.dock.content('support')?.shadowRoot?.querySelector(selector) ?? null;
+    app.show('support');
   });
-  await page.press('Enter');
-  assert.equal(await page.until(() => window.supportSignedIn), 'resolved');
+  await page.until(() => !!window.inPanel('[data-sign-in]'));
+  await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
   await page.until(() => window.support().status().state === 'ready');
   assert.deepEqual(await page.evaluate(() => window.support().status()), {
     identity: 'Mara Lind',

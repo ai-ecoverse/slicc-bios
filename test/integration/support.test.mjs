@@ -5,7 +5,7 @@ import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { ready } from './bios.mjs';
+import { pressDeep, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeLlm } from './fake-llm.mjs';
 import { fakeOpspile } from './fake-opspile.mjs';
@@ -17,9 +17,27 @@ const JONAS = 'dummy-support-token-jonas-0000';
 const SHORT = 'dummy-support-token-short-0000';
 const SECRET = 'Builds fail since Monday.';
 const accounts = {
-  [MARA]: { name: 'Mara Lind', org: 'PAPERMILL@AdobeOrg', enrolled: true, expires: 86399 },
-  [JONAS]: { name: 'Jonas Berg', org: 'QUAYLABS@AdobeOrg', enrolled: false, expires: 86399 },
-  [SHORT]: { name: 'Mara Lind', org: 'PAPERMILL@AdobeOrg', enrolled: true, expires: 36 },
+  [MARA]: {
+    name: 'Mara Lind',
+    user: 'MARA1234@AdobeID',
+    org: 'PAPERMILL@AdobeOrg',
+    enrolled: true,
+    expires: 86399,
+  },
+  [JONAS]: {
+    name: 'Jonas Berg',
+    user: 'JONAS5678@AdobeID',
+    org: 'QUAYLABS@AdobeOrg',
+    enrolled: false,
+    expires: 86399,
+  },
+  [SHORT]: {
+    name: 'Mara Lind',
+    user: 'MARA1234@AdobeID',
+    org: 'PAPERMILL@AdobeOrg',
+    enrolled: true,
+    expires: 36,
+  },
 };
 
 const certs = mkdtempSync(join(tmpdir(), 'support-ims-'));
@@ -66,7 +84,12 @@ const ims = createServer(
       return res.end(
         JSON.stringify(
           account
-            ? { displayName: account.name, email: 'someone@example.com', ownerOrg: account.org }
+            ? {
+                displayName: account.name,
+                email: 'someone@example.com',
+                userId: account.user,
+                ownerOrg: account.org,
+              }
             : { error: 'invalid_token' }
         )
       );
@@ -134,7 +157,7 @@ async function eventually(check, what, ms = 30000) {
 const changes = () => calls().filter((call) => call.path === 'changes');
 const lists = () => calls().filter((call) => call.path === 'threads' && call.method === 'GET');
 
-test('seven’s Support port signs in with Adobe, follows the changes and resets for each account', {
+test('seven offers spectrum’s Support panel on its port: sign-in, list, conversation, changes and a not-enrolled account', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -144,6 +167,15 @@ test('seven’s Support port signs in with Adobe, follows the changes and resets
   await page.goto('/');
   await ready(page, undefined, { tools: false });
   await page.until(() => !!document.querySelector('slicc-app').model?.support);
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const surface = document
+        .querySelector('slicc-app')
+        .surfaces.find((item) => item.id === 'support');
+      return surface && { tag: surface.tag, side: surface.side, open: surface.open };
+    }),
+    { tag: 'slicc-support', side: 'right', open: [] }
+  );
   await page.evaluate(async () => {
     const root = await navigator.storage.getDirectory();
     const api = await (await root.getDirectoryHandle('api', { create: true })).getDirectoryHandle(
@@ -153,36 +185,26 @@ test('seven’s Support port signs in with Adobe, follows the changes and resets
     const file = await (await api.getFileHandle('threads', { create: true })).createWritable();
     await file.write('{"items":[{"id":"planted","title":"Planted"}],"changeCursor":"c0"}');
     await file.close();
-    const support = () => document.querySelector('slicc-app').model.support;
-    window.support = support;
+    const app = document.querySelector('slicc-app');
+    window.support = () => app.model.support;
+    window.panel = () => app.dock.content('support')?.shadowRoot ?? null;
+    window.inPanel = (selector) => window.panel()?.querySelector(selector) ?? null;
+    window.panelText = (selector) =>
+      window.inPanel(selector)?.textContent.replace(/\s+/g, ' ').trim() ?? null;
+    window.rail = () => app.shadowRoot.querySelector('#rail-support');
     window.supportSeen = { status: [], thread: [] };
-    support().on('status', (status) => window.supportSeen.status.push(status));
-    support().on('thread', (id) => window.supportSeen.thread.push(id));
-    const button = document.createElement('button');
-    button.id = 'support-sign-in';
-    button.textContent = 'Sign in';
-    button.style.cssText = 'position:fixed;top:0;left:0;z-index:99999';
-    button.addEventListener('click', () => {
-      window.supportSignedIn = support()
-        .signIn()
-        .then(
-          () => 'resolved',
-          (error) => error.message
-        );
-    });
-    document.body.append(button);
+    window.support().on('status', (status) => window.supportSeen.status.push(status));
+    window.support().on('thread', (id) => window.supportSeen.thread.push(id));
+    app.show('support');
   });
+  await page.until(() => !!window.inPanel('[data-sign-in]'));
+  assert.match(
+    await page.evaluate(() => window.panelText('[data-sign-in]')),
+    /Get help from Adobe Support/
+  );
   assert.deepEqual(await page.evaluate(() => window.support().status()), { state: 'signed-out' });
-  const signIn = async () => {
-    await page.evaluate(() => {
-      window.supportSignedIn = null;
-      document.getElementById('support-sign-in').focus();
-    });
-    await page.press('Enter');
-    return page.until(() => window.supportSignedIn);
-  };
 
-  assert.equal(await signIn(), 'resolved');
+  await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
   await page.until(() => window.support().status().state === 'ready');
   assert.deepEqual(await page.evaluate(() => window.support().status()), {
     identity: 'Mara Lind',
@@ -200,19 +222,25 @@ test('seven’s Support port signs in with Adobe, follows the changes and resets
   assert.equal(authorize.scope, SCOPES);
   assert.equal(configs.length, 1);
   assert.deepEqual(profiles, [MARA]);
+  await page.until(() => window.panel()?.querySelectorAll('li.row[data-id]').length === 2);
   assert.deepEqual(
     await page.evaluate(() =>
-      window
-        .support()
-        .threads()
-        .map((item) => [item.id, item.unread, item.resolved])
+      [...window.panel().querySelectorAll('li.row[data-id]')].map((row) => [
+        row.dataset.id,
+        row.hasAttribute('data-unread'),
+        row.hasAttribute('data-resolved'),
+      ])
     ),
     [
-      ['sup-preview', 1, false],
-      ['sup-editor', 0, true],
+      ['sup-preview', true, false],
+      ['sup-editor', false, true],
     ]
   );
-  assert.equal(await page.evaluate(() => window.support().unread()), 1);
+  assert.equal(
+    await page.evaluate(() => window.panelText('[data-account] .who')),
+    'Signed in as Mara Lind, PAPERMILL@AdobeOrg'
+  );
+  await page.until(() => /1 unread/.test(window.rail()?.getAttribute('accessible-label') ?? ''));
   assert.ok(lists().every((call) => call.token === MARA));
   assert.equal(
     (chrome.vault.state.records ?? []).some((record) => record.provider === 'adobe'),
@@ -220,31 +248,45 @@ test('seven’s Support port signs in with Adobe, follows the changes and resets
     'Support keeps its token out of the vault'
   );
 
-  const conversation = await page.evaluate(() => window.support().thread('sup-preview'));
+  await pressDeep(page, 'li.row[data-id="sup-preview"] .head');
+  await page.until(() => window.panel()?.querySelectorAll('article.message[data-id]').length === 2);
   assert.deepEqual(
-    conversation.messages.map((m) => [m.id, m.author, m.name]),
+    await page.evaluate(() =>
+      [...window.panel().querySelectorAll('article.message')].map((m) => [
+        m.dataset.id,
+        m.dataset.author,
+      ])
+    ),
     [
-      ['m1', 'customer', 'Mara Lind'],
-      ['m2', 'support', 'Adobe Support'],
+      ['m1', 'customer'],
+      ['m2', 'support'],
     ]
   );
-  await page.evaluate(() => window.support().read('sup-preview', 'm2'));
-  assert.equal(await page.evaluate(() => window.support().unread()), 0);
-
-  const polled = changes().length;
-  opspile.supportReply('sup-editor', 'Reopened: it is slow again.');
-  await page.until(() => window.supportSeen.thread.includes('sup-editor'));
-  assert.ok(changes().length > polled);
-  assert.equal(
-    await page.evaluate(
-      () =>
-        window
-          .support()
-          .threads()
-          .find((item) => item.id === 'sup-editor').unread
-    ),
-    1
+  await eventually(
+    () => calls().some((call) => call.method === 'PUT' && call.body?.through === 'm2'),
+    'the open conversation is acknowledged'
   );
+  await page.until(() => window.support().unread() === 0);
+
+  opspile.supportReply('sup-preview', 'We found it.');
+  await page.until(() => window.panel()?.querySelectorAll('article.message[data-id]').length === 3);
+  assert.ok(await page.evaluate(() => window.supportSeen.thread.includes('sup-preview')));
+  assert.match(
+    await page.evaluate(() => window.panelText('article.message:last-of-type')),
+    /We found it\./
+  );
+
+  await page.evaluate(() => window.inPanel('sp-textfield[name="reply"]').focus());
+  await page.insert('Thanks, it works now.');
+  await pressDeep(page, '[data-action="send"]');
+  await eventually(
+    () => calls().some((call) => call.path === 'threads/sup-preview/replies'),
+    'the panel’s reply reaches Opspile'
+  );
+  const reply = calls().find((call) => call.path === 'threads/sup-preview/replies');
+  assert.deepEqual(reply.body, { body: 'Thanks, it works now.' });
+  assert.match(reply.key, /\S/);
+  await page.until(() => window.panel()?.querySelectorAll('article.message[data-id]').length === 4);
 
   const made = await page.evaluate(() =>
     window.support().create({ key: 'intent:1', title: 'Exports', body: 'Exports time out.' })
@@ -253,9 +295,10 @@ test('seven’s Support port signs in with Adobe, follows the changes and resets
     window.support().create({ key: 'intent:1', title: 'Exports', body: 'Exports time out.' })
   );
   assert.deepEqual(again, made);
-  const posts = calls().filter((call) => call.method === 'POST');
   assert.deepEqual(
-    posts.map((call) => call.key),
+    calls()
+      .filter((call) => call.method === 'POST' && call.path === 'threads')
+      .map((call) => call.key),
     ['intent:1', 'intent:1']
   );
   assert.equal(await page.evaluate(() => window.support().status().channel), 'Mill support');
@@ -279,11 +322,6 @@ test('seven’s Support port signs in with Adobe, follows the changes and resets
         .some((item) => item.id === id),
     made.id
   );
-  const replied = await page.evaluate(
-    (thread) => window.support().reply({ key: 'intent:2', thread, body: 'Still slow.' }),
-    'sup-editor'
-  );
-  assert.match(replied.id, /^m\d+$/);
 
   const relisted = lists().length;
   opspile.state.fail.push({ path: /^changes$/, status: 410, code: 'cursor_expired' });
@@ -306,15 +344,31 @@ test('seven’s Support port signs in with Adobe, follows the changes and resets
   assert.equal(await page.evaluate(() => window.support().threads().length), kept);
   await page.until(() => window.support().status().state === 'ready');
 
-  assert.equal(await signIn(), 'resolved');
+  await page.evaluate(() => window.inPanel('[data-action="back"]')?.click());
+  await pressDeep(page, '[data-account] [data-action="sign-out"]');
+  await page.until(() => !!window.inPanel('[data-sign-in]'));
+  assert.deepEqual(await page.evaluate(() => window.support().status()), { state: 'signed-out' });
+
+  await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
   await page.until(() => window.support().status().state === 'not-enrolled');
   assert.deepEqual(await page.evaluate(() => window.support().status()), {
-    identity: 'Jonas Berg',
+    identity: 'Jonas Berg (user ID JONAS5678@AdobeID)',
     org: 'QUAYLABS@AdobeOrg',
     state: 'not-enrolled',
   });
+  await page.until(() => !!window.inPanel('[data-empty="not-enrolled"]'));
+  const card = await page.evaluate(() => ({
+    note: window.panelText('[data-empty="not-enrolled"]'),
+    account: window.panelText('[data-account] .who'),
+  }));
+  assert.deepEqual(card, {
+    note: 'Support isn’t set up for QUAYLABS@AdobeOrg yet. Ask your Adobe contact to add you, or sign in with another account.',
+    account: 'Signed in as Jonas Berg (user ID JONAS5678@AdobeID), QUAYLABS@AdobeOrg',
+  });
+  t.diagnostic(`not-enrolled card: ${card.note} | ${card.account}`);
+  await page.screenshot(new URL('not-enrolled.png', page.dir));
   assert.deepEqual(await page.evaluate(() => window.support().threads()), []);
-  assert.equal(await page.evaluate(() => window.support().unread()), 0);
+  assert.equal(await page.evaluate(() => window.panel().querySelectorAll('li.row').length), 0);
   const switched = calls().findIndex((call) => call.token === JONAS);
   assert.ok(
     calls()
@@ -322,15 +376,18 @@ test('seven’s Support port signs in with Adobe, follows the changes and resets
       .every((call) => call.token === JONAS)
   );
 
-  await page.evaluate(() => window.support().signOut());
-  assert.deepEqual(await page.evaluate(() => window.support().status()), { state: 'signed-out' });
+  await pressDeep(page, '[data-account] [data-action="sign-out"]');
+  await page.until(() => !!window.inPanel('[data-sign-in]'));
   const quiet = calls().length;
   await new Promise((resolve) => setTimeout(resolve, 12000));
   assert.equal(calls().length, quiet);
 
-  assert.equal(await signIn(), 'resolved');
+  await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
   await page.until(() => window.support().status().state === 'ready');
+  await page.until(() => window.panel()?.querySelectorAll('li.row[data-id]').length > 0);
+  await page.screenshot(new URL('list.png', page.dir));
   await page.until(() => window.support().status().state === 'signed-out');
+  await page.until(() => !!window.inPanel('[data-sign-in]'));
   assert.deepEqual(await page.evaluate(() => window.support().threads()), []);
 
   const logged = (page.console ?? []).join('\n');

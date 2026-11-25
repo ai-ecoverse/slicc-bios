@@ -116,7 +116,17 @@ export function profileOf(profile) {
     (value) => typeof value === 'string' && value.trim()
   );
   const org = typeof profile?.ownerOrg === 'string' && profile.ownerOrg ? profile.ownerOrg : null;
-  return { ...(name ? { identity: name.trim() } : {}), ...(org ? { org } : {}) };
+  const user = typeof profile?.userId === 'string' && profile.userId ? profile.userId : null;
+  return {
+    ...(name ? { identity: name.trim() } : {}),
+    ...(org ? { org } : {}),
+    ...(user ? { user } : {}),
+  };
+}
+
+export function unenrolled({ identity, org, user }) {
+  const named = user ? (identity ? `${identity} (user ID ${user})` : `user ID ${user}`) : identity;
+  return { ...(named ? { identity: named } : {}), ...(org ? { org } : {}) };
 }
 
 class Problem extends Error {
@@ -170,7 +180,12 @@ class Support {
   }
 
   who(s) {
-    return { ...s.account, ...(s.channel ? { channel: s.channel } : {}) };
+    const { identity, org } = s.account;
+    return {
+      ...(identity ? { identity } : {}),
+      ...(org ? { org } : {}),
+      ...(s.channel ? { channel: s.channel } : {}),
+    };
   }
 
   show(next) {
@@ -339,7 +354,7 @@ class Support {
     if (enrolled) return;
     this.deps.cancel(s.timer);
     s.timer = null;
-    this.show({ ...this.who(s), state: 'not-enrolled' });
+    this.show({ ...this.who(s), ...unenrolled(s.account), state: 'not-enrolled' });
     this.shown([], 0);
   }
 
