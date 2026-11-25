@@ -102,7 +102,7 @@ import { publicPreviews, serveHubBase } from './serve.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
-import { createSupport, offersSupport } from './support.js';
+import { createSupport, offersSupport, supportBase } from './support.js';
 import { createSwitches } from './switches.js';
 import {
   claim,
@@ -392,8 +392,8 @@ const login = sealedLogin(adobe, {
   vault,
   takes: () => takesVault(mine.agent),
 });
-const support = offersSupport(location.origin, localStorage)
-  ? { support: createSupport({ grant: adobe.grant }) }
+const support = offersSupport(location.origin, localStorage, BIOS)
+  ? { support: createSupport({ grant: adobe.grant, base: supportBase(BIOS) }) }
   : {};
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();

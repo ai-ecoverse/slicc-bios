@@ -91,7 +91,7 @@ export function fakeOpspile({ accounts }) {
 
   function answer(request, raw) {
     const url = new URL(request.url);
-    const path = url.pathname.replace(/^\/api\/support\//, '');
+    const path = url.pathname.replace(/^(\/7)?\/api\/support\//, '');
     const token = header(request, 'authorization')?.replace(/^Bearer /, '');
     const key = header(request, 'idempotency-key');
     const body = raw.length ? JSON.parse(raw.toString()) : null;

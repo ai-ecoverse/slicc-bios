@@ -31,7 +31,13 @@ export const UNREACHABLE =
   'Seven can’t reach Adobe Support right now, so this list may be out of date.';
 export const BUSY = 'Adobe Support is busy, so this list may be out of date.';
 
-export function offersSupport(origin, storage) {
+export const WWW = 'https://www.sliccy.ai';
+export const SHARED_BIOS = '/7/';
+
+export const supportBase = (bios) => `${new URL(bios).pathname}api/support/`;
+
+export function offersSupport(origin, storage, bios = `${origin}/`) {
+  if (origin === WWW) return new URL(bios).pathname === SHARED_BIOS;
   if (relayed(origin)) return true;
   try {
     return storage?.getItem(SUPPORT_KEY) === 'on';
