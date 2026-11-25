@@ -23,6 +23,7 @@ for (const target of ['seven', 'vault']) {
           capabilities: {
             autoAttach: true,
             browserSession: true,
+            browserStorage: true,
             browserContexts: true,
             chromeUrlsAttach: true,
             extensionWorld: true,
