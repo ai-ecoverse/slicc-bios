@@ -1,7 +1,7 @@
 import { askBase, askHold, landed, markerUrl, UNHELD } from './held.js';
 import { IMS_TOKEN } from './vault.js';
 
-const imsHosts = {
+export const imsHosts = {
   prod: 'https://ims-na1.adobelogin.com',
   stg1: 'https://ims-na1-stg1.adobelogin.com',
 };

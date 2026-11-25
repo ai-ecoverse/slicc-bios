@@ -2,7 +2,7 @@ import { appendLog, described, openIntegrity, sha256, treeOf } from './sw/integr
 import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
 import { joined, opfsReader } from './sw/opfs.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
-import { route } from './sw/routes.js';
+import { route, SUPPORT_PATH } from './sw/routes.js';
 import { ASSETS, EXPORTER, retired } from './sw/six.js';
 import { nodeStub } from './sw/stubs.js';
 import { transform } from './sw/transform.js';
@@ -74,7 +74,7 @@ const ownDirs = [
   '/fonts/',
 ];
 const passed = new Set(SHARED ? ['/auth/callback', EXPORTER] : []);
-const passedDirs = SHARED ? [ASSETS] : [];
+const passedDirs = [SUPPORT_PATH, ...(SHARED ? [ASSETS] : [])];
 const redirects = new Map([
   ['/os/manifest.json', 'manifest.json'],
   ['/os/favicon.svg', 'icons/favicon.svg'],

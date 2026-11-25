@@ -1,5 +1,6 @@
 const SPECIAL = /[\\:*?+(){}]/g;
 const LOCAL = ['localhost', '*.localhost', 'localhost.', '*.localhost.'];
+export const SUPPORT_PATH = '/api/support/';
 
 function only(init) {
   return new URLPattern({
@@ -22,6 +23,10 @@ export function routes(scope) {
     source: 'fetch-event',
   });
   return [
+    {
+      condition: { urlPattern: only({ hostname: own, pathname: `${SUPPORT_PATH}*` }) },
+      source: 'network',
+    },
     handler(own),
     ...LOCAL.map(handler),
     { condition: { urlPattern: only({ protocol: 'https' }) }, source: 'network' },

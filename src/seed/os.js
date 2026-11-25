@@ -102,6 +102,7 @@ import { publicPreviews, serveHubBase } from './serve.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
+import { createSupport, offersSupport } from './support.js';
 import { createSwitches } from './switches.js';
 import {
   claim,
@@ -184,6 +185,7 @@ export const layouts = {
   monitor: { side: 'right', open: [] },
   network: { side: 'right', open: [] },
   settings: { side: 'center', open: [] },
+  support: { side: 'right', open: [] },
   updates: { side: 'center', open: [] },
 };
 
@@ -204,10 +206,12 @@ export const skip = [
 ];
 
 export function offered(all) {
-  return Object.entries(layouts).map(([id, layout]) => ({
-    ...all.find((item) => item.id === id),
-    ...layout,
-  }));
+  return Object.entries(layouts)
+    .filter(([id]) => all.some((item) => item.id === id))
+    .map(([id, layout]) => ({
+      ...all.find((item) => item.id === id),
+      ...layout,
+    }));
 }
 
 const network = await pickTransport();
@@ -380,16 +384,17 @@ const forwarder = createForwarder({
 });
 const jerk = createJerk({ links: () => links, vault });
 useVault(vault);
-const login = sealedLogin(
-  signIn({
-    shared: sharesOrigin(),
-    hosted: () => Object.values(browserHosts()).some(Boolean),
-  }),
-  {
-    vault,
-    takes: () => takesVault(mine.agent),
-  }
-);
+const adobe = signIn({
+  shared: sharesOrigin(),
+  hosted: () => Object.values(browserHosts()).some(Boolean),
+});
+const login = sealedLogin(adobe, {
+  vault,
+  takes: () => takesVault(mine.agent),
+});
+const support = offersSupport(location.origin, localStorage)
+  ? { support: createSupport({ grant: adobe.grant }) }
+  : {};
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');
@@ -566,6 +571,7 @@ function base(os) {
     browser: browser.port,
     vault: asking.vault,
     tray: trayPort(network, { name: `seven on ${location.host}` }),
+    ...support,
   };
 }
 
@@ -1145,6 +1151,7 @@ async function follow() {
     network: reach.port,
     browser: browser.port,
     vault: asking.vault,
+    ...support,
     tabs,
   };
   await app.updateComplete;
