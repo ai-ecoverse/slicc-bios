@@ -288,6 +288,7 @@ await step('seed', async () => {
     'snapshot.js',
     'start.js',
     'storage.js',
+    'support.js',
     'switches.js',
     'switchboard-worker.js',
     'switchboard.js',
