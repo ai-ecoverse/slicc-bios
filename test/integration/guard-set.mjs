@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -1149,6 +1149,29 @@ export function shared(path, { variants, except = [], group } = {}) {
         process.env.GUARD_REPORT,
         JSON.stringify({ report, results, lines }, null, 2)
       );
+    if (process.env.GUARD_REPORT_DIR) {
+      await mkdir(process.env.GUARD_REPORT_DIR, { recursive: true });
+      await writeFile(
+        join(
+          process.env.GUARD_REPORT_DIR,
+          `${[path, group ?? 'all', ...chosen.variants].join('-')}.json`
+        ),
+        JSON.stringify(
+          {
+            path,
+            scope,
+            where,
+            target: group ?? 'all',
+            variant: chosen.variants.join(' and '),
+            report,
+            results,
+            lines,
+          },
+          null,
+          2
+        )
+      );
+    }
     if (process.env.GUARD_IDS || process.env.GUARD_TARGETS) return;
     assert.deepEqual(
       chosen.variants.filter((variant) => !Object.hasOwn(set.variants, variant)),
