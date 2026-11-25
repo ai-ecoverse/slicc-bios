@@ -2765,12 +2765,12 @@ class Guard {
     );
     const provenErrorPage = soft;
     if (provenErrorPage) scope.ownersReady = true;
+    await this.placePrivateFrames(targetId, deadline);
     const late = deadline !== undefined && Date.now() >= deadline;
     const moved = deadline !== undefined && this.revisions.get(targetId) !== revision;
     scope.failed = (soft ? false : broken) || !scope.ownersReady || late || moved;
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
-    await this.placePrivateFrames(targetId, deadline);
     if (!this.pageLocked(targetId) && this.debuggerLeases.get(targetId)?.state === 'suspended')
       this.setDebuggerLease(targetId, 'placed');
     this.stopCasts();
