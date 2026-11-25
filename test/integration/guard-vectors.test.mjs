@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { after, test } from 'node:test';
 import { DEBUGGER_ROUTE_UPDATE } from '../../src/seed/debugger.js';
-import { protection, redacting } from '../../src/seed/guard.js';
+import { protection, redacting, UNANSWERED } from '../../src/seed/guard.js';
 import { boot } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { assertChildEvents, assertPopupOutcome, popupReport } from './guard-popup.mjs';
@@ -1940,7 +1940,7 @@ for (const [detach, lag] of DETACH) {
       }
     );
     await t.test(
-      'a tab the guard cannot arm, because arming fails or never answers, is refused (UNGUARDED)',
+      'a tab the guard cannot arm is refused: UNGUARDED when arming fails, UNANSWERED when it never answers',
       async () => {
         for (const how of ['fail', 'drop']) {
           const targetId = await tab(`${PLAIN}/doc?unarmed-${tag(how)}`);
@@ -1953,7 +1953,11 @@ for (const [detach, lag] of DETACH) {
             undefined,
             20000
           );
-          assert.equal(answer.error?.message, UNGUARDED, `${how}: ${JSON.stringify(answer)}`);
+          assert.equal(
+            answer.error?.message,
+            how === 'drop' ? UNANSWERED : UNGUARDED,
+            `${how}: ${JSON.stringify(answer)}`
+          );
           assert.ok(
             !(await guard.events())
               .slice(before)
