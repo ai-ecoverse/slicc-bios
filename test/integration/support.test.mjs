@@ -203,6 +203,30 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
     /Get help from Adobe Support/
   );
   assert.deepEqual(await page.evaluate(() => window.support().status()), { state: 'signed-out' });
+  const refusals = (asks) =>
+    page.evaluate(
+      (asks) =>
+        Promise.all(
+          asks.map(([method, ...args]) =>
+            window
+              .support()
+              [method](...args)
+              .then(
+                () => 'sent',
+                (error) => error.message
+              )
+          )
+        ),
+      asks
+    );
+  assert.deepEqual(
+    await refusals([
+      ['create', { key: 'k:none', title: 'Help', body: 'Please.' }],
+      ['reply', { key: 'k:none', thread: 'sup-preview', body: 'Please.' }],
+    ]),
+    ['Sign in with Adobe first.', 'Sign in with Adobe first.']
+  );
+  assert.equal(calls().length, 0, 'nothing is sent without a sign-in');
 
   await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
   await page.until(() => window.support().status().state === 'ready');
@@ -222,6 +246,29 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   assert.equal(authorize.scope, SCOPES);
   assert.equal(configs.length, 1);
   assert.deepEqual(profiles, [MARA]);
+  const asked = () =>
+    calls().filter(
+      (call) => (call.path !== 'changes' && call.path !== 'threads') || call.method !== 'GET'
+    ).length;
+  const sentBefore = asked();
+  const tricks = ['.', '..', '%2e%2e', 'a/../b', 'a%2Fb'];
+  const tricked = await refusals(
+    tricks.flatMap((id) => [
+      ['thread', id],
+      ['reply', { key: 'k:trick', thread: id, body: 'Hi.' }],
+      ['read', id, 'm1'],
+      ['read', 'sup-preview', id],
+    ])
+  );
+  assert.deepEqual(new Set(tricked), new Set(['That request isn’t there anymore.']));
+  const oversize = await refusals([
+    ['create', { key: 'k:long', title: 'x'.repeat(121), body: 'Hi.' }],
+    ['create', { key: 'k:long', title: 'Long', body: 'x'.repeat(2001) }],
+    ['reply', { key: 'k:long', thread: 'sup-preview', body: 'x'.repeat(2001) }],
+  ]);
+  assert.equal(oversize.length, 3);
+  for (const said of oversize) assert.match(said, /^That’s longer than Support takes/);
+  assert.equal(asked(), sentBefore, 'refused ids and drafts send nothing');
   await page.until(() => window.panel()?.querySelectorAll('li.row[data-id]').length === 2);
   assert.deepEqual(
     await page.evaluate(() =>

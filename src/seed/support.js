@@ -13,6 +13,10 @@ export const PAGES = 20;
 export const REMEMBERED = 1000;
 export const NEEDED = ['AdobeID', 'openid', 'additional_info.ownerOrg'];
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const DOTS = /^\.{1,2}$/;
+export const TITLE_LIMIT = 120;
+export const BODY_LIMIT = 2000;
+export const validId = (id) => typeof id === 'string' && ID.test(id) && !DOTS.test(id);
 const LONGEST_TIMER = 2 ** 31 - 1;
 
 export const SAID = {
@@ -22,6 +26,7 @@ export const SAID = {
   rate_limited: 'Support is busy. Try again in a minute.',
   not_enrolled: 'Support isn’t set up for this account.',
   invalid_assertion: 'Your Adobe sign-in ended. Sign in again.',
+  too_long: `That’s longer than Support takes: up to ${TITLE_LIMIT} characters for a title and 2,000 for a message.`,
 };
 export const AGAIN = 'Support didn’t get that. Try again.';
 export const SIGN_IN_FIRST = 'Sign in with Adobe first.';
@@ -159,9 +164,16 @@ const fresh = () => ({
 });
 
 const root = (id) => {
-  if (typeof id !== 'string' || !ID.test(id)) throw new Problem(404, 'not_found');
+  if (!validId(id)) throw new Problem(404, 'not_found');
   return `threads/${id}`;
 };
+
+export function checkText(value, limit, { line = false } = {}) {
+  if (typeof value !== 'string' || !value.trim() || (line && /[\r\n]/.test(value)))
+    throw new Problem(400, 'invalid_input');
+  if (value.length > limit) throw new Problem(400, 'too_long');
+  return value;
+}
 
 const listOf = (value) => (Array.isArray(value) ? value : []);
 
@@ -271,7 +283,7 @@ class Support {
   async relist(s) {
     const { first, items } = await this.pages(s, 'threads', 'items');
     return {
-      items: items.filter((item) => item && ID.test(String(item.id))).map(summary),
+      items: items.filter((item) => item && validId(String(item.id))).map(summary),
       unread: Number.isInteger(first.unreadThreads) ? first.unreadThreads : 0,
       cursor: typeof first.changeCursor === 'string' ? first.changeCursor : null,
     };
@@ -479,6 +491,8 @@ class Support {
 
   create({ key, title, body, topic }) {
     return this.write(async (s) => {
+      checkText(title, TITLE_LIMIT, { line: true });
+      checkText(body, BODY_LIMIT);
       const made = await this.call(s, 'threads', {
         method: 'POST',
         key,
@@ -496,6 +510,7 @@ class Support {
   reply({ key, thread, body }) {
     return this.write(async (s) => {
       const path = `${root(thread)}/replies`;
+      checkText(body, BODY_LIMIT);
       const made = await this.call(s, path, { method: 'POST', key, body: { body } });
       this.wake();
       return { id: String(made.id) };
@@ -505,6 +520,7 @@ class Support {
   read(id, through) {
     return this.write(async (s) => {
       const path = `${root(id)}/read`;
+      if (!validId(through)) throw new Problem(404, 'not_found');
       const done = await this.call(s, path, { method: 'PUT', body: { through } });
       const items = this.list.map((item) => (item.id === id ? { ...item, unread: 0 } : item));
       this.shown(items, Number.isInteger(done.unreadThreads) ? done.unreadThreads : this.count);
