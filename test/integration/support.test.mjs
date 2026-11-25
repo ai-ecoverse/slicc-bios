@@ -372,7 +372,6 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
 
   const relisted = lists().length;
   opspile.state.fail.push({ path: /^changes$/, status: 410, code: 'cursor_expired' });
-  await new Promise((resolve) => setTimeout(resolve, 2500));
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await eventually(() => lists().length > relisted, 'a 410 starts again from the list');
   await page.until(() => window.support().status().state === 'ready');
@@ -427,7 +426,11 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   await page.until(() => !!window.inPanel('[data-sign-in]'));
   const quiet = calls().length;
   await new Promise((resolve) => setTimeout(resolve, 12000));
-  assert.equal(calls().length, quiet);
+  assert.equal(
+    calls().length,
+    quiet,
+    'nothing is sent for longer than a poll interval after sign-out'
+  );
 
   await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
   await page.until(() => window.support().status().state === 'ready');
