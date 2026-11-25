@@ -4140,6 +4140,13 @@ class Guard {
     return nav?.unanswered || nav?.cause === EXTENSION_UNANSWERED ? UNANSWERED : UNGUARDED;
   }
 
+  async unguardedNow(targetId, nav) {
+    const refusal = this.unguarded(nav);
+    if (refusal !== UNANSWERED) return refusal;
+    if (this.pendingTarget(targetId)) return PROTECTED;
+    return (await this.current(targetId)) ? PROTECTED : UNANSWERED;
+  }
+
   errorPageByProof(targetId, tree) {
     if (tree !== undefined) {
       const frames = this.documentFrames(tree);
@@ -4341,7 +4348,8 @@ class Guard {
     if (!nav) return null;
     await nav.ready;
     if (nav.scrub && !RECOVERS.has(method)) await nav.scrub;
-    if (nav.failed || this.linkSetupRefusalBlocks(targetId, nav)) return this.unguarded(nav);
+    if (nav.failed || this.linkSetupRefusalBlocks(targetId, nav))
+      return this.unguardedNow(targetId, nav);
     return null;
   }
 
@@ -5321,6 +5329,7 @@ class Guard {
     if (method === 'Target.targetDestroyed') {
       const nav = this.navs.get(params.targetId);
       nav?.wiped?.();
+      nav?.settle(true);
       this.navs.delete(params.targetId);
       this.forgetFailedUrl(params.targetId);
       this.destroyedTargets.add(params.targetId);
@@ -7706,9 +7715,9 @@ class Guard {
       if (nav?.scrub && !proof) await nav.scrub;
       if (this.linkSetupRefusalBlocks(params.targetId, nav)) {
         if (nav) nav.failed = true;
-        return this.unguarded(nav);
+        return this.unguardedNow(params.targetId, nav);
       }
-      if (nav?.failed) return this.unguarded(nav);
+      if (nav?.failed) return this.unguardedNow(params.targetId, nav);
     }
     if (
       params.frameId !== undefined &&
