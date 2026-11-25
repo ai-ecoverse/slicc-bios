@@ -11,6 +11,7 @@ import {
   protectedOrigin,
   protocol,
 } from './guard-ordering-fixture.mjs';
+import { guardRoute } from './guard-route.mjs';
 
 const EXTENSION_UNANSWERED =
   "slicc: refused: this tab's page isn't answering, so the guard couldn't check its frames; a dialog may be waiting in the tab";
@@ -326,7 +327,12 @@ async function guarded() {
   });
   const wire = { send: (text) => socket.send(text), close: () => socket.close() };
   socket.onmessage = ({ data }) => wire.onmessage?.(String(data));
-  const connection = guardProtected(wire, 'https://seven.sliccy.ai');
+  const connection = guardProtected(
+    wire,
+    'https://seven.sliccy.ai',
+    new Map(),
+    guardRoute('devtools')
+  );
   const pending = new Map();
   let next = 0;
   connection.onmessage = (text) => {
