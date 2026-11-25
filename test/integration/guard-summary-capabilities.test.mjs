@@ -108,7 +108,7 @@ test('mutant: a skip for a capability the path did not declare stays forged', ()
     results,
     guard: 'slicc-bios/devtools',
     sha: 'artifact',
-    capabilities: { browserSession: true },
+    capabilities: { browserSession: true, browserStorage: true },
   });
   console.log(
     `ROW-OBSERVED summary-capabilities-mutant-undeclared ${JSON.stringify({
@@ -147,7 +147,7 @@ test('mutant: a skip for a declared capability the vector text does not allow st
     results,
     guard: 'slicc-bios/extension',
     sha: 'artifact',
-    capabilities: { extensionFrame: true, browserSession: true },
+    capabilities: { extensionFrame: true, browserSession: true, browserStorage: true },
   });
   console.log(
     `ROW-OBSERVED summary-capabilities-mutant-declared-absent ${JSON.stringify({

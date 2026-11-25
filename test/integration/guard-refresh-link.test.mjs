@@ -25,6 +25,7 @@ test('a static cross-site frame completes its refused navigation on the link pat
       capabilities: {
         autoAttach: true,
         browserSession: true,
+        browserStorage: true,
         browserContexts: true,
         chromeUrlsAttach: true,
         extensionWorld: true,
