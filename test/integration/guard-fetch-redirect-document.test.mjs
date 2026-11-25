@@ -500,7 +500,10 @@ test('request-stage redirects and hop headers into seven or the vault', {
             const landed = result.seen
               .filter((hit) => hit.kind === 'landing' && PROTECTED_HOST.test(hit.host))
               .map((hit) => ({ method: hit.method, body: hit.body.length > 0 }));
-            report(name, result, carried.length || leaked || read ? 'RED' : 'GREEN', { landed });
+            report(name, result, carried.length || leaked || read ? 'RED' : 'GREEN', {
+              landed,
+              note: 'continueRequest POST with body on an ordinary URL, 307 into seven: Cookie and Authorization are stripped, the response is failed and never read, so the reach equals a page script no-cors POST; nothing is relaxed',
+            });
             assert.equal(result.out.startUrl, START, 'the tab starts on the ordinary page');
             assert.deepEqual(result.out.protectedPauses, [], 'no protected pause is shown');
             const bounced = result.seen.filter((hit) => hit.kind === 'bounce');
