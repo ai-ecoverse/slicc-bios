@@ -24,6 +24,9 @@ export const UNFLAT =
   'slicc: refused: the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
 export const UNGUARDED =
   'slicc: refused: the guard couldn’t keep seven’s pages and the vault out of this tab, so it refuses commands there';
+export const UNANSWERED = `${UNGUARDED}: the page isn’t answering, and a dialog may be waiting in it`;
+const EXTENSION_UNANSWERED =
+  "slicc: refused: this tab's page isn't answering, so the guard couldn't check its frames; a dialog may be waiting in the tab";
 export const HEADERS =
   'slicc: refused: settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
 export const WORLD = 'slicc: refused: that execution context belongs to a browser extension';
@@ -4065,7 +4068,15 @@ class Guard {
     const admitted =
       this.tabs.get(targetId)?.admitted ||
       [...this.sessions].some(([id, entry]) => entry.targetId === targetId && this.shown.has(id));
-    const nav = { targetId, session: null, done: false, failed: false, held, admitted };
+    const nav = {
+      targetId,
+      session: null,
+      done: false,
+      failed: false,
+      held,
+      admitted,
+      waiting: new Set(['Target.attachToTarget']),
+    };
     nav.fetched = new Promise((resolve) => {
       nav.fetch = resolve;
     });
@@ -4079,12 +4090,16 @@ class Guard {
         resolve();
       };
     });
-    nav.timer = setTimeout(() => nav.settle(true), NAV_MS);
+    nav.timer = setTimeout(() => {
+      if (!nav.done && nav.waiting.size) nav.unanswered = true;
+      nav.settle(true);
+    }, NAV_MS);
     nav.timer.unref?.();
     this.navs.set(targetId, nav);
     this.pendingAttachments.add(nav);
     nav.attaching = this.call('Target.attachToTarget', { targetId, flatten: true }).then(
       (answer) => {
+        nav.waiting.delete('Target.attachToTarget');
         if (answer.error) nav.cause = answer.error.message;
         return answer.result?.sessionId ?? null;
       }
@@ -4121,7 +4136,15 @@ class Guard {
   }
 
   unguarded(nav) {
-    return foreignFrame(nav?.cause) ? EXTENSION_FRAME : UNGUARDED;
+    if (foreignFrame(nav?.cause)) return EXTENSION_FRAME;
+    return nav?.unanswered || nav?.cause === EXTENSION_UNANSWERED ? UNANSWERED : UNGUARDED;
+  }
+
+  async unguardedNow(targetId, nav) {
+    const refusal = this.unguarded(nav);
+    if (refusal !== UNANSWERED) return refusal;
+    if (this.pendingTarget(targetId)) return PROTECTED;
+    return (await this.current(targetId)) ? PROTECTED : UNANSWERED;
   }
 
   errorPageByProof(targetId, tree) {
@@ -4249,17 +4272,24 @@ class Guard {
     if (!session) return nav.settle(true);
     nav.session = session;
     this.navSessions.set(session, nav);
-    const fetching = this.call('Fetch.enable', { patterns: ARM }, session);
+    const step = (method, params) => {
+      nav.waiting.add(method);
+      return this.call(method, params, session).then((answer) => {
+        nav.waiting.delete(method);
+        return answer;
+      });
+    };
+    const fetching = step('Fetch.enable', { patterns: ARM });
     void fetching.then((answer) => nav.fetch(!answer.error));
     const steps = await Promise.all([
       fetching,
-      this.call(
-        'Network.enable',
-        { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 },
-        session
-      ),
-      this.call('Network.setBypassServiceWorker', { bypass: true }, session),
-      this.call('Page.enable', {}, session),
+      step('Network.enable', {
+        maxTotalBufferSize: 0,
+        maxResourceBufferSize: 0,
+        maxPostDataSize: 0,
+      }),
+      step('Network.setBypassServiceWorker', { bypass: true }),
+      step('Page.enable', {}),
     ]);
     nav.holds = steps[0].result?.holdsDocuments === true;
     const errors = steps.filter((step) => step.error);
@@ -4318,7 +4348,8 @@ class Guard {
     if (!nav) return null;
     await nav.ready;
     if (nav.scrub && !RECOVERS.has(method)) await nav.scrub;
-    if (nav.failed || this.linkSetupRefusalBlocks(targetId, nav)) return this.unguarded(nav);
+    if (nav.failed || this.linkSetupRefusalBlocks(targetId, nav))
+      return this.unguardedNow(targetId, nav);
     return null;
   }
 
@@ -5298,6 +5329,7 @@ class Guard {
     if (method === 'Target.targetDestroyed') {
       const nav = this.navs.get(params.targetId);
       nav?.wiped?.();
+      nav?.settle(true);
       this.navs.delete(params.targetId);
       this.forgetFailedUrl(params.targetId);
       this.destroyedTargets.add(params.targetId);
@@ -7683,9 +7715,9 @@ class Guard {
       if (nav?.scrub && !proof) await nav.scrub;
       if (this.linkSetupRefusalBlocks(params.targetId, nav)) {
         if (nav) nav.failed = true;
-        return this.unguarded(nav);
+        return this.unguardedNow(params.targetId, nav);
       }
-      if (nav?.failed) return this.unguarded(nav);
+      if (nav?.failed) return this.unguardedNow(params.targetId, nav);
     }
     if (
       params.frameId !== undefined &&
