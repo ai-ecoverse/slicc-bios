@@ -151,6 +151,29 @@ test('an ordinary tab still loading an ordinary page while its Page.enable is he
   assert.equal((await attaching).error, UNANSWERED);
 });
 
+for (const how of ['errors', 'times out']) {
+  test(`an ordinary-looking tab whose fresh target read ${how} after its setup went unanswered is refused as protected, never as not answering`, {
+    timeout: 30000,
+  }, async (t) => {
+    const p = protocol(t);
+    p.target('ordinary', 'page', at('ordinary', ordinary));
+    p.hold(setup);
+    const attaching = attachTimed(p, 'ordinary');
+    await whileHeld(p);
+    const reads = [];
+    p.hold((message) => {
+      if (message.id < 2 ** 30 || message.method !== 'Target.getTargetInfo') return false;
+      reads.push(message);
+      return true;
+    });
+    for (let n = 0; n < 400 && !reads.length; n += 1) await pause(50);
+    assert.ok(reads.length, 'the guard read the target again before answering');
+    if (how === 'errors')
+      p.release(reads[0], { error: { code: -32000, message: 'synthetic read failure' } });
+    assert.equal((await attaching).error, PROTECTED);
+  });
+}
+
 test('a nav that settled ok is never marked unanswered once its timer would have fired', {
   timeout: 30000,
 }, async (t) => {
