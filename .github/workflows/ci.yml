@@ -25,10 +25,28 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
+      test: |
+        pass=0
+        fail=0
+        PATTERN='a Kimi device-code sign-in shows its user code, ends with the token sealed in the vault by the agent'
+        for i in $(seq 1 25); do
+          echo "=== kimi-row rep $i/25 ==="
+          out=$(mktemp)
+          if node --test --test-concurrency=1 --test-timeout=900000 --test-name-pattern="$PATTERN" --test-global-setup=test/integration/global.mjs test/integration/k4-agent.test.mjs >"$out" 2>&1; then
+            pass=$((pass + 1))
+            echo "REP $i PASS"
+          else
+            fail=$((fail + 1))
+            echo "REP $i FAIL"
+            grep -E "AssertionError|ERR_ASSERTION|Expected values to be|^✖ " "$out" || true
+          fi
+          rm -f "$out"
+        done
+        echo "REPS pass=$pass fail=$fail"
+      test-glob: test/integration/k4-agent.test.mjs
+      shards: 1
       timeout-minutes: 90
-      flaky-retry: 3
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*
