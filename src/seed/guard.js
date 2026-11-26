@@ -2626,6 +2626,7 @@ class Guard {
     const documents = snapshot?.documents;
     const strings = snapshot?.strings;
     const refused = () => this.recordOwners(targetId, undefined);
+    if (!scope.treeFrames) return refused();
     if (
       !Array.isArray(documents) ||
       !documents.length ||
@@ -2732,7 +2733,7 @@ class Guard {
       typeof id !== 'string' ||
       !id ||
       id === scope.root ||
-      !scope.treeFrames.has(id)
+      !scope.treeFrames?.has(id)
     )
       return undefined;
     return { ...owner, frameId: id, contentDocument: { documentURL: strings[child.documentURL] } };
