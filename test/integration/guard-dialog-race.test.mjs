@@ -48,6 +48,7 @@ async function client(t, guarded) {
   });
   const watchers = new Set();
   let barrier;
+  let inner;
   const wire = {
     send(text) {
       const { method } = JSON.parse(text);
@@ -64,6 +65,9 @@ async function client(t, guarded) {
       );
     },
     close: () => socket.close(),
+    captureGuard(instance) {
+      inner = instance;
+    },
   };
   socket.onmessage = ({ data }) => wire.onmessage?.(String(data));
   socket.onclose = () => wire.onclose?.('closed');
@@ -138,7 +142,7 @@ async function client(t, guarded) {
   const unhold = () => {
     barrier = undefined;
   };
-  return { send, events, event, attach, sent, holdNext, unhold, wire };
+  return { send, events, event, attach, sent, holdNext, unhold, wire, inner: () => inner };
 }
 
 async function tab(t, key) {
@@ -233,6 +237,20 @@ for (const [guarded, who] of [
         )
     );
 
+async function untilDialogRecord(inner, targetId, ms = ANSWER_MS) {
+  assert.ok(
+    inner,
+    'the test wire never captured the guard: captureGuard was not called, so guard.navs cannot be read'
+  );
+  const dialog = () => inner.navs.get(targetId)?.dialog;
+  for (const end = Date.now() + ms; Date.now() < end; await pause(5)) {
+    if (dialog()?.record) return dialog();
+  }
+  assert.fail(
+    `guard.navs.get(${JSON.stringify(targetId)}).dialog.record was missing within ${ms} ms; dialog=${JSON.stringify(dialog())}`
+  );
+}
+
 test('a client that never enabled Page still answers the open dialog, and after it closes none is', {
   timeout: 120000,
 }, async (t) => {
@@ -244,6 +262,7 @@ test('a client that never enabled Page still answers the open dialog, and after 
   const sw = await watcher.attach(targetId);
   await firstDialog(watcher, sw, key);
   const closed = watcher.event('Page.javascriptDialogClosed');
+  await untilDialogRecord(a.inner(), targetId);
   const answered = await a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
   assert.equal(answered.error, undefined, JSON.stringify(answered));
   await closed;
