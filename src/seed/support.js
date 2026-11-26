@@ -4,6 +4,7 @@ export const SUPPORT_API = '/api/support/';
 export const SUPPORT_KEY = 'slicc-os.support';
 export const ADOBE_PROXY = 'https://adobe-llm-proxy.paolo-moz.workers.dev';
 export const POLL = 10_000;
+export const WAITING = 30_000;
 export const LONGEST = 5 * 60_000;
 export const PATIENCE = 60 * 60_000;
 export const EARLY = 30_000;
@@ -26,7 +27,7 @@ export const SAID = {
   rate_limited: 'Support is busy. Try again in a minute.',
   not_enrolled: 'Support isn’t set up for this account.',
   invalid_assertion: 'Your Adobe sign-in ended. Sign in again.',
-  too_long: `That’s longer than Support takes: up to ${TITLE_LIMIT} characters for a title and 2,000 for a message.`,
+  too_long: 'That’s longer than Support takes: a message can be up to 2,000 characters.',
 };
 export const AGAIN = 'Support didn’t get that. Try again.';
 export const SIGN_IN_FIRST = 'Sign in with Adobe first.';
@@ -134,12 +135,20 @@ export function unenrolled({ identity, org, user }) {
   return { ...(named ? { identity: named } : {}), ...(org ? { org } : {}) };
 }
 
+export function requestOf(error) {
+  if (error?.request === 'pending') return { request: 'pending' };
+  if (error?.request !== 'declined') return {};
+  const reason = typeof error.reason === 'string' ? error.reason.trim() : '';
+  return { request: 'declined', ...(reason ? { reason } : {}) };
+}
+
 class Problem extends Error {
-  constructor(status, code, retry = 0) {
+  constructor(status, code, retry = 0, request = {}) {
     super(code);
     this.status = status;
     this.code = code;
     this.retry = retry;
+    this.request = request;
   }
 }
 
@@ -154,6 +163,7 @@ const fresh = () => ({
   cursor: null,
   seen: new Set(),
   enrolled: false,
+  pending: false,
   busy: false,
   again: false,
   failures: 0,
@@ -258,7 +268,8 @@ class Support {
     if (response.ok && data && typeof data === 'object') return data;
     const code = typeof data?.error?.code === 'string' ? data.error.code : 'unavailable';
     const retry = waitOf(response.headers.get('retry-after'), this.deps.now);
-    throw new Problem(response.status, code, retry);
+    const request = code === 'not_enrolled' ? requestOf(data.error) : {};
+    throw new Problem(response.status, code, retry, request);
   }
 
   async pages(s, path, field) {
@@ -352,7 +363,7 @@ class Support {
 
   wake() {
     const s = this.session;
-    if (!s?.token || !s.enrolled) return;
+    if (!s?.token || !(s.enrolled || s.pending)) return;
     if (s.busy) {
       s.again = true;
       return;
@@ -361,19 +372,31 @@ class Support {
     this.later(s, Math.max(0, s.until - now, s.last + GAP - now));
   }
 
-  enroll(s, enrolled) {
-    s.enrolled = enrolled;
-    if (enrolled) return;
+  unenroll(s, request) {
+    s.enrolled = false;
+    s.pending = request.request === 'pending';
+    s.cursor = null;
+    s.failures = 0;
+    s.until = 0;
+    s.last = this.deps.now();
     this.deps.cancel(s.timer);
     s.timer = null;
-    this.show({ ...this.who(s), ...unenrolled(s.account), state: 'not-enrolled' });
-    this.shown([], 0);
+    const next = { ...this.who(s), ...unenrolled(s.account), state: 'not-enrolled', ...request };
+    if (JSON.stringify(next) !== JSON.stringify(this.status)) this.show(next);
+    if (this.list.length || this.count) this.shown([], 0);
+    if (s.pending) this.later(s, WAITING);
   }
 
   trouble(s, error) {
     if (stale(error) || !this.live(s)) return;
     if (error.status === 401) return this.expire(s);
-    if (error.code === 'not_enrolled') return this.enroll(s, false);
+    if (error.code === 'not_enrolled') return this.unenroll(s, error.request);
+    if (s.pending) {
+      s.failures += 1;
+      const wait = Math.max(backoff(s.failures, error.retry, this.deps.random), WAITING);
+      s.until = this.deps.now() + wait;
+      return this.later(s, wait);
+    }
     if (error.code === 'cursor_expired' || error.code === 'invalid_cursor') {
       s.cursor = null;
       return this.later(s, 0);
@@ -387,11 +410,13 @@ class Support {
   }
 
   async poll(s) {
-    if (!this.live(s) || s.busy || !s.enrolled || !this.deps.visible()) return;
+    if (!this.live(s) || s.busy || !(s.enrolled || s.pending) || !this.deps.visible()) return;
     s.busy = true;
     try {
       if (s.cursor) await this.drain(s);
       else await this.load(s);
+      s.enrolled = true;
+      s.pending = false;
       s.failures = 0;
       s.until = 0;
       s.last = this.deps.now();
@@ -402,7 +427,7 @@ class Support {
     } finally {
       s.busy = false;
     }
-    if (s.again && this.live(s) && s.enrolled) {
+    if (s.again && this.live(s) && (s.enrolled || s.pending)) {
       s.again = false;
       this.wake();
     }
@@ -463,7 +488,7 @@ class Support {
       this.expire(s);
       return new Error(SAID.invalid_assertion);
     }
-    if (error.code === 'not_enrolled') this.enroll(s, false);
+    if (error.code === 'not_enrolled') this.unenroll(s, error.request);
     return new Error(SAID[error.code] ?? AGAIN);
   }
 
