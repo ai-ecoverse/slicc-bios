@@ -257,12 +257,12 @@ test('opener review preserves a conflicting hint during the first protected look
   for (const message of wire.held.slice()) wire.release(message);
 });
 
-test('opener review answers the admitted dialog prelude without waiting for page metadata', async (t) => {
+test('opener review answers the admitted dialog prelude after one fresh target read and no other page metadata', async (t) => {
   const wire = protocol(t);
   const child = page(wire, 'dialog-no-probe');
   const answer = await attach(wire, child.info.targetId);
   assert.equal(answer.error, undefined);
-  wire.hold((message) => message.id >= 2 ** 30);
+  wire.hold((message) => message.id >= 2 ** 30 && message.method !== 'Target.getTargetInfo');
   const mark = wire.sent.length;
   const start = Date.now();
   const dialog = await wire.send(
@@ -272,9 +272,12 @@ test('opener review answers the admitted dialog prelude without waiting for page
   );
   assert.ok(Date.now() - start < 500);
   assert.equal(dialog.error, undefined, JSON.stringify(dialog));
-  assert.equal(
-    wire.sent.slice(mark).some((message) => message.method === 'Target.getTargetInfo'),
-    false
+  assert.deepEqual(
+    wire.sent
+      .slice(mark)
+      .filter((message) => message.id >= 2 ** 30)
+      .map((message) => message.method),
+    ['Target.getTargetInfo']
   );
   wire.hold(() => false);
   for (const message of wire.held.slice()) wire.release(message);
