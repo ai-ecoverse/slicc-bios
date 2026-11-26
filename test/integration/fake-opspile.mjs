@@ -98,7 +98,15 @@ export function fakeOpspile({ accounts }) {
     state.calls.push({ method: request.method, path, search: url.search, token, key, body });
     const account = accounts[token];
     if (!account) return json(401, { error: { code: 'invalid_assertion' } });
-    if (!account.enrolled) return json(403, { error: { code: 'not_enrolled' } });
+    if (account.auto) account.enrolled = true;
+    if (!account.enrolled)
+      return json(403, {
+        error: {
+          code: 'not_enrolled',
+          ...(account.request ? { request: account.request } : {}),
+          ...(account.reason ? { reason: account.reason } : {}),
+        },
+      });
     const failing = state.fail.findIndex((rule) => rule.path.test(path));
     if (failing !== -1) {
       const [rule] = state.fail.splice(failing, 1);

@@ -15,6 +15,9 @@ const SCOPES = 'openid,AdobeID,additional_info.projectedProductContext,additiona
 const MARA = 'dummy-support-token-mara-0000';
 const JONAS = 'dummy-support-token-jonas-0000';
 const SHORT = 'dummy-support-token-short-0000';
+const DECLINED = 'dummy-support-token-declined-0000';
+const PENDING = 'dummy-support-token-pending-0000';
+const REASON = 'Use your agency’s Adobe account for this project.';
 const SECRET = 'Builds fail since Monday.';
 const accounts = {
   [MARA]: {
@@ -31,11 +34,29 @@ const accounts = {
     enrolled: false,
     expires: 86399,
   },
+  [DECLINED]: {
+    name: 'Tove Dahl',
+    user: 'TOVE2468@AdobeID',
+    org: 'KILNWORKS@AdobeOrg',
+    enrolled: false,
+    request: 'declined',
+    reason: REASON,
+    expires: 86399,
+  },
+  [PENDING]: {
+    name: 'Ines Moro',
+    user: 'INES1357@AdobeID',
+    org: 'HARBORLINE@AdobeOrg',
+    enrolled: false,
+    request: 'pending',
+    expires: 86399,
+  },
   [SHORT]: {
-    name: 'Mara Lind',
-    user: 'MARA1234@AdobeID',
+    name: 'Lea Hart',
+    user: 'LEA9753@AdobeID',
     org: 'PAPERMILL@AdobeOrg',
-    enrolled: true,
+    enrolled: false,
+    auto: true,
     expires: 36,
   },
 };
@@ -60,7 +81,7 @@ execFileSync(
   ],
   { stdio: 'ignore' }
 );
-const signIns = [MARA, JONAS, SHORT];
+const signIns = [MARA, JONAS, DECLINED, PENDING, SHORT];
 const authorized = [];
 const profiles = [];
 const cors = (req) => ({
@@ -157,7 +178,7 @@ async function eventually(check, what, ms = 30000) {
 const changes = () => calls().filter((call) => call.path === 'changes');
 const lists = () => calls().filter((call) => call.path === 'threads' && call.method === 'GET');
 
-test('seven offers spectrum’s Support panel on its port: sign-in, list, conversation, changes and a not-enrolled account', {
+test('seven offers spectrum’s Support panel on its port: sign-in, list, conversation, a one-message request, changes, not-enrolled, declined and pending accounts', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -172,9 +193,11 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
       const surface = document
         .querySelector('slicc-app')
         .surfaces.find((item) => item.id === 'support');
-      return surface && { tag: surface.tag, side: surface.side, open: surface.open };
+      return (
+        surface && { tag: surface.tag, side: surface.side, open: surface.open, rail: surface.rail }
+      );
     }),
-    { tag: 'slicc-support', side: 'right', open: [] }
+    { tag: 'slicc-support', side: 'right', open: [], rail: false }
   );
   await page.evaluate(async () => {
     const root = await navigator.storage.getDirectory();
@@ -191,7 +214,8 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
     window.inPanel = (selector) => window.panel()?.querySelector(selector) ?? null;
     window.panelText = (selector) =>
       window.inPanel(selector)?.textContent.replace(/\s+/g, ' ').trim() ?? null;
-    window.rail = () => app.shadowRoot.querySelector('#rail-support');
+    window.button = () => app.shadowRoot.querySelector('header [data-surface="support"]');
+    window.railed = () => !!app.shadowRoot.querySelector('.rail [data-surface="support"]');
     window.supportSeen = { status: [], thread: [] };
     window.support().on('status', (status) => window.supportSeen.status.push(status));
     window.support().on('thread', (id) => window.supportSeen.thread.push(id));
@@ -287,7 +311,10 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
     await page.evaluate(() => window.panelText('[data-account] .who')),
     'Signed in as Mara Lind, PAPERMILL@AdobeOrg'
   );
-  await page.until(() => /1 unread/.test(window.rail()?.getAttribute('accessible-label') ?? ''));
+  await page.until(() =>
+    /^Support, 1 unread$/.test(window.button()?.getAttribute('accessible-label') ?? '')
+  );
+  assert.equal(await page.evaluate(() => window.railed()), false, 'Support has no rail button');
   assert.ok(lists().every((call) => call.token === MARA));
   assert.equal(
     (chrome.vault.state.records ?? []).some((record) => record.provider === 'adobe'),
@@ -323,7 +350,7 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
     /We found it\./
   );
 
-  await page.evaluate(() => window.inPanel('sp-textfield[name="reply"]').focus());
+  await page.evaluate(() => window.inPanel('textarea[name="reply"]').focus());
   await page.insert('Thanks, it works now.');
   await pressDeep(page, '[data-action="send"]');
   await eventually(
@@ -335,6 +362,26 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   assert.match(reply.key, /\S/);
   await page.until(() => window.panel()?.querySelectorAll('article.message[data-id]').length === 4);
 
+  await page.evaluate(() => window.inPanel('[data-action="back"]')?.click());
+  await pressDeep(page, '[data-action="new-request"]');
+  await page.until(() => !!window.inPanel('textarea[name="message"]'));
+  assert.equal(await page.evaluate(() => !!window.inPanel('[name="title"]')), false);
+  await page.evaluate(() => window.inPanel('textarea[name="message"]').focus());
+  await page.insert('Exports time out\nEvery export over 1 GB stops after a minute.');
+  await page.until(() => /Exports time out/.test(window.panelText('[data-derived-title]') ?? ''));
+  await pressDeep(page, '[data-action="send"]');
+  await eventually(
+    () => calls().some((call) => call.method === 'POST' && call.key && call.path === 'threads'),
+    'the panel’s new request reaches Opspile'
+  );
+  const asking = calls().find((call) => call.method === 'POST' && call.path === 'threads');
+  assert.deepEqual(asking.body, {
+    title: 'Exports time out',
+    body: 'Every export over 1 GB stops after a minute.',
+  });
+  assert.match(asking.key, /\S/);
+  await page.until(() => window.panelText('[data-title]') === 'Exports time out');
+
   const made = await page.evaluate(() =>
     window.support().create({ key: 'intent:1', title: 'Exports', body: 'Exports time out.' })
   );
@@ -345,7 +392,8 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   assert.deepEqual(
     calls()
       .filter((call) => call.method === 'POST' && call.path === 'threads')
-      .map((call) => call.key),
+      .map((call) => call.key)
+      .slice(1),
     ['intent:1', 'intent:1']
   );
   assert.equal(await page.evaluate(() => window.support().status().channel), 'Mill support');
@@ -433,7 +481,81 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   );
 
   await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
+  await page.until(() => window.support().status().request === 'declined');
+  assert.deepEqual(await page.evaluate(() => window.support().status()), {
+    identity: 'Tove Dahl (user ID TOVE2468@AdobeID)',
+    org: 'KILNWORKS@AdobeOrg',
+    state: 'not-enrolled',
+    request: 'declined',
+    reason: REASON,
+  });
+  await page.until(() => !!window.inPanel('[data-empty="not-enrolled"][data-request="declined"]'));
+  assert.equal(await page.evaluate(() => window.panelText('[data-reason]')), REASON);
+  await page.screenshot(new URL('declined.png', page.dir));
+  await new Promise((resolve) => setTimeout(resolve, 12000));
+  assert.equal(
+    calls().filter((call) => call.token === DECLINED).length,
+    1,
+    'a declined request isn’t asked again'
+  );
+  await pressDeep(page, '[data-account] [data-action="sign-out"]');
+  await page.until(() => !!window.inPanel('[data-sign-in]'));
+
+  const waited = await page.evaluate(() => window.supportSeen.status.length);
+  await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
+  await page.until(() => window.support().status().request === 'pending');
+  assert.deepEqual(await page.evaluate(() => window.support().status()), {
+    identity: 'Ines Moro (user ID INES1357@AdobeID)',
+    org: 'HARBORLINE@AdobeOrg',
+    state: 'not-enrolled',
+    request: 'pending',
+  });
+  await page.until(() => !!window.inPanel('[data-empty="not-enrolled"][data-request="pending"]'));
+  assert.match(
+    await page.evaluate(() => window.panelText('[data-empty="not-enrolled"]')),
+    /waiting for approval/
+  );
+  await page.screenshot(new URL('pending.png', page.dir));
+  const pending = () => calls().filter((call) => call.token === PENDING);
+  await eventually(() => pending().length >= 2, 'a pending request is asked again', 60000);
+  accounts[PENDING].enrolled = true;
+  const approved = pending().length;
+  await eventually(
+    () =>
+      pending()
+        .slice(approved)
+        .some((call) => call.path === 'threads'),
+    'an approved request is noticed without a new sign-in',
+    60000
+  );
   await page.until(() => window.support().status().state === 'ready');
+  assert.deepEqual(await page.evaluate(() => window.support().status()), {
+    identity: 'Ines Moro',
+    org: 'HARBORLINE@AdobeOrg',
+    state: 'ready',
+  });
+  assert.deepEqual(
+    await page.evaluate(
+      (from) => window.supportSeen.status.slice(from).map((status) => status.state),
+      waited
+    ),
+    ['signing-in', 'loading', 'not-enrolled', 'ready']
+  );
+  await page.until(() => window.panel()?.querySelectorAll('li.row[data-id]').length > 0);
+  await pressDeep(page, '[data-account] [data-action="sign-out"]');
+  await page.until(() => !!window.inPanel('[data-sign-in]'));
+
+  const auto = await page.evaluate(() => window.supportSeen.status.length);
+  await pressDeep(page, '[data-sign-in] [data-action="sign-in"]');
+  await page.until(() => window.support().status().state === 'ready');
+  assert.deepEqual(
+    await page.evaluate(
+      (from) => window.supportSeen.status.slice(from).map((status) => status.state),
+      auto
+    ),
+    ['signing-in', 'loading', 'ready'],
+    'an auto-approved first call is ready at once'
+  );
   await page.until(() => window.panel()?.querySelectorAll('li.row[data-id]').length > 0);
   await page.screenshot(new URL('list.png', page.dir));
   await page.until(() => window.support().status().state === 'signed-out');
@@ -441,6 +563,7 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   assert.deepEqual(await page.evaluate(() => window.support().threads()), []);
 
   const logged = (page.console ?? []).join('\n');
-  for (const secret of [MARA, JONAS, SHORT, SECRET]) assert.equal(logged.includes(secret), false);
+  for (const secret of [MARA, JONAS, DECLINED, PENDING, SHORT, SECRET])
+    assert.equal(logged.includes(secret), false);
   assert.deepEqual(page.errors, []);
 });
