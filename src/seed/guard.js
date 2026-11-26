@@ -1043,7 +1043,12 @@ export function protection(own, { cut = false } = {}) {
     (matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options) || signsIn(url, { cut }));
   const target = (info) =>
     matcher.target(info) || (!info.type?.endsWith('worker') && signsIn(info.url, { cut }));
-  return { ...matcher, url: web, target };
+  const contextOrigin = (origin) => {
+    if (origin === '://' || origin === 'about://') return false;
+    if (typeof origin === 'string' && origin.toLowerCase().startsWith('about:')) return true;
+    return web(origin);
+  };
+  return { ...matcher, url: web, target, contextOrigin };
 }
 
 export function ordinaryFailedUrl(failed, is) {
@@ -2878,7 +2883,7 @@ class Guard {
       message.method !== 'Runtime.executionContextCreated' &&
       (message.method !== 'Target.targetInfoChanged' ||
         this.hinted(message.params?.targetInfo ?? {}));
-    if (invalidates || this.is.url(message.params?.context?.origin))
+    if (invalidates || this.is.contextOrigin(message.params?.context?.origin))
       for (const command of this.callerIds.values()) {
         if (
           this.scopeTarget(command.sessionId) === changed ||
@@ -2962,7 +2967,7 @@ class Guard {
     if (
       method === 'Runtime.executionContextCreated' &&
       !foreign &&
-      this.is.url(params.context?.origin)
+      this.is.contextOrigin(params.context?.origin)
     ) {
       this.commitScope(targetId);
       const id = params.context.auxData?.frameId;
@@ -3864,7 +3869,7 @@ class Guard {
   contextRetryBlocked(record) {
     const context = record.message.params.context;
     return (
-      this.is.url(context.origin) ||
+      this.is.contextOrigin(context.origin) ||
       this.is.url(this.frames.get(context.auxData.frameId)) ||
       this.errorFrames.has(context.auxData.frameId) ||
       Boolean(this.scopes.get(record.targetId)?.knownProtectedOwner)
@@ -5604,7 +5609,9 @@ class Guard {
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
       return !this.armed(sessionId) && this.is.url(params.request?.url);
     }
-    return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
+    return (
+      method === 'Runtime.executionContextCreated' && this.is.contextOrigin(params.context?.origin)
+    );
   }
 
   world(sessionId) {
@@ -5634,13 +5641,13 @@ class Guard {
       if (hidden && name) world.names.add(name);
       const judgedMain =
         !hidden &&
-        !this.is.url(origin) &&
+        !this.is.contextOrigin(origin) &&
         uniqueId &&
         !world.main &&
         (auxData?.isDefault === true || (auxData?.type === 'default' && !name));
       if (judgedMain) world.main = uniqueId;
       if (hidden) return true;
-      if (auxData?.type === 'isolated' && !this.is.url(origin)) world.isolated.add(id);
+      if (auxData?.type === 'isolated' && !this.is.contextOrigin(origin)) world.isolated.add(id);
     }
     if (method === 'Runtime.executionContextDestroyed')
       this.worlds.get(sessionId)?.isolated.delete(params.executionContextId);
