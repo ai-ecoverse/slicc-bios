@@ -39,6 +39,47 @@ const MAIN_STARTS = new Set(['Page.frameStartedNavigating', 'Page.frameRequested
 const SAME_DOCUMENT = new Set(['sameDocument', 'historySameDocument']);
 const turns = new Map();
 let serial = 0;
+export const RELOAD_MS = 30000;
+export const RELOADED = 'slicc: refused: a reload of this tab was already requested';
+const REVIVES = new Set(['targetId', 'ignoreCache']);
+const ANSWERABLE = /^https?:/i;
+const TIMEOUTS = new WeakSet();
+export const RELOADS_FULL =
+  'slicc: refused: the guard is reloading too many tabs at once; wait a few seconds before another reload';
+const reloads = new Map();
+const refusedRead = () => true;
+const reviving = ({ method, sessionId }) => sessionId === undefined && method === 'Page.reload';
+
+function sweep(map, gone) {
+  for (const [id, entry] of map) if (gone(entry)) map.delete(id);
+}
+
+export function reserveReload(targetId, now = Date.now()) {
+  sweep(reloads, (until) => until <= now);
+  if (reloads.has(targetId)) return RELOADED;
+  if (reloads.size >= TURNS_KEPT) return RELOADS_FULL;
+  reloads.set(targetId, now + RELOAD_MS);
+  return null;
+}
+
+export const DOCUMENT_MS = 3600000;
+const documents = new Map();
+
+export function recordedDocument(targetId, now = Date.now()) {
+  const record = documents.get(targetId);
+  return record && now - record.at < DOCUMENT_MS ? record : undefined;
+}
+
+function sweepDocuments(now = Date.now()) {
+  sweep(documents, (old) => now - old.at >= DOCUMENT_MS);
+}
+
+export function keepDocument(targetId, record, now = Date.now()) {
+  sweepDocuments(now);
+  if (!record) return void documents.delete(targetId);
+  if (!documents.has(targetId) && documents.size >= TURNS_KEPT) return;
+  documents.set(targetId, { ...record, at: now });
+}
 
 export const turnCount = () => turns.size;
 
@@ -1254,6 +1295,8 @@ class Guard {
     this.recoveries = new WeakMap();
     this.next = GUARD_IDS;
     this.listedEvents = 0;
+    this.targetMoves = new Map();
+    this.moveClock = 0;
     this.guarded = { onmessage: null, onclose: null };
     this.turnFlights = new Map();
     this.documentHolds = new Map();
@@ -1466,7 +1509,9 @@ class Guard {
       const answer = async (message) => {
         clearTimeout(timer);
         if (!this.closed && method === 'Page.getFrameTree' && !message.error) {
-          this.rememberTreeError(message.result?.frameTree, sessionId, nav, revision);
+          const tree = message.result?.frameTree;
+          if (nav?.session === sessionId) this.recordDocument(nav.targetId, tree?.frame);
+          this.rememberTreeError(tree, sessionId, nav, revision);
           if (!nav) await this.rememberExistingNavError(message.result?.frameTree, sessionId);
         }
         const current = this.scopes.get(placement)?.sessionId;
@@ -1482,7 +1527,9 @@ class Guard {
       timer = setTimeout(
         () => {
           this.internal.delete(id);
-          void answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
+          const late = { id, sessionId, error: { code: -32000, message: UNGUARDED } };
+          TIMEOUTS.add(late);
+          void answer(late);
         },
         deadline === undefined ? NAV_MS : Math.max(0, Math.min(NAV_MS, deadline - Date.now()))
       );
@@ -4181,6 +4228,9 @@ class Guard {
         resolve();
       };
     });
+    nav.setup = new Promise((resolve) => {
+      nav.setupDone = resolve;
+    });
     nav.timer = setTimeout(() => {
       if (!nav.done && nav.waiting.size) nav.unanswered = true;
       nav.settle(true);
@@ -4202,6 +4252,7 @@ class Guard {
       }
       this.pendingAttachments.delete(nav);
       await this.arm(nav, session);
+      nav.setupDone(false);
       nav.ended = true;
     });
   }
@@ -4229,6 +4280,176 @@ class Guard {
   unguarded(nav) {
     if (foreignFrame(nav?.cause)) return EXTENSION_FRAME;
     return nav?.unanswered || nav?.cause === EXTENSION_UNANSWERED ? UNANSWERED : UNGUARDED;
+  }
+
+  async revive(message) {
+    const { params = {} } = message;
+    const { targetId, ignoreCache } = params;
+    if (Object.keys(params).some((key) => !REVIVES.has(key))) return false;
+    if (ignoreCache !== undefined && typeof ignoreCache !== 'boolean') return false;
+    const nav = typeof targetId === 'string' ? this.navs.get(targetId) : undefined;
+    if (!(await this.reloadable(nav))) return false;
+    const busy = this.reloadShielded(targetId) ? PROTECTED : reserveReload(targetId);
+    if (busy) {
+      this.refuse(message, busy);
+      return true;
+    }
+    const key = `reload:${requestKey(message)}`;
+    const flight = await this.exclusiveTurn(targetId, key);
+    if (!flight) {
+      this.refuse(message, UNANSWERED);
+      return true;
+    }
+    const answer = await this.reloadUnder(message, targetId, nav, flight.until);
+    this.turnFlights.delete(key);
+    flight.land(answer?.result !== undefined);
+    if (answer) this.deliver({ id: message.id, ...answer });
+    return true;
+  }
+
+  async exclusiveTurn(targetId, key) {
+    const deadline = Date.now() + TURN_MS;
+    while (this.turnBusy(targetId))
+      if (!(await quietTurn(targetId, deadline - Date.now()))) return null;
+    const flight = this.flyTurn(targetId, 'move', key);
+    flight.until = Date.now() + TURN_MS;
+    return flight;
+  }
+
+  async reloadUnder(message, targetId, nav, until) {
+    const { refusal, record } = await this.reloadRefusal(targetId, nav);
+    if (refusal || this.finished.has(message) || !this.owns(message)) {
+      if (refusal) this.refuse(message, refusal);
+      return null;
+    }
+    nav.revived = true;
+    const { ignoreCache } = message.params;
+    const answer = await this.call(
+      'Page.reload',
+      { ...(ignoreCache === undefined ? {} : { ignoreCache }), loaderId: record.loaderId },
+      nav.session,
+      until
+    );
+    nav.retired = true;
+    nav.settle(true);
+    if (this.navs.get(targetId) === nav) this.navs.delete(targetId);
+    this.navSessions.delete(nav.session);
+    void this.call('Target.detachFromTarget', { sessionId: nav.session });
+    if (TIMEOUTS.has(answer)) return { error: { code: -32000, message: UNANSWERED } };
+    if (answer.error) return { error: { code: -32000, message: PROTECTED } };
+    return { result: answer.result ?? {} };
+  }
+
+  reloadShielded(targetId) {
+    const info = this.targets.get(targetId);
+    return (
+      this.pendingTarget(targetId) ||
+      isHeld(targetId) ||
+      this.relatedHeld(targetId) ||
+      info?.type !== 'page' ||
+      Boolean(info.guarded) ||
+      !ANSWERABLE.test(info.url) ||
+      this.is.url(info.url)
+    );
+  }
+
+  async reloadable(nav) {
+    if (!nav?.unanswered || !nav.session || nav.retired || nav.revived) return false;
+    if (nav.held || nav.taken || nav.erred || nav.scrub) return false;
+    const answered = (await this.within(nav.setup, NAV_MS)) === true;
+    sweepDocuments();
+    return answered && !nav.retired && !nav.revived && Boolean(recordedDocument(nav.targetId));
+  }
+
+  async reloadRefusal(targetId, nav) {
+    const before = this.targetMoves.get(targetId);
+    const reads = Promise.all([
+      this.current(targetId).catch(refusedRead),
+      this.call('Page.getNavigationHistory', {}, nav.session, Date.now() + ANSWER_MS),
+    ]);
+    const [fresh, history] = (await this.within(reads, ANSWER_MS)) ?? [];
+    const moved = fresh !== false || this.targetMoves.get(targetId) !== before;
+    if (moved || nav.navigating || this.reloadShielded(targetId)) return { refusal: PROTECTED };
+    const record = recordedDocument(targetId);
+    const shown = history?.result?.entries?.[history.result.currentIndex]?.url;
+    const url = this.targets.get(targetId).url;
+    if (!record || shown !== record.url || url !== record.url) return { refusal: PROTECTED };
+    return this.navs.get(targetId) === nav && !nav.retired ? { record } : { refusal: UNANSWERED };
+  }
+
+  noteDocument({ id, method, params = {}, sessionId }) {
+    if (id !== undefined) return;
+    if (method === 'Target.targetDestroyed' && sessionId === undefined)
+      return keepDocument(params.targetId);
+    if (sessionId === undefined) return;
+    const nav = this.navSessions.get(sessionId);
+    if (method === 'Page.frameStartedNavigating' && nav) nav.navigating = true;
+    const targetId = this.scopeTarget(sessionId);
+    if (method === 'Page.frameNavigated') this.recordDocument(targetId, params.frame);
+    if (method !== 'Page.navigatedWithinDocument') return;
+    const record = recordedDocument(targetId);
+    if (record && this.topFrame(targetId, { id: params.frameId }))
+      keepDocument(
+        targetId,
+        this.admissible(targetId, params.url, record) ? { ...record, url: params.url } : undefined
+      );
+  }
+
+  recordDocument(targetId, frame) {
+    if (!this.topFrame(targetId, frame)) return;
+    const url = `${frame.url ?? ''}${frame.urlFragment ?? ''}`;
+    const record = { loaderId: frame.loaderId, url };
+    keepDocument(targetId, this.admissible(targetId, url, frame) ? record : undefined);
+  }
+
+  topFrame(targetId, frame) {
+    const info = this.targets.get(targetId);
+    return Boolean(
+      typeof targetId === 'string' &&
+        frame?.id === targetId &&
+        !frame.parentId &&
+        info?.type === 'page' &&
+        !info.parentId &&
+        !info.subtype
+    );
+  }
+
+  admissible(targetId, url, { loaderId, unreachableUrl }) {
+    return (
+      typeof loaderId === 'string' &&
+      loaderId !== '' &&
+      !unreachableUrl &&
+      typeof url === 'string' &&
+      ANSWERABLE.test(url) &&
+      URL.canParse(url) &&
+      !this.is.url(url) &&
+      !isHeld(targetId) &&
+      !this.relatedHeld(targetId) &&
+      !this.targets.get(targetId).guarded
+    );
+  }
+
+  noteTargetMove({ id, method, params = {}, sessionId }) {
+    if (id !== undefined || typeof method !== 'string') return;
+    const targetId = params.targetInfo?.targetId ?? params.targetId ?? this.scopeTarget(sessionId);
+    if (targetId === undefined) return;
+    this.targetMoves.delete(targetId);
+    this.targetMoves.set(targetId, ++this.moveClock);
+    if (this.targetMoves.size > TURNS_KEPT)
+      this.targetMoves.delete(this.targetMoves.keys().next().value);
+  }
+
+  async forward(message) {
+    if (await this.refuseUnsafeContent(message)) return;
+    if (!(await this.proveContent(message))) return this.refuse(message);
+    if (!(await this.admitContent(message))) return this.refuse(message);
+    const why = await this.check(message);
+    if (this.finished.has(message) || !this.owns(message)) {
+      this.blankReads.delete(requestKey(message));
+      return;
+    }
+    if (why) return this.refuse(message, why);
+    return this.sendChecked(message);
   }
 
   async unguardedNow(targetId, nav) {
@@ -4384,9 +4605,13 @@ class Guard {
       step('Page.enable', {}),
     ]);
     nav.holds = steps[0].result?.holdsDocuments === true;
+    nav.setupDone(
+      TIMEOUTS.has(steps[3]) && steps.every((step) => !step.error || TIMEOUTS.has(step))
+    );
     const errors = steps.filter((step) => step.error);
     nav.cause ??= errors[0]?.error.message;
     await this.focusCreated(nav);
+    if (nav.revived) return nav.settle(true);
     this.placing.set(nav.targetId, this.place(nav.targetId, session));
     await this.placing.get(nav.targetId);
     nav.settle((await this.markSetupRefusal(nav.targetId, errors)).broken);
@@ -8467,6 +8692,8 @@ class Guard {
   received(text) {
     const message = parse(text);
     this.noteTurn(message);
+    this.noteTargetMove(message);
+    this.noteDocument(message);
     this.noteListedEvent(message);
     this.noteCookieSite(message);
     this.stamp(message);
@@ -8789,16 +9016,8 @@ class Guard {
         async () => {
           if (this.finished.has(message) || !this.owns(message)) return;
           if (this.tabSessions.has(message.sessionId)) return this.tabCommand(message);
-          if (await this.refuseUnsafeContent(message)) return;
-          if (!(await this.proveContent(message))) return this.refuse(message);
-          if (!(await this.admitContent(message))) return this.refuse(message);
-          const why = await this.check(message);
-          if (this.finished.has(message) || !this.owns(message)) {
-            this.blankReads.delete(requestKey(message));
-            return;
-          }
-          if (why) return this.refuse(message, why);
-          return this.sendChecked(message);
+          if (reviving(message) && (await this.revive(message))) return;
+          return this.forward(message);
         },
         (error) => {
           console.warn(`the CDP guard refused a command: ${error.message}`);
