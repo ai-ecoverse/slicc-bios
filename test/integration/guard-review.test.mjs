@@ -371,7 +371,7 @@ test('a lost probe retries closed and a protected commit stays refused', async (
     send(text) {
       const message = JSON.parse(text);
       sent.push(message);
-      if (hang && message.id >= 2 ** 30) return;
+      if (hang && message.id >= 2 ** 30 && message.method !== 'Target.getTargetInfo') return;
       queueMicrotask(() => {
         const answer = (payload) =>
           incoming?.(

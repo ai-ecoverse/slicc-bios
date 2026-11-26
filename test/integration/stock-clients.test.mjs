@@ -553,6 +553,7 @@ async function playwright(route, endpoint) {
     await run('fill', () => page.fill('#name', 'stock'));
     assert.equal(await page.inputValue('#name'), 'stock');
     assert.equal(await run('evaluate', () => page.evaluate(() => 6 * 7)), 42);
+    await dialogs(run, page);
     assert.ok((await run('screenshot', () => page.screenshot())).length > 100);
     const cookies = await run('cookies', () => context.cookies(ORDINARY));
     assert.ok(cookies.some((cookie) => cookie.name === 'stock'));
@@ -601,6 +602,22 @@ async function playwright(route, endpoint) {
   }
 }
 
+async function dialogs(run, page) {
+  const seen = [];
+  const answer = (dialog) => {
+    seen.push(`${dialog.type()} ${dialog.message()}`);
+    void dialog.accept(dialog.type() === 'prompt' ? 'stock' : undefined);
+  };
+  page.on('dialog', answer);
+  try {
+    assert.equal(await run('confirm', () => page.evaluate(() => confirm('sure?'))), true);
+    assert.equal(await run('prompt', () => page.evaluate(() => prompt('name?'))), 'stock');
+  } finally {
+    page.off('dialog', answer);
+  }
+  assert.deepEqual(seen, ['confirm sure?', 'prompt name?']);
+}
+
 async function visibility(route, client, page) {
   const seen = await page
     .evaluate(() => [document.visibilityState, document.hasFocus()])
@@ -627,6 +644,7 @@ async function puppeteerFlow(route, endpoint) {
     await run('type', () => page.type('#name', 'stock'));
     assert.equal(await page.$eval('#name', (node) => node.value), 'stock');
     assert.equal(await run('evaluate', () => page.evaluate(() => 6 * 7)), 42);
+    await dialogs(run, page);
     assert.ok((await run('screenshot', () => page.screenshot())).length > 100);
     const cookies = await run('cookies', () => page.cookies());
     assert.ok(cookies.some((cookie) => cookie.name === 'stock'));

@@ -27,6 +27,90 @@ export const UNGUARDED =
 export const UNANSWERED = `${UNGUARDED}: the page isn’t answering, and a dialog may be waiting in it`;
 const EXTENSION_UNANSWERED =
   "slicc: refused: this tab's page isn't answering, so the guard couldn't check its frames; a dialog may be waiting in the tab";
+export const DIALOG_GONE =
+  'slicc: refused: the dialog this answer was meant for may be gone: the tab started loading another page, or another answer or dialog came first; wait for the next Page.javascriptDialogOpening and answer that one';
+export const DIALOG_UNSEEN =
+  'slicc: refused: this session wasn’t shown a dialog that is still open in this tab, so the guard doesn’t answer one';
+export const TURN_MS = 5000;
+export const TURNS_KEPT = 1024;
+const DIALOG_OWNER = /^(?:https?:|data:|blob:|about:(?:blank|srcdoc)(?:[?#]|$))/i;
+const MOVES = new Set(['Page.navigate', 'Page.reload', 'Page.navigateToHistoryEntry']);
+const MAIN_STARTS = new Set(['Page.frameStartedNavigating', 'Page.frameRequestedNavigation']);
+const SAME_DOCUMENT = new Set(['sameDocument', 'historySameDocument']);
+const turns = new Map();
+let serial = 0;
+
+export const turnCount = () => turns.size;
+
+function trim(keep) {
+  for (const [id, kept] of turns) {
+    if (turns.size <= TURNS_KEPT) return;
+    if (id !== keep && !kept.flying.size) turns.delete(id);
+  }
+}
+
+export function tabTurn(targetId) {
+  let turn = turns.get(targetId);
+  if (!turn) {
+    turn = { serial, landed: 0, landedAt: 0, flying: new Set() };
+    turns.set(targetId, turn);
+    trim(targetId);
+  }
+  return turn;
+}
+
+export function forgetTurn(targetId) {
+  const turn = turns.get(targetId);
+  if (!turn) return;
+  turns.delete(targetId);
+  for (const flight of [...turn.flying]) flight.land();
+}
+
+export function fly(targetId, kind, ms = TURN_MS) {
+  const turn = tabTurn(targetId);
+  let land;
+  turn.serial = ++serial;
+  const flight = {
+    kind,
+    serial: turn.serial,
+    landed: new Promise((resolve) => (land = resolve)),
+  };
+  const timer = setTimeout(() => flight.land(), ms);
+  timer.unref?.();
+  flight.land = (ok = true) => {
+    if (!turn.flying.delete(flight)) return;
+    clearTimeout(timer);
+    if (ok) {
+      turn.landed = Math.max(turn.landed, flight.serial);
+      turn.landedAt = Date.now();
+    }
+    trim();
+    land();
+  };
+  turn.flying.add(flight);
+  return flight;
+}
+
+const others = (turn, except) => [...turn.flying].filter((flight) => !except?.has(flight));
+
+export async function quietTurn(targetId, ms = TURN_MS, except) {
+  const turn = tabTurn(targetId);
+  const deadline = Date.now() + ms;
+  while (others(turn, except).length) {
+    const left = deadline - Date.now();
+    if (left <= 0) return false;
+    let timer;
+    await Promise.race([
+      Promise.all(others(turn, except).map((flight) => flight.landed)),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, left);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
+  return true;
+}
+
 export const HEADERS =
   'slicc: refused: settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
 export const WORLD = 'slicc: refused: that execution context belongs to a browser extension';
@@ -1166,6 +1250,8 @@ class Guard {
     this.next = GUARD_IDS;
     this.listedEvents = 0;
     this.guarded = { onmessage: null, onclose: null };
+    this.turnFlights = new Map();
+    this.documentHolds = new Map();
   }
 
   redacted(message, source = message) {
@@ -4271,6 +4357,7 @@ class Guard {
     }
     if (!session) return nav.settle(true);
     nav.session = session;
+    nav.dialog = { known: false, open: 0, mark: serial };
     this.navSessions.set(session, nav);
     const step = (method, params) => {
       nav.waiting.add(method);
@@ -4320,14 +4407,12 @@ class Guard {
 
   pausedDocument(params, nav) {
     const { requestId } = params;
-    if (params.resourceType !== 'Document' || !this.is.url(params.request?.url)) {
-      void this.call('Fetch.continueRequest', { requestId }, nav.session);
-      return;
-    }
+    const go = () => void this.call('Fetch.continueRequest', { requestId }, nav.session);
+    if (params.resourceType !== 'Document' || !this.is.url(params.request?.url))
+      return this.afterAnswers(nav.targetId, go);
     if (nav.held) {
       nav.taken = true;
-      void this.call('Fetch.continueRequest', { requestId }, nav.session);
-      return;
+      return this.afterAnswers(nav.targetId, go);
     }
     void this.failDocument(params, nav.session, nav.targetId);
     this.failed(nav.targetId, params);
@@ -7983,6 +8068,13 @@ class Guard {
     }
     const gate = await this.extensionGate(method, sessionId);
     if (gate) return this.refuse(message, gate);
+    if (this.turnWaits(message)) {
+      const waited = await this.waitTurn(message);
+      if (this.finished.has(message) || !this.owns(message)) return;
+      if (waited) return this.refuse(message, waited);
+    }
+    const turn = this.turnRefusal(message);
+    if (turn) return this.refuse(message, turn);
     if (method === 'Page.startScreencast') this.casts.add(sessionId);
     if (method === 'Page.stopScreencast') this.casts.delete(sessionId);
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
@@ -8000,7 +8092,189 @@ class Guard {
     this.asked.set(requestKey(message), message);
     if (contentRead(method)) this.pendingContent.add(message);
     if (!QUIET.has(method)) this.changed();
+    this.takeTurn(message);
     this.connection.send(JSON.stringify(outgoing));
+  }
+
+  noteTurn(message) {
+    if (message.id !== undefined) {
+      const key = requestKey(message);
+      const flight = this.turnFlights.get(key);
+      this.turnFlights.delete(key);
+      return flight?.land(!message.error);
+    }
+    const { method, params = {}, sessionId } = message;
+    if (method === 'Target.targetDestroyed') return forgetTurn(params.targetId);
+    const detached = method === 'Target.detachedFromTarget';
+    const nav = this.navSessions.get(detached ? params.sessionId : sessionId);
+    if (!nav?.dialog) return;
+    if (detached || method === 'Inspector.targetCrashed')
+      nav.dialog = { known: false, open: 0, mark: serial };
+    else this.navDialog(method, params, nav);
+  }
+
+  mainStart(method, params, sessionId) {
+    const main = this.mainFrame(sessionId);
+    return (
+      MAIN_STARTS.has(method) &&
+      (main === undefined || params.frameId === main) &&
+      !SAME_DOCUMENT.has(params.navigationType) &&
+      (params.disposition ?? 'currentTab') === 'currentTab'
+    );
+  }
+
+  navDialog(method, params, nav) {
+    const state = nav.dialog;
+    if (method === 'Page.javascriptDialogOpening') {
+      const turn = tabTurn(nav.targetId);
+      const leaving = params.type === 'beforeunload';
+      Object.assign(state, { known: true, discarded: false });
+      state.open += 1;
+      state.record = {
+        params,
+        opened: this.clock,
+        serial: turn.serial,
+        before: leaving ? new Set(turn.flying) : undefined,
+        leaving,
+        stale: !leaving && turn.flying.size > 0,
+      };
+      return;
+    }
+    if (method === 'Page.javascriptDialogClosed') {
+      if (state.record?.leaving && params.result === false) state.loading = undefined;
+      if (state.open) state.discarded = false;
+      state.known = true;
+      state.open = Math.max(0, state.open - 1);
+      if (!state.open) state.record = undefined;
+      return;
+    }
+    if (this.mainStart(method, params, nav.session)) {
+      if (!state.record?.leaving)
+        Object.assign(state, { open: 0, record: undefined, discarded: true });
+      Object.assign(state, { known: true, loading: Date.now() });
+      return;
+    }
+    if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId)
+      Object.assign(state, { known: true, loading: undefined });
+    if (method === 'Page.frameStoppedLoading' && params.frameId === this.mainFrame(nav.session))
+      state.loading = undefined;
+  }
+
+  dialogBefore({ method, sessionId }) {
+    if (method !== 'Page.handleJavaScriptDialog') return undefined;
+    return this.navs.get(this.scopeTarget(sessionId))?.dialog?.record?.before;
+  }
+
+  dialogProtected(sessionId, targetId, record) {
+    const params = record?.params;
+    return Boolean(
+      isHeld(targetId) ||
+        this.settled.get(sessionId)?.protected ||
+        this.pendingCommit.has(sessionId) ||
+        this.pendingTarget(targetId) ||
+        this.is.url(this.targets.get(targetId)?.url) ||
+        this.errorDocument(sessionId, 'Page.handleJavaScriptDialog') ||
+        (params &&
+          (this.is.url(params.url) ||
+            !DIALOG_OWNER.test(params.url ?? '') ||
+            this.eventError({ method: 'Page.javascriptDialogOpening', sessionId, params })))
+    );
+  }
+
+  dialogRefusal(message) {
+    const { sessionId } = message;
+    const targetId = this.scopeTarget(sessionId);
+    const state = this.navs.get(targetId)?.dialog;
+    if (this.dialogProtected(sessionId, targetId, state?.record)) return PROTECTED;
+    const turn = tabTurn(targetId);
+    if (!state?.known) {
+      const landed = turn.landed > (state?.mark ?? Infinity) && Date.now() - turn.landedAt < NAV_MS;
+      return others(turn).length || landed ? DIALOG_GONE : null;
+    }
+    const { record } = state;
+    if (Date.now() - (state.loading ?? -Infinity) < NAV_MS && !record?.leaving) return DIALOG_GONE;
+    if (!record) return state.discarded ? DIALOG_GONE : DIALOG_UNSEEN;
+    if (state.open !== 1) return DIALOG_UNSEEN;
+    if (
+      record.opened >= (this.arrivals.get(message) ?? 0) ||
+      record.stale ||
+      others(turn, record.before).length ||
+      turn.landed > record.serial
+    )
+      return DIALOG_GONE;
+    return null;
+  }
+
+  turnTarget({ method, params, sessionId }) {
+    if (sessionId !== undefined)
+      return method === 'Page.handleJavaScriptDialog' || MOVES.has(method)
+        ? this.scopeTarget(sessionId)
+        : undefined;
+    return MOVES.has(method) && typeof params?.targetId === 'string' ? params.targetId : undefined;
+  }
+
+  turnWaits(message) {
+    const tab = this.turnTarget(message);
+    if (tab === undefined) return false;
+    return message.method === 'Page.handleJavaScriptDialog' || this.turnBusy(tab);
+  }
+
+  async waitTurn(message) {
+    const tab = this.turnTarget(message);
+    const before = this.dialogBefore(message);
+    if (this.turnBusy(tab, before)) await quietTurn(tab, TURN_MS, before);
+    if (message.method !== 'Page.handleJavaScriptDialog') return null;
+    const fresh = await this.within(
+      this.current(tab).catch(() => true),
+      ANSWER_MS
+    );
+    return fresh === false ? null : PROTECTED;
+  }
+
+  turnBusy(targetId, except) {
+    return targetId !== undefined && others(tabTurn(targetId), except).length > 0;
+  }
+
+  turnRefusal(message) {
+    if (message.method !== 'Page.handleJavaScriptDialog') return null;
+    return this.turnTarget(message) === undefined ? null : this.dialogRefusal(message);
+  }
+
+  takeTurn(message) {
+    const targetId = this.turnTarget(message);
+    if (targetId === undefined) return;
+    const kind = message.method === 'Page.handleJavaScriptDialog' ? 'answer' : 'move';
+    this.flyTurn(targetId, kind, requestKey(message));
+  }
+
+  flyTurn(targetId, kind, key) {
+    const flight = fly(targetId, kind);
+    this.turnFlights.set(key, flight);
+    if (kind === 'answer') this.holdDocuments(targetId, flight);
+    return flight;
+  }
+
+  holdDocuments(targetId, flight) {
+    const hold = this.documentHolds.get(targetId) ?? { count: 0, waiting: [] };
+    hold.count += 1;
+    this.documentHolds.set(targetId, hold);
+    void flight.landed.then(() => {
+      hold.count -= 1;
+      if (hold.count > 0) return;
+      this.documentHolds.delete(targetId);
+      for (const go of hold.waiting) go();
+    });
+  }
+
+  afterAnswers(targetId, go) {
+    const hold = this.documentHolds.get(targetId);
+    if (hold) hold.waiting.push(go);
+    else go();
+  }
+
+  landTurns() {
+    for (const flight of this.turnFlights.values()) flight.land();
+    this.turnFlights.clear();
   }
 
   commitScope(targetId) {
@@ -8185,6 +8459,7 @@ class Guard {
 
   received(text) {
     const message = parse(text);
+    this.noteTurn(message);
     this.noteListedEvent(message);
     this.noteCookieSite(message);
     this.stamp(message);
@@ -8475,6 +8750,7 @@ class Guard {
       guarded.onmessage = null;
       for (const nav of this.navs.values()) nav.wiped?.();
       this.autoAttachments.clear();
+      this.landTurns();
       guarded.onclose?.(why);
     };
     guarded.send = (text) => {
@@ -8530,6 +8806,7 @@ class Guard {
       for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;
+      this.landTurns();
       const pending = [...this.navs.values()].filter((nav) => nav.closeScrub);
       if (!pending.length && !this.evidence.size) {
         this.closed = true;
