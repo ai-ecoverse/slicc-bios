@@ -5,6 +5,7 @@ import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import { GAP, WAITING } from '../../src/seed/support.js';
 import { pressDeep, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeLlm } from './fake-llm.mjs';
@@ -492,11 +493,16 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   await page.until(() => !!window.inPanel('[data-empty="not-enrolled"][data-request="declined"]'));
   assert.equal(await page.evaluate(() => window.panelText('[data-reason]')), REASON);
   await page.screenshot(new URL('declined.png', page.dir));
-  await new Promise((resolve) => setTimeout(resolve, 12000));
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('online'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await new Promise((resolve) => setTimeout(resolve, WAITING + 2 * GAP));
   assert.equal(
     calls().filter((call) => call.token === DECLINED).length,
     1,
-    'a declined request isn’t asked again'
+    'a declined request isn’t asked again, on a wake or the pending interval'
   );
   await pressDeep(page, '[data-account] [data-action="sign-out"]');
   await page.until(() => !!window.inPanel('[data-sign-in]'));
