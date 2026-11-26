@@ -179,6 +179,7 @@ const PLACE_RETRIES = 2;
 const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
+const DIALOG_RECORD_MS = 250;
 const HINT_MS = 5000;
 export const DROP_LOG_MS = 60_000;
 export const DROP_LOG_CAP = 20;
@@ -8080,7 +8081,7 @@ class Guard {
       if (this.finished.has(message) || !this.owns(message)) return;
       if (waited) return this.refuse(message, waited);
     }
-    const turn = this.turnRefusal(message);
+    const turn = await this.turnRefusal(message);
     if (turn) return this.refuse(message, turn);
     if (method === 'Page.startScreencast') this.casts.add(sessionId);
     if (method === 'Page.stopScreencast') this.casts.delete(sessionId);
@@ -8135,7 +8136,7 @@ class Guard {
     if (method === 'Page.javascriptDialogOpening') {
       const turn = tabTurn(nav.targetId);
       const leaving = params.type === 'beforeunload';
-      Object.assign(state, { known: true, discarded: false });
+      Object.assign(state, { known: true, discarded: false, lostRecord: false });
       state.open += 1;
       state.record = {
         params,
@@ -8145,6 +8146,8 @@ class Guard {
         leaving,
         stale: !leaving && turn.flying.size > 0,
       };
+      for (const go of state.waiting ?? []) go();
+      state.waiting = [];
       return;
     }
     if (method === 'Page.javascriptDialogClosed') {
@@ -8156,8 +8159,10 @@ class Guard {
       return;
     }
     if (this.mainStart(method, params, nav.session)) {
-      if (!state.record?.leaving)
+      if (!state.record?.leaving) {
+        state.lostRecord = Boolean(state.record) || state.lostRecord;
         Object.assign(state, { open: 0, record: undefined, discarded: true });
+      }
       Object.assign(state, { known: true, loading: Date.now() });
       return;
     }
@@ -8188,7 +8193,40 @@ class Guard {
     );
   }
 
-  dialogRefusal(message) {
+  async waitDialogRecord(state, ms = DIALOG_RECORD_MS) {
+    if (state.record) return true;
+    const deadline = Date.now() + ms;
+    while (!state.record && Date.now() < deadline) {
+      const left = deadline - Date.now();
+      await new Promise((resolve) => {
+        let timer;
+        const done = () => {
+          clearTimeout(timer);
+          const waiting = state.waiting;
+          if (waiting) {
+            const at = waiting.indexOf(done);
+            if (at >= 0) waiting.splice(at, 1);
+          }
+          resolve();
+        };
+        (state.waiting ??= []).push(done);
+        timer = setTimeout(done, left);
+        timer.unref?.();
+      });
+    }
+    return Boolean(state.record);
+  }
+
+  async awaitDiscardedOpening(state, message) {
+    const loading = Date.now() - (state.loading ?? -Infinity) < NAV_MS && !state.record?.leaving;
+    if (state.record || !state.discarded || state.lostRecord || loading) return;
+    if (!(await this.waitDialogRecord(state))) return;
+    const opened = state.record.opened;
+    const arrived = this.arrivals.get(message) ?? 0;
+    if (opened >= arrived) this.arrivals.set(message, opened + 1);
+  }
+
+  async dialogRefusal(message) {
     const { sessionId } = message;
     const targetId = this.scopeTarget(sessionId);
     const state = this.navs.get(targetId)?.dialog;
@@ -8198,6 +8236,7 @@ class Guard {
       const landed = turn.landed > (state?.mark ?? Infinity) && Date.now() - turn.landedAt < NAV_MS;
       return others(turn).length || landed ? DIALOG_GONE : null;
     }
+    await this.awaitDiscardedOpening(state, message);
     const { record } = state;
     if (Date.now() - (state.loading ?? -Infinity) < NAV_MS && !record?.leaving) return DIALOG_GONE;
     if (!record) return state.discarded ? DIALOG_GONE : DIALOG_UNSEEN;
@@ -8242,7 +8281,7 @@ class Guard {
     return targetId !== undefined && others(tabTurn(targetId), except).length > 0;
   }
 
-  turnRefusal(message) {
+  async turnRefusal(message) {
     if (message.method !== 'Page.handleJavaScriptDialog') return null;
     return this.turnTarget(message) === undefined ? null : this.dialogRefusal(message);
   }

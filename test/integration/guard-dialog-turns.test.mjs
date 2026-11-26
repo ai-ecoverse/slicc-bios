@@ -16,8 +16,8 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const MUTANTS = {
   'skip-registry-check': [
-    'const turn = this.turnRefusal(message);',
-    'const turn = message.method === "Page.handleJavaScriptDialog" ? null : this.turnRefusal(message);',
+    'const turn = await this.turnRefusal(message);',
+    'const turn = message.method === "Page.handleJavaScriptDialog" ? null : await this.turnRefusal(message);',
   ],
   'skip-turn': [
     `    const kind = message.method === 'Page.handleJavaScriptDialog' ? 'answer' : 'move';
@@ -63,6 +63,18 @@ const MUTANTS = {
     const state = this.navs.get(targetId)?.dialog;
     if (this.dialogProtected(`,
   ],
+  'no-dialog-record-wait': [
+    'await this.awaitDiscardedOpening(state, message);',
+    'if (false) await this.awaitDiscardedOpening(state, message);',
+  ],
+  'unbounded-dialog-record-wait': [
+    'const DIALOG_RECORD_MS = 250;',
+    'const DIALOG_RECORD_MS = 1e9;',
+  ],
+  'wait-every-dialog-refusal': [
+    'await this.awaitDiscardedOpening(state, message);',
+    'await this.waitDialogRecord(state);\n    await this.awaitDiscardedOpening(state, message);',
+  ],
 };
 
 registerHooks({
@@ -96,13 +108,31 @@ function browser() {
   const stuck = new Set();
   const failing = new Set();
   let ids = 0;
-  const post = (session, message) =>
-    queueMicrotask(() =>
-      session.wire.onmessage?.(JSON.stringify({ ...message, sessionId: session.id }))
-    );
+  const heldNav = [];
+  let holdNavOpening = false;
+  const post = (session, message) => {
+    const deliver = () =>
+      session.wire.onmessage?.(JSON.stringify({ ...message, sessionId: session.id }));
+    if (
+      holdNavOpening &&
+      message.method === 'Page.javascriptDialogOpening' &&
+      session.id.startsWith('guard-')
+    ) {
+      heldNav.push(deliver);
+      return;
+    }
+    queueMicrotask(deliver);
+  };
   const to = (targetId, domain, method, params) => {
     for (const session of sessions.values())
       if (session.targetId === targetId && session[domain]) post(session, { method, params });
+  };
+  const holdGuardOpening = () => {
+    holdNavOpening = true;
+  };
+  const releaseGuardOpening = () => {
+    holdNavOpening = false;
+    for (const deliver of heldNav.splice(0)) queueMicrotask(deliver);
   };
   const frame = (target) => ({
     id: target.id,
@@ -283,7 +313,20 @@ function browser() {
     };
     return wire;
   }
-  return { targets, sessions, stuck, failing, tab, connect, openDialog, closeDialog, navigate };
+  return {
+    targets,
+    sessions,
+    stuck,
+    failing,
+    tab,
+    connect,
+    openDialog,
+    closeDialog,
+    navigate,
+    holdGuardOpening,
+    releaseGuardOpening,
+    heldNav,
+  };
 }
 
 function client(t, chrome, guardProtected) {
@@ -521,6 +564,118 @@ test('mutant: answering a dialog the guard never saw open lands on whatever open
   const row = await rows.unseen(t, await load('answer-unseen'));
   assert.equal(row.forwarded, 1);
   assert.equal(row.laterClosed, true);
+});
+
+async function lateNavOpening(t, guard, key, release) {
+  const chrome = browser();
+  const target = chrome.tab(key);
+  const a = client(t, chrome, guard.guardProtected);
+  const sa = await a.attach(key);
+  chrome.holdGuardOpening();
+  await chrome.navigate(target, `${PAGE}/dialog/${key}`);
+  await until(() => target.dialog?.message === 'one', 3000, 'dialog one');
+  await until(
+    () => a.events.some((message) => message.method === 'Page.javascriptDialogOpening'),
+    3000,
+    'the opening as the client session sees it'
+  );
+  await until(
+    () => a.wire.guard?.navs.get(key)?.dialog?.discarded === true,
+    3000,
+    'the guard to discard the prior dialog on navigate'
+  );
+  assert.equal(a.wire.guard.navs.get(key)?.dialog?.record, undefined);
+  const since = a.sent.length;
+  const started = Date.now();
+  const answering = a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
+  await pause(30);
+  assert.equal(a.forwarded('Page.handleJavaScriptDialog', since).length, 0);
+  if (release) chrome.releaseGuardOpening();
+  const answer = await answering;
+  return {
+    answer: answer.error?.message ?? 'answered',
+    forwarded: a.forwarded('Page.handleJavaScriptDialog', since).length,
+    closed: !target.dialog,
+    ms: Date.now() - started,
+  };
+}
+
+test('an answer that arrives before the guard’s own session records the opening waits briefly, then succeeds', async (t) => {
+  const row = await lateNavOpening(t, stock, 'late-open', true);
+  assert.equal(row.answer, 'answered');
+  assert.equal(row.forwarded, 1);
+  assert.equal(row.closed, true);
+  assert.ok(row.ms < 2000, `${row.ms} ms`);
+});
+
+test('a Page-enabled guarded client that answers on its own opening before the nav copy is recorded also waits and succeeds', async (t) => {
+  const row = await lateNavOpening(t, stock, 'own-open', true);
+  assert.equal(row.answer, 'answered');
+  assert.equal(row.forwarded, 1);
+  assert.equal(row.closed, true);
+});
+
+test('when the guard’s opening never arrives, the answer is refused after the bound as today', {
+  timeout: 10000,
+}, async (t) => {
+  const row = await lateNavOpening(t, stock, 'no-open', false);
+  assert.equal(row.answer, stock.DIALOG_GONE);
+  assert.equal(row.forwarded, 0);
+  assert.ok(row.ms >= 200 && row.ms < 2000, `${row.ms} ms`);
+});
+
+test('mutant: without the wait, that late opening answer is refused at once', async (t) => {
+  const row = await lateNavOpening(t, await load('no-dialog-record-wait'), 'no-wait', true);
+  assert.equal(row.answer, stock.DIALOG_GONE);
+  assert.equal(row.forwarded, 0);
+});
+
+test('mutant: an unbounded wait never returns when the opening is held', {
+  timeout: 5000,
+}, async (t) => {
+  const chrome = browser();
+  const target = chrome.tab('unbounded-open');
+  const a = client(t, chrome, (await load('unbounded-dialog-record-wait')).guardProtected);
+  const sa = await a.attach('unbounded-open');
+  chrome.holdGuardOpening();
+  await chrome.navigate(target, `${PAGE}/dialog/unbounded-open`);
+  await until(() => target.dialog?.message === 'one', 3000, 'dialog one');
+  const answering = a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
+  const raced = await Promise.race([
+    answering.then((answer) => answer.error?.message ?? 'answered'),
+    pause(1500).then(() => 'still-waiting'),
+  ]);
+  assert.equal(raced, 'still-waiting');
+  chrome.releaseGuardOpening();
+  await answering;
+});
+
+test('mutant: waiting on every refusal delays DIALOG_UNSEEN after close', {
+  timeout: 10000,
+}, async (t) => {
+  const mutant = await load('wait-every-dialog-refusal');
+  const chrome = browser();
+  const target = chrome.tab('wait-every');
+  const a = client(t, chrome, mutant.guardProtected);
+  const sa = await a.attach('wait-every');
+  await chrome.navigate(target, `${PAGE}/dialog/wait-every`);
+  await until(() => target.dialog?.message === 'one', 3000, 'dialog one');
+  await until(
+    () => a.events.some((message) => message.method === 'Page.javascriptDialogOpening'),
+    3000,
+    'the opening'
+  );
+  assert.equal(
+    (await a.send('Page.handleJavaScriptDialog', { accept: true }, sa)).error,
+    undefined
+  );
+  await until(() => !target.dialog, 3000, 'the close');
+  await pause(20);
+  const started = Date.now();
+  const answer = await a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
+  const ms = Date.now() - started;
+  assert.equal(answer.error?.message, stock.DIALOG_UNSEEN);
+  assert.ok(ms >= 200, `${ms} ms`);
 });
 
 test('a guarded move into the vault: the vault never commits, and the answer meant for the old dialog gets DIALOG_GONE', async (t) => {
