@@ -413,7 +413,8 @@ document.addEventListener('visibilitychange', () => board.show(visible()));
 const claimed = await claim();
 document.documentElement.dataset.tools = claimed.owner ? 'installing' : 'elsewhere';
 const notes = createNotes({ releases: createReleases() });
-const updates = createUpdates({ developer: true, notes, opens: !(await agentStartable()) });
+const launching = claimed.owner && (await agentStartable());
+const updates = createUpdates({ developer: true, notes, opens: !launching });
 const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
@@ -476,7 +477,7 @@ document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
 let model = null;
 let files = null;
-const composer = holdComposer(LAUNCHING);
+const composer = holdComposer(launching ? LAUNCHING : null);
 let presentation = null;
 let kernel = null;
 const requests = pageRequests({
