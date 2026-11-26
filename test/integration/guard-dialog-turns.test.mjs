@@ -63,6 +63,47 @@ const MUTANTS = {
     const state = this.navs.get(targetId)?.dialog;
     if (this.dialogProtected(`,
   ],
+  'no-client-dialog-record': [
+    'this.noteClientDialog(message);',
+    'if (false) this.noteClientDialog(message);',
+  ],
+  'merge-double-open': [
+    `    if (this.dialogOpeningMerge(state, params)) {
+      if (!fromNav) state.clientSeen = true;
+      return;
+    }`,
+    `    if (this.dialogOpeningMerge(state, params)) {
+      if (!fromNav) state.clientSeen = true;
+      state.open += 1;
+      state.record = { ...state.record, opened: this.clock, params };
+      return;
+    }`,
+  ],
+  'merge-clears-discard': [
+    `  dialogOpeningMerge(state, params) {
+    const loading = Date.now() - (state.loading ?? -Infinity) < NAV_MS && !state.record?.leaving;
+    return Boolean(
+      state.record &&
+        state.open > 0 &&
+        !state.discarded &&
+        !loading &&
+        sameDialog(state.record.params, params)
+    );
+  }`,
+    `  dialogOpeningMerge(state, params) {
+    if (state.record && state.open > 0 && sameDialog(state.record.params, params)) {
+      state.discarded = false;
+      return true;
+    }
+    return false;
+  }`,
+  ],
+  'merge-loose-identity': [
+    `        sameDialog(state.record.params, params)
+    );`,
+    `        state.record.params?.type === params?.type
+    );`,
+  ],
 };
 
 registerHooks({
@@ -124,10 +165,34 @@ function browser() {
     targets.set(id, target);
     return target;
   }
+  const heldNav = [];
+  const heldClient = [];
+  let holdNavOpening = false;
+  let holdClientOpening = false;
+  const postOpening = (session, message) => {
+    if (
+      holdNavOpening &&
+      message.method === 'Page.javascriptDialogOpening' &&
+      session.id.startsWith('guard-')
+    )
+      return void heldNav.push({ session, message });
+    if (
+      holdClientOpening &&
+      message.method === 'Page.javascriptDialogOpening' &&
+      session.id.startsWith('client-')
+    )
+      return void heldClient.push({ session, message });
+    post(session, message);
+  };
+  const toOpening = (targetId, params) => {
+    for (const session of sessions.values())
+      if (session.targetId === targetId && session.page)
+        postOpening(session, { method: 'Page.javascriptDialogOpening', params });
+  };
   function openDialog(target, message, type = 'alert') {
     target.dialog = { message, type };
     target.opened.push(message);
-    to(target.id, 'page', 'Page.javascriptDialogOpening', {
+    toOpening(target.id, {
       url: target.url,
       frameId: target.id,
       message,
@@ -142,6 +207,12 @@ function browser() {
     target.dialog = null;
     to(target.id, 'page', 'Page.javascriptDialogClosed', { result, userInput: '' });
     return true;
+  }
+  function releaseGuardOpening() {
+    for (const { session, message } of heldNav.splice(0)) post(session, message);
+  }
+  function releaseClientOpening() {
+    for (const { session, message } of heldClient.splice(0)) post(session, message);
   }
   async function navigate(target, url) {
     const loaderId = `${target.id}-${++ids}`;
@@ -283,7 +354,27 @@ function browser() {
     };
     return wire;
   }
-  return { targets, sessions, stuck, failing, tab, connect, openDialog, closeDialog, navigate };
+  return {
+    targets,
+    sessions,
+    stuck,
+    failing,
+    tab,
+    connect,
+    openDialog,
+    closeDialog,
+    navigate,
+    holdNavOpening: () => {
+      holdNavOpening = true;
+    },
+    holdClientOpening: () => {
+      holdClientOpening = true;
+    },
+    releaseGuardOpening,
+    releaseClientOpening,
+    heldNav,
+    heldClient,
+  };
 }
 
 function client(t, chrome, guardProtected) {
@@ -515,6 +606,213 @@ test('after its dialog closes, another answer gets DIALOG_UNSEEN and never reach
     forwarded: 0,
     laterClosed: false,
   });
+});
+
+function dialogState(a, targetId) {
+  return a.wire.guard?.navs.get(targetId)?.dialog;
+}
+
+async function copyOrder(t, guard, key, first) {
+  const chrome = browser();
+  const target = chrome.tab(key);
+  const a = client(t, chrome, guard.guardProtected);
+  const sa = await a.attach(key);
+  await chrome.navigate(target, `${PAGE}/plain/${key}`);
+  await until(() => a.wire.guard?.navs.get(key)?.dialog, 3000, 'nav dialog state');
+  if (first === 'client') chrome.holdNavOpening();
+  else chrome.holdClientOpening();
+  chrome.openDialog(target, 'same');
+  if (first === 'client') {
+    await until(
+      () => a.events.some((message) => message.method === 'Page.javascriptDialogOpening'),
+      3000,
+      'the client opening'
+    );
+    await until(() => dialogState(a, key)?.record, 3000, 'the record from the client copy');
+    assert.equal(dialogState(a, key).open, 1);
+    chrome.releaseGuardOpening();
+    await until(() => chrome.heldNav.length === 0, 3000, 'the nav copy delivered');
+  } else {
+    await until(() => dialogState(a, key)?.record, 3000, 'the record from the nav copy');
+    assert.equal(dialogState(a, key).open, 1);
+    chrome.releaseClientOpening();
+    await until(
+      () => a.events.some((message) => message.method === 'Page.javascriptDialogOpening'),
+      3000,
+      'the client opening'
+    );
+  }
+  await pause(5);
+  const openBefore = dialogState(a, key)?.open ?? 0;
+  const since = a.sent.length;
+  const answer = await a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
+  return {
+    answer: answer.error?.message ?? 'answered',
+    openBefore,
+    open: dialogState(a, key)?.open ?? 0,
+    forwarded: a.forwarded('Page.handleJavaScriptDialog', since).length,
+  };
+}
+
+test('client copy of the opening first, then the nav copy: one record, the answer succeeds', async (t) => {
+  const row = await copyOrder(t, stock, 'client-first', 'client');
+  assert.equal(row.openBefore, 1);
+  assert.equal(row.answer, 'answered');
+  assert.equal(row.forwarded, 1);
+  assert.equal(row.open, 0);
+});
+
+test('nav copy of the opening first, then the client copy: one record, the answer succeeds', async (t) => {
+  const row = await copyOrder(t, stock, 'nav-first', 'nav');
+  assert.equal(row.openBefore, 1);
+  assert.equal(row.answer, 'answered');
+  assert.equal(row.forwarded, 1);
+  assert.equal(row.open, 0);
+});
+
+test('two real dialogs with the same message, the first closed in between, do not merge', async (t) => {
+  const chrome = browser();
+  const target = chrome.tab('two-real');
+  const a = client(t, chrome, stock.guardProtected);
+  const sa = await a.attach('two-real');
+  await chrome.navigate(target, `${PAGE}/plain/two-real`);
+  chrome.openDialog(target, 'same');
+  await until(() => dialogState(a, 'two-real')?.record, 3000, 'the first record');
+  const firstOpened = dialogState(a, 'two-real').record.opened;
+  assert.equal(
+    (await a.send('Page.handleJavaScriptDialog', { accept: true }, sa)).error,
+    undefined
+  );
+  await until(() => !dialogState(a, 'two-real')?.record, 3000, 'the first close');
+  chrome.openDialog(target, 'same');
+  await until(() => dialogState(a, 'two-real')?.record, 3000, 'the second record');
+  assert.notEqual(dialogState(a, 'two-real').record.opened, firstOpened);
+  assert.equal(dialogState(a, 'two-real').open, 1);
+  assert.equal(
+    (await a.send('Page.handleJavaScriptDialog', { accept: true }, sa)).error,
+    undefined
+  );
+});
+
+test('a duplicate opening copy arriving after close does not reopen a record', async (t) => {
+  const chrome = browser();
+  const target = chrome.tab('dup-after-close');
+  const a = client(t, chrome, stock.guardProtected);
+  const sa = await a.attach('dup-after-close');
+  await chrome.navigate(target, `${PAGE}/plain/dup-after-close`);
+  chrome.holdNavOpening();
+  chrome.openDialog(target, 'held');
+  await until(() => dialogState(a, 'dup-after-close')?.record, 3000, 'the client record');
+  assert.equal(
+    (await a.send('Page.handleJavaScriptDialog', { accept: true }, sa)).error,
+    undefined
+  );
+  await until(() => !target.dialog, 3000, 'chrome closed');
+  await until(() => !dialogState(a, 'dup-after-close')?.record, 3000, 'the guard closed');
+  assert.ok(chrome.heldNav.length >= 1);
+  chrome.releaseGuardOpening();
+  await until(() => chrome.heldNav.length === 0, 3000, 'the late nav copy delivered');
+  await pause(5);
+  assert.equal(dialogState(a, 'dup-after-close')?.record, undefined);
+  assert.equal(dialogState(a, 'dup-after-close')?.open ?? 0, 0);
+});
+
+test('an answer for an earlier dialog is refused when a new opening arrives before it is judged', async (t) => {
+  const chrome = browser();
+  const target = chrome.tab('earlier');
+  const a = client(t, chrome, stock.guardProtected);
+  const sa = await a.attach('earlier');
+  await chrome.navigate(target, `${PAGE}/plain/earlier`);
+  chrome.openDialog(target, 'first');
+  await until(() => dialogState(a, 'earlier')?.record, 3000, 'dialog first');
+  chrome.openDialog(target, 'second');
+  await until(
+    () =>
+      a.events.filter((message) => message.method === 'Page.javascriptDialogOpening').length >= 2,
+    3000,
+    'dialog second at the client'
+  );
+  await until(() => (dialogState(a, 'earlier')?.open ?? 0) >= 2, 3000, 'two opens recorded');
+  const since = a.sent.length;
+  const answer = await a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
+  assert.equal(answer.error?.message, stock.DIALOG_UNSEEN, JSON.stringify(answer));
+  assert.equal(a.forwarded('Page.handleJavaScriptDialog', since).length, 0);
+  assert.equal(target.dialog?.message, 'second');
+});
+
+test('mutant: without recording the client copy, a late nav opening leaves the answer refused', async (t) => {
+  const mutant = await load('no-client-dialog-record');
+  const chrome = browser();
+  const target = chrome.tab('no-client');
+  const a = client(t, chrome, mutant.guardProtected);
+  const sa = await a.attach('no-client');
+  await chrome.navigate(target, `${PAGE}/plain/no-client`);
+  chrome.holdNavOpening();
+  chrome.openDialog(target, 'late');
+  await until(
+    () => a.events.some((message) => message.method === 'Page.javascriptDialogOpening'),
+    3000,
+    'the client opening'
+  );
+  const answer = await a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
+  assert.ok(
+    [stock.DIALOG_GONE, stock.DIALOG_UNSEEN].includes(answer.error?.message),
+    JSON.stringify(answer)
+  );
+  chrome.releaseGuardOpening();
+});
+
+test('mutant: a merge that double-counts leaves two opens and refuses the answer', async (t) => {
+  const mutant = await load('merge-double-open');
+  const row = await copyOrder(t, mutant, 'double-open', 'client');
+  assert.equal(row.openBefore, 2);
+  assert.equal(row.answer, stock.DIALOG_UNSEEN);
+  assert.equal(row.forwarded, 0);
+});
+
+test('mutant: a merge that clears a later discard accepts an answer that must stay gone', async (t) => {
+  const mutant = await load('merge-clears-discard');
+  const chrome = browser();
+  const target = chrome.tab('clear-discard');
+  const a = client(t, chrome, mutant.guardProtected);
+  const sa = await a.attach('clear-discard');
+  await chrome.navigate(target, `${PAGE}/plain/clear-discard`);
+  chrome.holdNavOpening();
+  chrome.openDialog(target, 'keep');
+  await until(() => dialogState(a, 'clear-discard')?.record, 3000, 'client record');
+  dialogState(a, 'clear-discard').discarded = true;
+  chrome.releaseGuardOpening();
+  await until(() => chrome.heldNav.length === 0, 3000, 'nav merge');
+  await pause(5);
+  assert.equal(dialogState(a, 'clear-discard').discarded, false);
+  const answer = await a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
+  assert.equal(answer.error?.message ?? 'answered', 'answered');
+});
+
+test('mutant: a loose identity merges a second real opening and the answer lands on it', async (t) => {
+  const mutant = await load('merge-loose-identity');
+  const chrome = browser();
+  const target = chrome.tab('loose');
+  const a = client(t, chrome, mutant.guardProtected);
+  const sa = await a.attach('loose');
+  await chrome.navigate(target, `${PAGE}/plain/loose`);
+  chrome.openDialog(target, 'one');
+  await until(() => dialogState(a, 'loose')?.record, 3000, 'first');
+  chrome.openDialog(target, 'two');
+  await until(
+    () =>
+      a.events.filter((message) => message.method === 'Page.javascriptDialogOpening').length >= 2,
+    3000,
+    'second opening at the client'
+  );
+  await pause(5);
+  assert.equal(dialogState(a, 'loose').open, 1);
+  assert.equal(dialogState(a, 'loose').record.params.message, 'one');
+  const since = a.sent.length;
+  const answer = await a.send('Page.handleJavaScriptDialog', { accept: true }, sa);
+  assert.equal(answer.error?.message ?? 'answered', 'answered');
+  assert.equal(a.forwarded('Page.handleJavaScriptDialog', since).length, 1);
+  assert.equal(target.dialog, null);
 });
 
 test('mutant: answering a dialog the guard never saw open lands on whatever opens next', async (t) => {

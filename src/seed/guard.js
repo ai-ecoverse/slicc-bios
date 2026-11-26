@@ -40,6 +40,17 @@ const SAME_DOCUMENT = new Set(['sameDocument', 'historySameDocument']);
 const turns = new Map();
 let serial = 0;
 
+function sameDialog(a, b) {
+  return (
+    a != null &&
+    b != null &&
+    a.type === b.type &&
+    a.message === b.message &&
+    a.url === b.url &&
+    a.hasBrowserHandler === b.hasBrowserHandler
+  );
+}
+
 export const turnCount = () => turns.size;
 
 function trim(keep) {
@@ -6796,6 +6807,7 @@ class Guard {
     if (sessionId && this.naming({ ...message, method })) return;
     if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
     if (PAUSES.has(method)) this.offered.add(message.params?.requestId);
+    this.noteClientDialog(message);
     this.redacted(message);
   }
 
@@ -8130,34 +8142,75 @@ class Guard {
     );
   }
 
-  navDialog(method, params, nav) {
+  noteClientDialog(message) {
+    const { method, sessionId, params = {} } = message;
+    if (method !== 'Page.javascriptDialogOpening' && method !== 'Page.javascriptDialogClosed')
+      return;
+    if (this.navSessions.has(sessionId)) return;
+    const nav = this.navs.get(this.scopeTarget(sessionId));
+    if (!nav?.dialog) return;
+    this.navDialog(method, params, nav, false);
+  }
+
+  dialogOpeningMerge(state, params) {
+    const loading = Date.now() - (state.loading ?? -Infinity) < NAV_MS && !state.record?.leaving;
+    return Boolean(
+      state.record &&
+        state.open > 0 &&
+        !state.discarded &&
+        !loading &&
+        sameDialog(state.record.params, params)
+    );
+  }
+
+  noteDialogOpening(state, params, nav, fromNav) {
+    if (this.dialogOpeningMerge(state, params)) {
+      if (!fromNav) state.clientSeen = true;
+      return;
+    }
+    if (fromNav && !state.record && sameDialog(state.spent, params)) return;
+    if (state.discarded && state.record) return;
+    const turn = tabTurn(nav.targetId);
+    const leaving = params.type === 'beforeunload';
+    Object.assign(state, { known: true, discarded: false, spent: undefined });
+    state.open += 1;
+    state.clientSeen = !fromNav;
+    state.record = {
+      params,
+      opened: this.clock,
+      serial: turn.serial,
+      before: leaving ? new Set(turn.flying) : undefined,
+      leaving,
+      stale: !leaving && turn.flying.size > 0,
+    };
+  }
+
+  noteDialogClosed(state, params) {
+    if (state.record?.leaving && params.result === false) state.loading = undefined;
+    if (state.open) state.discarded = false;
+    state.known = true;
+    state.open = Math.max(0, state.open - 1);
+    if (!state.open) {
+      if (state.clientSeen) state.spent = state.record?.params;
+      state.record = undefined;
+      state.clientSeen = false;
+    }
+  }
+
+  navDialog(method, params, nav, fromNav = true) {
     const state = nav.dialog;
-    if (method === 'Page.javascriptDialogOpening') {
-      const turn = tabTurn(nav.targetId);
-      const leaving = params.type === 'beforeunload';
-      Object.assign(state, { known: true, discarded: false });
-      state.open += 1;
-      state.record = {
-        params,
-        opened: this.clock,
-        serial: turn.serial,
-        before: leaving ? new Set(turn.flying) : undefined,
-        leaving,
-        stale: !leaving && turn.flying.size > 0,
-      };
-      return;
-    }
-    if (method === 'Page.javascriptDialogClosed') {
-      if (state.record?.leaving && params.result === false) state.loading = undefined;
-      if (state.open) state.discarded = false;
-      state.known = true;
-      state.open = Math.max(0, state.open - 1);
-      if (!state.open) state.record = undefined;
-      return;
-    }
+    if (method === 'Page.javascriptDialogOpening')
+      return this.noteDialogOpening(state, params, nav, fromNav);
+    if (method === 'Page.javascriptDialogClosed') return this.noteDialogClosed(state, params);
     if (this.mainStart(method, params, nav.session)) {
       if (!state.record?.leaving)
-        Object.assign(state, { open: 0, record: undefined, discarded: true });
+        Object.assign(state, {
+          open: 0,
+          record: undefined,
+          discarded: true,
+          clientSeen: false,
+          spent: undefined,
+        });
       Object.assign(state, { known: true, loading: Date.now() });
       return;
     }
