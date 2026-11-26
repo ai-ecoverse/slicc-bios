@@ -52,6 +52,8 @@ jobs:
         **/releases-boundary.test.mjs
         **/sandbox.test.mjs
         **/sign-in-held.test.mjs
+        **/tray.test.mjs
+        **/tray-cli.test.mjs
         **/vault.test.mjs
         **/vault-endpoints.test.mjs
       review-timeout-minutes: 90
