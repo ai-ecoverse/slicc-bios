@@ -25,10 +25,25 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
+      test: |
+        pass=0
+        fail=0
+        PATTERN='a client that never enabled Page still answers the open dialog, and after it closes none is'
+        for i in $(seq 1 50); do
+          echo "=== dialog-row rep $i/50 ==="
+          if node --test --test-concurrency=1 --test-timeout=900000 --test-name-pattern="$PATTERN" --test-global-setup=test/integration/global.mjs test/integration/guard-dialog-race.test.mjs; then
+            pass=$((pass + 1))
+            echo "REP $i PASS"
+          else
+            fail=$((fail + 1))
+            echo "REP $i FAIL"
+          fi
+        done
+        echo "REPS pass=$pass fail=$fail"
+      test-glob: test/integration/guard-dialog-race.test.mjs
+      shards: 1
       timeout-minutes: 90
-      flaky-retry: 3
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*
