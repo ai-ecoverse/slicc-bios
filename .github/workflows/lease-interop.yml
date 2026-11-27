@@ -1,0 +1,59 @@
+name: Lease interop
+
+on:
+  pull_request:
+  merge_group:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lease-interop-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  paths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      selected: ${{ steps.diff.outputs.selected }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -eu
+          changes=$(git diff --name-only --no-renames "$BASE...$HEAD" -- \
+            '.github/workflows/lease-interop.yml' 'src/seed/lease-*.js' src/seed/tray.js src/seed/link.js src/bios.js \
+            'test/integration/lease-interop/' 'test/integration/lease-*.mjs' 'test/integration/security-lease-*.test.mjs' \
+            test/integration/fake-hub.mjs package.json package-lock.json)
+          if [ -n "$changes" ]; then echo 'selected=true'; else echo 'selected=false'; fi >> "$GITHUB_OUTPUT"
+
+  broker:
+    needs: paths
+    if: needs.paths.outputs.selected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26'
+      - name: Verify the release provenance, broker checksum and site fixture
+        run: bash test/integration/lease-interop/prepare.sh
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install standalone Chrome for Testing
+        run: |
+          browser=$(node_modules/.bin/slicc-cdp install-browser --with-deps)
+          test -x "$browser"
+          echo "CHROME_PATH=$browser" >> "$GITHUB_ENV"
+      - name: Exercise the read-only broker on a mutually pinned lease link
+        run: node --test --test-timeout=120000 test/integration/lease-interop/broker.test.mjs

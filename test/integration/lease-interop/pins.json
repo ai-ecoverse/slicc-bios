@@ -1,0 +1,21 @@
+{
+  "broker": {
+    "repo": "ai-ecoverse/slicc-cli",
+    "tag": "v1.70.6",
+    "commit": "7ef14061d14fee2812cfebb93feb19c04925290d",
+    "signer": "https://github.com/ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@refs/tags/v2.17.0",
+    "files": {
+      "SHA256SUMS": "a7a8cdbef3e60d117b19e636e9d829917217b422083afe03a53fd4bafd26ece4",
+      "SHA256SUMS.sigstore.json": "71f9c51b661607ebfeadd1a22a6ba0d676813abc7402cef1d1a3ba1722e5a0e4",
+      "slicc-linux-amd64": "af56bb13e1c40392b4ecb36a4666135171dca05e05f04f9fce48a3911bca2219"
+    }
+  },
+  "site": {
+    "repo": "ai-ecoverse/slicc-browsers",
+    "commit": "2a6907e609ed819132b1432ad5f2db541d05f275",
+    "files": {
+      "lease-page.mjs": "bdad2881f0499a4eebfce9c9924682c801d42f64eb022ca2eb5281e90565f6b4",
+      "lease-square.woff": "5e72436e5d4c44e888fd6a474b4c816f400f63f810924b19251d9d7dd73a3d76"
+    }
+  }
+}

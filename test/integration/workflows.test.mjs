@@ -10,9 +10,10 @@ const pkg = JSON.parse(await read('package.json'));
 const input = (name) => ci.match(new RegExp(`\\n {6}${name}: (.+)\\n`))?.[1];
 const block = (name) => ci.match(new RegExp(`\\n {6}${name}: \\|\\n((?: {8}.*\\n)+)`))?.[1];
 
-test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; vault drift is the only other workflow', async () => {
+test('CI uses the pinned shared pipeline; lease interop and vault drift have independent workflows', async () => {
   assert.deepEqual(await readdir(new URL('../../.github/workflows/', import.meta.url)), [
     'ci.yml',
+    'lease-interop.yml',
     'vault-drift.yml',
   ]);
   assert.deepEqual(await readdir(new URL('../../.github/', import.meta.url)), ['workflows']);
@@ -25,6 +26,33 @@ test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the h
     )
   );
   assert.deepEqual(ci.split('\njobs:\n')[1].match(/^ {2}[a-z-]+:$/gm), ['  ci:']);
+});
+
+test('the broker row is required whenever its inputs change, on PRs and main merge groups', async () => {
+  const row = await read('.github/workflows/lease-interop.yml');
+  assert.match(row, /on:\n {2}pull_request:\n {2}merge_group:\n {4}branches: \[main\]/);
+  assert.match(row, /permissions:\n {2}contents: read/);
+  assert.match(row, /git diff --name-only --no-renames "\$BASE\.\.\.\$HEAD"/);
+  for (const path of [
+    '.github/workflows/lease-interop.yml',
+    'src/seed/lease-*.js',
+    'src/seed/tray.js',
+    'test/integration/lease-interop/',
+    'test/integration/lease-*.mjs',
+    'test/integration/fake-hub.mjs',
+  ])
+    assert.ok(row.includes(path), path);
+  assert.match(row, /if: needs\.paths\.outputs\.selected == 'true'/);
+  assert.match(
+    row,
+    /node --test --test-timeout=120000 test\/integration\/lease-interop\/broker\.test\.mjs/
+  );
+  assert.doesNotMatch(
+    row,
+    /continue-on-error|pull_request_target|secrets:|id-token:|environment:|workflow_dispatch/
+  );
+  for (const line of row.split('\n'))
+    if (line.includes('uses:')) assert.match(line, /uses: actions\/[\w-]+@[0-9a-f]{40}$/);
 });
 
 test('vault drift compares vault-preview to the root pin on main and on a schedule, never on a pull request or merge group', async () => {

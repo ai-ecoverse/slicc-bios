@@ -41,7 +41,12 @@ function bootstraps(hub) {
           code: 'INVALID_JOIN_CAPABILITY',
           error: 'The tray hub knows no such join capability.',
         };
-      const tray = { trayId: `t${token}`, controllerId: body.controllerId, role: 'follower' };
+      const tray = {
+        trayId: `t${token}`,
+        controllerId: body.controllerId,
+        role: 'follower',
+        trust: seat ? 'biscotto' : 'full',
+      };
       const socket = leader(token);
       if (!body.action) {
         hub.attaches.push(body);

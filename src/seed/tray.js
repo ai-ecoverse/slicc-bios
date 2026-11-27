@@ -1,4 +1,5 @@
 import { WEBHOOK } from './bridge-cdp.js';
+import { leaseFollowers, requireLeaseBuild } from './lease-peer.js';
 import { device, failure, offerLink } from './link.js';
 
 export const SESSION_KEY = 'slicc-os.tray';
@@ -542,19 +543,77 @@ export function seatNotices(guests, notices) {
   return { mint: (draft) => guests.mint(draft), revoke };
 }
 
-export function createTray({
-  links,
-  origin = location.origin,
-  page = origin,
-  fetch: fetcher = (...args) => fetch(...args),
-  WebSocket: Socket = WebSocket,
-  storage = localStorage,
-  timers = globalThis,
-  onWebhook = null,
-  onGuest = null,
-  makePeer = (config) => new RTCPeerConnection(config),
-  now = Date.now,
-}) {
+export function createTray(options) {
+  return leadTray(options);
+}
+
+export function createLeaseTray(config) {
+  requireLeaseBuild();
+  const { job, broker, certificate, ...options } = config;
+  const hub = URL.parse(options.origin);
+  if (
+    !hub ||
+    hub.username ||
+    hub.password ||
+    hub.search ||
+    hub.hash ||
+    (hub.protocol !== 'https:' &&
+      !(hub.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(hub.hostname)))
+  )
+    throw new Error('Use a protected tray hub (HTTPS, or loopback for a local fixture).');
+  const store = new Map();
+  return leadTray(
+    {
+      ...options,
+      links: null,
+      onGuest: null,
+      onWebhook: null,
+      storage: { getItem: (key) => store.get(key), setItem: (key, value) => store.set(key, value) },
+    },
+    { job, broker, certificate }
+  );
+}
+
+function trayPeers(lease, members, guest) {
+  const { send, makePeer, timers } = guest;
+  if (lease) {
+    const restricted = leaseFollowers({
+      ...lease,
+      makePeer,
+      timers,
+      refuse: refusal(send),
+      relay: (...ids) => relay(send, ...ids),
+      runtime: FOLLOWER,
+    });
+    return { restricted, follower: restricted };
+  }
+  const { links, devices, unlinked, save } = members;
+  const follower = followers({
+    links,
+    send,
+    devices: () => devices,
+    unlinked,
+    pinned: () => remember(links, devices, save),
+  });
+  return { follower, ...guestSide(guest) };
+}
+
+function leadTray(
+  {
+    links,
+    origin = location.origin,
+    page = origin,
+    fetch: fetcher = (...args) => fetch(...args),
+    WebSocket: Socket = WebSocket,
+    storage = localStorage,
+    timers = globalThis,
+    onWebhook = null,
+    onGuest = null,
+    makePeer = (config) => new RTCPeerConnection(config),
+    now = Date.now,
+  },
+  lease
+) {
   const listeners = new Set();
   let session = read(storage, SESSION_KEY, null);
   const devices = read(storage, DEVICES_KEY, {});
@@ -580,23 +639,11 @@ export function createTray({
     return true;
   };
 
-  const follower = followers({
-    links,
-    send,
-    devices: () => devices,
-    unlinked,
-    pinned: () => remember(links, devices, save),
-  });
-  const { seats, guestHub } = guestSide({
-    storage,
-    now,
-    send,
-    makePeer,
-    onGuest,
-    timers,
-    hub,
-    page,
-  });
+  const { restricted, follower, seats, guestHub } = trayPeers(
+    lease,
+    { links, devices, unlinked, save },
+    { storage, now, send, makePeer, onGuest, timers, hub, page }
+  );
   const handlers = {
     'leader.connected': () => {
       state = 'ready';
@@ -674,9 +721,9 @@ export function createTray({
     );
   }
 
-  links.on(() => remember(links, devices, save));
+  if (!restricted) links.on(() => remember(links, devices, save));
 
-  return {
+  const signaling = {
     on(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -695,9 +742,19 @@ export function createTray({
       const old = socket;
       socket = null;
       old?.close();
+      restricted?.close();
       state = 'idle';
       changed();
     },
+  };
+  if (restricted)
+    return {
+      ...signaling,
+      status: () => ({ state }),
+      pairing: () => (state === 'ready' ? { joinUrl: session.joinUrl } : null),
+    };
+  return {
+    ...signaling,
     guests: guestHub,
     status: () => described(state, error, session, page),
     away: () => awayDevices(devices, links),
