@@ -66,6 +66,7 @@ export function fakeOpspile({ accounts }) {
     receipts: new Map(),
     calls: [],
     fail: [],
+    audience: 'shared',
     next: 5,
   };
   const unread = (thread) => {
@@ -121,6 +122,7 @@ export function fakeOpspile({ accounts }) {
         next: null,
         unreadThreads: unreadThreads(),
         changeCursor: `c${state.events.length}`,
+        ...(state.audience ? { audience: state.audience } : {}),
       });
     }
     if (request.method === 'GET' && path === 'changes') {

@@ -5,7 +5,7 @@ import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { GAP, WAITING } from '../../src/seed/support.js';
+import { GAP, ONLY_YOU, RELIST, WAITING } from '../../src/seed/support.js';
 import { pressDeep, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeLlm } from './fake-llm.mjs';
@@ -362,6 +362,25 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   assert.deepEqual(reply.body, { body: 'Thanks, it works now.' });
   assert.match(reply.key, /\S/);
   await page.until(() => window.panel()?.querySelectorAll('article.message[data-id]').length === 4);
+  const audience = () =>
+    page.evaluate(() => ({
+      status: window.support().status().audience ?? null,
+      note: window.panelText('[data-audience]'),
+    }));
+  assert.deepEqual(await audience(), {
+    status: null,
+    note: 'Your team and Adobe Support can read this. Only what you write here is sent.',
+  });
+
+  opspile.state.audience = 'individual';
+  opspile.supportReply('sup-preview', 'Noted.');
+  await page.until((only) => window.support().status().audience === only, ONLY_YOU);
+  await page.until(() => window.panel()?.querySelectorAll('article.message[data-id]').length === 5);
+  assert.deepEqual(await audience(), {
+    status: ONLY_YOU,
+    note: 'Only you and Adobe Support can read this. Only what you write here is sent.',
+  });
+  await page.screenshot(new URL('individual.png', page.dir));
 
   await page.evaluate(() => window.inPanel('[data-action="back"]')?.click());
   await pressDeep(page, '[data-action="new-request"]');
@@ -420,10 +439,12 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   );
 
   const relisted = lists().length;
+  opspile.state.audience = 'shared';
   opspile.state.fail.push({ path: /^changes$/, status: 410, code: 'cursor_expired' });
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await eventually(() => lists().length > relisted, 'a 410 starts again from the list');
   await page.until(() => window.support().status().state === 'ready');
+  await page.until(() => !('audience' in window.support().status()));
 
   const kept = await page.evaluate(() => window.support().threads().length);
   opspile.state.fail.push({
@@ -439,6 +460,29 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   assert.equal(await page.evaluate(() => window.support().threads().length), kept);
   await page.until(() => window.support().status().state === 'ready');
 
+  opspile.state.audience = 'individual';
+  const unlisted = lists().length;
+  const drained = changes().length;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await eventually(() => changes().length > drained, 'a wake asks for changes');
+  await new Promise((resolve) => setTimeout(resolve, GAP));
+  assert.equal(lists().length, unlisted, 'no change and a fresh list: no relist');
+  assert.equal(await page.evaluate(() => 'audience' in window.support().status()), false);
+  await page.evaluate((ahead) => {
+    const real = Date.now;
+    window.realNow = real;
+    Date.now = () => real() + ahead;
+  }, RELIST + GAP);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.until((only) => window.support().status().audience === only, ONLY_YOU);
+  await page.evaluate(() => {
+    Date.now = window.realNow;
+  });
+  assert.equal(lists().length, unlisted + 1, 'a list 5 minutes old is relisted once');
+  assert.equal(
+    await page.evaluate(() => window.panelText('[data-audience]')),
+    'Only you and Adobe Support can read this. Only what you write here is sent.'
+  );
   await page.evaluate(() => window.inPanel('[data-action="back"]')?.click());
   await pressDeep(page, '[data-account] [data-action="sign-out"]');
   await page.until(() => !!window.inPanel('[data-sign-in]'));
@@ -461,6 +505,7 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
     account: 'Signed in as Jonas Berg (user ID JONAS5678@AdobeID), QUAYLABS@AdobeOrg',
   });
   t.diagnostic(`not-enrolled card: ${card.note} | ${card.account}`);
+  opspile.state.audience = 'shared';
   await page.screenshot(new URL('not-enrolled.png', page.dir));
   assert.deepEqual(await page.evaluate(() => window.support().threads()), []);
   assert.equal(await page.evaluate(() => window.panel().querySelectorAll('li.row').length), 0);

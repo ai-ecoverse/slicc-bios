@@ -5,6 +5,8 @@ export const SUPPORT_KEY = 'slicc-os.support';
 export const ADOBE_PROXY = 'https://adobe-llm-proxy.paolo-moz.workers.dev';
 export const POLL = 10_000;
 export const WAITING = 30_000;
+export const RELIST = 5 * 60_000;
+export const ONLY_YOU = 'Only you and Adobe Support';
 export const LONGEST = 5 * 60_000;
 export const PATIENCE = 60 * 60_000;
 export const EARLY = 30_000;
@@ -135,6 +137,8 @@ export function unenrolled({ identity, org, user }) {
   return { ...(named ? { identity: named } : {}), ...(org ? { org } : {}) };
 }
 
+export const audienceOf = (value) => (value === 'individual' ? ONLY_YOU : null);
+
 export function requestOf(error) {
   if (error?.request === 'pending') return { request: 'pending' };
   if (error?.request !== 'declined') return {};
@@ -160,6 +164,8 @@ const fresh = () => ({
   token: null,
   account: {},
   channel: null,
+  audience: null,
+  listed: 0,
   cursor: null,
   seen: new Set(),
   enrolled: false,
@@ -207,6 +213,7 @@ class Support {
       ...(identity ? { identity } : {}),
       ...(org ? { org } : {}),
       ...(s.channel ? { channel: s.channel } : {}),
+      ...(s.audience ? { audience: s.audience } : {}),
     };
   }
 
@@ -297,7 +304,14 @@ class Support {
       items: items.filter((item) => item && validId(String(item.id))).map(summary),
       unread: Number.isInteger(first.unreadThreads) ? first.unreadThreads : 0,
       cursor: typeof first.changeCursor === 'string' ? first.changeCursor : null,
+      audience: audienceOf(first.audience),
     };
+  }
+
+  keep(s, listed) {
+    s.audience = listed.audience;
+    s.listed = this.deps.now();
+    this.shown(listed.items, listed.unread);
   }
 
   async load(s) {
@@ -305,7 +319,7 @@ class Support {
     if (!listed.cursor) throw new Problem(503, 'unavailable');
     s.cursor = listed.cursor;
     s.seen = new Set();
-    this.shown(listed.items, listed.unread);
+    this.keep(s, listed);
   }
 
   remember(s, ids) {
@@ -335,9 +349,8 @@ class Support {
     const { events, unread, after } = await this.changes(s);
     const unseen = events.filter((event) => typeof event?.id === 'string' && !s.seen.has(event.id));
     const ids = unseen.map((event) => event.threadId).filter((id) => typeof id === 'string');
-    if (unseen.length) {
-      const listed = await this.relist(s);
-      this.shown(listed.items, listed.unread);
+    if (unseen.length || this.deps.now() - s.listed >= RELIST) {
+      this.keep(s, await this.relist(s));
     } else if (unread !== this.count) {
       this.shown(this.list, unread);
     }
@@ -376,6 +389,7 @@ class Support {
     s.enrolled = false;
     s.pending = request.request === 'pending';
     s.cursor = null;
+    s.audience = null;
     s.failures = 0;
     s.until = 0;
     s.last = this.deps.now();
@@ -420,7 +434,8 @@ class Support {
       s.failures = 0;
       s.until = 0;
       s.last = this.deps.now();
-      if (this.status.state !== 'ready') this.show({ ...this.who(s), state: 'ready' });
+      if (this.status.state !== 'ready' || this.status.audience !== (s.audience ?? undefined))
+        this.show({ ...this.who(s), state: 'ready' });
       this.later(s, POLL);
     } catch (error) {
       this.trouble(s, error);
@@ -558,7 +573,7 @@ export function createSupport({
   fetch: fetcher = (...args) => globalThis.fetch(...args),
   options = () => imsOptions(fetcher),
   base = SUPPORT_API,
-  now = Date.now,
+  now = () => Date.now(),
   random = Math.random,
   schedule = (run, ms) => setTimeout(run, ms),
   cancel = (id) => clearTimeout(id),
