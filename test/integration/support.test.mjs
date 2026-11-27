@@ -446,6 +446,24 @@ test('seven offers spectrum’s Support panel on its port: sign-in, list, conver
   await page.until(() => window.support().status().state === 'ready');
   await page.until(() => !('audience' in window.support().status()));
 
+  const NAMED = 'Everyone at Papermill who uses Support, and Adobe Support';
+  opspile.state.audienceName = 'Papermill';
+  opspile.supportReply('sup-preview', 'Shared with your team.');
+  await page.until((named) => window.support().status().audience === named, NAMED);
+  await page.until(() => !!window.inPanel('[data-audience]'));
+  assert.equal(
+    await page.evaluate(() => window.panelText('[data-audience]')),
+    `${NAMED} can read this. Only what you write here is sent.`
+  );
+  await page.screenshot(new URL('shared-named.png', page.dir));
+  opspile.state.audienceName = undefined;
+  opspile.supportReply('sup-preview', 'Still here.');
+  await page.until(() => !('audience' in window.support().status()));
+  assert.equal(
+    await page.evaluate(() => window.panelText('[data-audience]')),
+    'Your team and Adobe Support can read this. Only what you write here is sent.'
+  );
+
   const kept = await page.evaluate(() => window.support().threads().length);
   opspile.state.fail.push({
     path: /^changes$/,

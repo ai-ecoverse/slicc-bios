@@ -123,6 +123,7 @@ export function fakeOpspile({ accounts }) {
         unreadThreads: unreadThreads(),
         changeCursor: `c${state.events.length}`,
         ...(state.audience ? { audience: state.audience } : {}),
+        ...(state.audienceName ? { audienceName: state.audienceName } : {}),
       });
     }
     if (request.method === 'GET' && path === 'changes') {
