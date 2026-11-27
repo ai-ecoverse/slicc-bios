@@ -1,13 +1,13 @@
 {
   "broker": {
     "repo": "ai-ecoverse/slicc-cli",
-    "tag": "v1.70.6",
-    "commit": "7ef14061d14fee2812cfebb93feb19c04925290d",
-    "signer": "https://github.com/ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@refs/tags/v2.17.0",
+    "tag": "v1.70.16",
+    "commit": "66be7023a4520d64611ea5656b1d2c3192c90cd2",
+    "signer": "https://github.com/ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@refs/tags/v2.18.0",
     "files": {
-      "SHA256SUMS": "a7a8cdbef3e60d117b19e636e9d829917217b422083afe03a53fd4bafd26ece4",
-      "SHA256SUMS.sigstore.json": "71f9c51b661607ebfeadd1a22a6ba0d676813abc7402cef1d1a3ba1722e5a0e4",
-      "slicc-linux-amd64": "af56bb13e1c40392b4ecb36a4666135171dca05e05f04f9fce48a3911bca2219"
+      "SHA256SUMS": "37b949374ab23c2bd0a98ca20816faaba6f84902d5b129c4894123114bce8b0b",
+      "SHA256SUMS.sigstore.json": "7170814fbea9acd079351de1649ccf879b652d14a55abc85bca6ad253c67e0b4",
+      "slicc-linux-amd64": "8507e8c5af505564c8ac056a17f35c9df9a1ae950a2db6be571d9e669ae9a5bd"
     }
   },
   "site": {
