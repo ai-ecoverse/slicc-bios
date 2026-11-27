@@ -8,7 +8,21 @@ import { env, execPath } from 'node:process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { preview, publishBranch, ROUTE } from '../../edge/publish.mjs';
+import { label, preview, publishBranch, ROUTE } from '../../edge/publish.mjs';
+import {
+  checkout,
+  DEPLOY,
+  GATE,
+  OFF,
+  ON,
+  races,
+  refusals,
+  tree as scratch,
+  step,
+  strays,
+  swapping,
+  unnamed,
+} from './publish-tree.mjs';
 
 const src = fileURLToPath(new URL('../../src/', import.meta.url));
 const tree = (await readdir(src, { recursive: true, withFileTypes: true }))
@@ -218,5 +232,405 @@ test('a preview the route refuses with the token it was sent reports why without
     assert.deepEqual(await preview(vars, { fetcher, token }), {
       skipped: 'preview failed: refused Bearer ***',
     });
+  }
+});
+
+function actions(t) {
+  const before = {
+    url: env.ACTIONS_ID_TOKEN_REQUEST_URL,
+    token: env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
+  };
+  t.after(() => {
+    for (const [name, value] of [
+      ['ACTIONS_ID_TOKEN_REQUEST_URL', before.url],
+      ['ACTIONS_ID_TOKEN_REQUEST_TOKEN', before.token],
+    ]) {
+      if (value === undefined) delete env[name];
+      else env[name] = value;
+    }
+  });
+  env.ACTIONS_ID_TOKEN_REQUEST_URL = 'https://token.actions.example/';
+  env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'request-secret-1';
+  return {
+    ACTIONS_ID_TOKEN_REQUEST_URL: env.ACTIONS_ID_TOKEN_REQUEST_URL,
+    GITHUB_HEAD_REF: 'bb/x',
+  };
+}
+
+function recorded(route) {
+  const sent = [];
+  const fetcher = (url, init = {}) => {
+    sent.push({
+      method: init.method ?? 'GET',
+      url: String(url),
+      authorization: init.headers?.authorization,
+      length: init.headers?.['content-length'],
+      body: init.body === undefined ? undefined : Buffer.from(init.body),
+    });
+    return route.fetcher(url, init);
+  };
+  return { sent, fetcher };
+}
+
+const at = (path) => `${ROUTE}/${path}`;
+const listed = (files) => Buffer.from(JSON.stringify({ files }));
+
+test('a preview of this commit’s src/ sends the manifest read, the pending manifest, every file of src/ in order with its bytes on disk, the deletion and the final manifest, and nothing else', async () => {
+  const { sent, fetcher } = recorded(worker());
+  await publishBranch('bb/x', { fetcher, token: 't', parallel: 1 });
+  const files = await Promise.all(
+    tree.map(async (file) => {
+      const body = await readFile(join(src, file));
+      return {
+        method: 'PUT',
+        url: at(`files/${file.split('/').map(encodeURIComponent).join('/')}`),
+        authorization: 'Bearer t',
+        length: String(body.length),
+        body,
+      };
+    })
+  );
+  const plain = { authorization: 'Bearer t', length: undefined };
+  assert.deepEqual(sent, [
+    { method: 'GET', url: at('manifest'), ...plain, body: undefined },
+    {
+      method: 'PUT',
+      url: at('manifest'),
+      ...plain,
+      body: listed([...new Set(['old/gone.js', ...tree])].sort()),
+    },
+    ...files,
+    { method: 'DELETE', url: at('files/old/gone.js'), ...plain, body: undefined },
+    { method: 'PUT', url: at('manifest'), ...plain, body: listed(tree) },
+  ]);
+});
+
+async function refuses(t, made, reason, roots = [made.src, `${made.src}/`]) {
+  const vars = actions(t);
+  for (const root of roots) {
+    const route = worker();
+    const calls = [];
+    const fetcher = (url, init) => {
+      calls.push(url);
+      return String(url).startsWith(env.ACTIONS_ID_TOKEN_REQUEST_URL)
+        ? Response.json({ value: 'oidc-token' })
+        : route.fetcher(url, init);
+    };
+    const result = await preview(vars, { fetcher, root });
+    assert.deepEqual(Object.keys(result), ['refused'], root);
+    assert.match(result.refused, /^preview refused: /);
+    assert.match(result.refused.slice('preview refused: '.length), reason, root);
+    assert.match(
+      (await preview(vars, { fetcher, token: 't', root })).refused,
+      /^preview refused: /
+    );
+    await assert.rejects(publishBranch('bb/x', { fetcher, root }), /publish refused: /);
+    assert.deepEqual(calls, [], root);
+    assert.deepEqual(route.bucket.manifest, ['old/gone.js']);
+  }
+}
+
+for (const { name, layouts, root, reason } of refusals) {
+  test(`no preview is published, nothing at all is requested, and the step summary says “preview refused:”, when ${name}`, async (t) => {
+    for (const layout of layouts) await refuses(t, await scratch(t, layout, { root }), reason);
+  });
+}
+
+test('no preview is published, and nothing at all is requested, when a name in src/ isn’t UTF-8', async (t) => {
+  const made = await scratch(t);
+  const restore = await unnamed(made);
+  try {
+    await refuses(t, made, /^"src\/seed" holds a name that isn't UTF-8: 61ff$/);
+  } finally {
+    restore();
+  }
+});
+
+for (const race of races({ src: '', dir: '', outside: '' })) {
+  test(`no preview is published, and nothing at all is requested, when ${race.name}`, async (t) => {
+    for (const trailing of ['', '/']) {
+      const made = await scratch(t);
+      const { at, swap, reason } = races(made).find(({ name }) => name === race.name);
+      const restore = swapping(at, swap);
+      try {
+        await refuses(t, made, reason, [`${made.src}${trailing}`]);
+      } finally {
+        restore();
+      }
+    }
+  });
+}
+
+test('a preview refuses before writing anything when the route’s manifest lists a file that isn’t a key under the branch, or lists no files', async () => {
+  for (const files of [...strays.map((stray) => ['old/gone.js', stray]), 'x', {}, null]) {
+    const route = worker();
+    route.bucket.manifest = files;
+    const { sent, fetcher } = recorded(route);
+    const result = await preview(
+      { ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.example/', GITHUB_HEAD_REF: 'bb/x' },
+      { fetcher, token: 't' }
+    );
+    assert.match(
+      result.refused,
+      /^preview refused: the preview's manifest (lists .+, which isn't a key in the bucket|doesn't list its files)$/,
+      JSON.stringify(files)
+    );
+    assert.deepEqual(
+      sent.map(({ method, url }) => `${method} ${url}`),
+      [`GET ${at('manifest')}`],
+      JSON.stringify(files)
+    );
+    assert.deepEqual([...route.bucket.objects], ['old/gone.js']);
+  }
+});
+
+test('a preview with a parallel that isn’t a whole number above 0 requests nothing', async () => {
+  for (const parallel of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '8', null]) {
+    let calls = 0;
+    const fetcher = () => {
+      calls += 1;
+      throw new Error('no request');
+    };
+    await assert.rejects(
+      publishBranch('bb/x', { fetcher, token: 't', parallel }),
+      /^RangeError: parallel must be a whole number above 0, not /
+    );
+    assert.equal(calls, 0, String(parallel));
+  }
+});
+
+test('every run that would publish a preview checks src/ first, whatever its branch, OIDC variables or token, and a run that gets no preview still sends nothing', async (t) => {
+  const before = env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  t.after(() => {
+    if (before === undefined) delete env.ACTIONS_ID_TOKEN_REQUEST_URL;
+    else env.ACTIONS_ID_TOKEN_REQUEST_URL = before;
+  });
+  const good = await scratch(t);
+  const bad = await scratch(t, { [GATE]: ON });
+  const outcomes = { published: 0, skipped: 0 };
+  for (const branch of [
+    'bb/x',
+    'bb/X',
+    'bb/',
+    'bb/a/b',
+    'bb//x',
+    'bb/-_-',
+    'bb/lease-pilot',
+    'bb/seven',
+    'bb/www',
+    `bb/${'x'.repeat(80)}`,
+    undefined,
+    '',
+    'BB/x',
+    ' bb/x',
+    'xbb/x',
+    'renovate/x',
+    'main',
+    'lease-pilot',
+  ]) {
+    for (const url of ['https://token.actions.example/', '', undefined]) {
+      for (const token of ['t', undefined]) {
+        const vars = { GITHUB_HEAD_REF: branch, ACTIONS_ID_TOKEN_REQUEST_URL: url };
+        if (url === undefined) delete env.ACTIONS_ID_TOKEN_REQUEST_URL;
+        else env.ACTIONS_ID_TOKEN_REQUEST_URL = url;
+        const run = async (root) => {
+          const route = worker();
+          let calls = 0;
+          const fetcher = (request, init) => {
+            calls += 1;
+            return url && String(request).startsWith(url)
+              ? Response.json({ value: 'oidc-token' })
+              : route.fetcher(request, init);
+          };
+          return { result: await preview(vars, { fetcher, token, root: root.src }), calls };
+        };
+        const seen = JSON.stringify({ branch, url, token });
+        const pass = await run(good);
+        const fail = await run(bad);
+        assert.equal(fail.calls, 0, seen);
+        if (pass.calls > 0) {
+          outcomes.published += 1;
+          assert.deepEqual(pass.result, { url: 'https://bb-x.sliccy.ai/' }, seen);
+          assert.match(fail.result.refused, /^preview refused: src\/seed\/lease-build\.js/, seen);
+        } else {
+          outcomes.skipped += 1;
+          assert.match(pass.result.skipped, /gets no preview/, seen);
+          assert.deepEqual(fail.result, pass.result, seen);
+        }
+      }
+    }
+  }
+  assert.deepEqual(outcomes, { published: 20, skipped: 88 });
+});
+
+test('a preview uploads the bytes it checked, not what src/seed/lease-build.js or another file holds by the time it’s uploaded', async (t) => {
+  const vars = actions(t);
+  const { src: root } = await scratch(t);
+  const { sent, fetcher: record } = recorded(worker());
+  let changed = false;
+  const fetcher = async (url, init) => {
+    if (!changed) {
+      changed = true;
+      await writeFile(join(root, GATE), ON);
+      await writeFile(join(root, 'index.html'), 'changed\n');
+    }
+    return record(url, init);
+  };
+  assert.deepEqual(await preview(vars, { fetcher, token: 't', root, parallel: 1 }), {
+    url: 'https://bb-x.sliccy.ai/',
+  });
+  assert.equal(await readFile(join(root, GATE), 'utf8'), ON);
+  const body = (file) => sent.find(({ url }) => url === at(`files/${file}`))?.body.toString();
+  assert.equal(body(GATE), OFF);
+  assert.equal(body('index.html'), '<!doctype html>\n');
+});
+
+test('a preview lists in its manifests the files it checked, not the files src/ holds by the time it’s uploaded', async (t) => {
+  const { src: root, files } = await scratch(t);
+  const route = worker();
+  const { sent, fetcher: record } = recorded(route);
+  let changed = false;
+  const fetcher = async (url, init) => {
+    if (!changed) {
+      changed = true;
+      await writeFile(join(root, 'late.js'), 'export {};\n');
+      await rm(join(root, 'seed/boot.js'));
+    }
+    return record(url, init);
+  };
+  await publishBranch('bb/x', { fetcher, token: 't', root, parallel: 1 });
+  const manifests = sent
+    .filter(({ method, url }) => method === 'PUT' && url === at('manifest'))
+    .map(({ body }) => JSON.parse(body).files);
+  assert.deepEqual(manifests, [['old/gone.js', ...files].sort(), files]);
+  assert.deepEqual([...route.bucket.objects].sort(), files);
+  assert.equal(
+    sent.find(({ url }) => url === at('files/seed/boot.js'))?.body.toString(),
+    'export {};\n'
+  );
+});
+
+const pull = {
+  GITHUB_HEAD_REF: 'bb/x',
+  ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.example/',
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'request-secret-1',
+};
+
+test('a refused preview, run as ci.yml’s deploy step runs it, writes “preview refused:” to the step summary and as an error to the job log, sets no URL, exits 0 and sends nothing', async (t) => {
+  for (const [layout, root] of [
+    [{ [GATE]: ON }],
+    [{ [GATE]: null }],
+    [{ [GATE]: `${OFF} ` }],
+    [{ 'seed/alias.js': { link: 'boot.js' } }],
+    [{}, 'link'],
+    [{ 'seed/pipe': { fifo: true } }],
+  ]) {
+    const made = await checkout(t, layout, { root });
+    const run = await step(made, DEPLOY, { vars: pull });
+    const line = run.summary.trimEnd();
+    assert.match(line, /^preview refused: /, JSON.stringify(layout));
+    assert.deepEqual(run, {
+      status: 0,
+      late: false,
+      stdout: '',
+      stderr: `::error title=preview::${line}\n`,
+      summary: `${line}\n`,
+      output: '',
+      requests: [],
+    });
+  }
+});
+
+test('the preview reads no tree but its own src/: no environment variable and no argument makes ci.yml’s deploy step or the CLI check or upload another one', async (t) => {
+  const good = await scratch(t);
+  const made = await checkout(t, { [GATE]: ON });
+  for (const command of [
+    DEPLOY,
+    `node edge/publish.mjs preview ${JSON.stringify(good.src)}`,
+    `node edge/publish.mjs preview --root ${JSON.stringify(good.src)}`,
+    `node edge/publish.mjs preview --root=${JSON.stringify(good.src)}`,
+    `node edge/publish.mjs preview --src ${JSON.stringify(good.src)}`,
+  ]) {
+    const run = await step(made, command, { vars: pull, any: good.src });
+    assert.equal(run.status, 0, command);
+    assert.deepEqual(run.requests, [], command);
+    assert.match(
+      run.stderr,
+      /^::error title=preview::preview refused: src\/seed\/lease-build\.js isn't exactly /
+    );
+  }
+  const fine = await checkout(t);
+  const run = await step(fine, DEPLOY, { vars: pull, any: good.src });
+  assert.equal(run.status, 0);
+  assert.equal(run.requests.length, 1);
+  assert.ok(run.requests[0].startsWith(pull.ACTIONS_ID_TOKEN_REQUEST_URL), run.requests[0]);
+  assert.equal(run.summary, 'preview failed: this test sends no request\n');
+});
+
+test('a preview that meets a FIFO in src/, there from the start or swapped in after its check, refuses without waiting on it', async (t) => {
+  for (const fifo of [false, true]) {
+    const made = await checkout(t, fifo ? {} : { [GATE]: { fifo: true } });
+    const run = await step(made, DEPLOY, {
+      vars: pull,
+      fifo: fifo ? join(made.src, GATE) : undefined,
+    });
+    assert.equal(run.late, false);
+    assert.equal(run.status, 0);
+    assert.deepEqual(run.requests, []);
+    assert.equal(run.summary, 'preview refused: "src/seed/lease-build.js" isn\'t a regular file\n');
+  }
+});
+
+test('a branch whose name comes down to lease-pilot, however it is cased, separated or padded, gets no host of its own and publishes nothing', async () => {
+  const route = worker();
+  let calls = 0;
+  const fetcher = (...args) => {
+    calls += 1;
+    return route.fetcher(...args);
+  };
+  for (const branch of [
+    'lease-pilot',
+    'LEASE-PILOT',
+    'Lease-Pilot',
+    'lEaSe-PiLoT',
+    'lease_pilot',
+    'LEASE_PILOT',
+    'lease.pilot',
+    'lease pilot',
+    'lease+pilot',
+    'lease\u2013pilot',
+    'lease--pilot',
+    'lease__pilot',
+    'lease-_-pilot',
+    'lease/pilot',
+    'lease//pilot',
+    'lease\\pilot',
+    '-lease-pilot',
+    'lease-pilot-',
+    '--lease-pilot--',
+    '_lease_pilot',
+    'lease_pilot_',
+    '__lease__pilot__',
+    '-_lease_-_pilot_-',
+    ' lease pilot ',
+    '/lease-pilot',
+    'lease-pilot/',
+    '/lease/pilot/',
+    '//lease-pilot//',
+  ]) {
+    assert.throws(() => label(branch), /has no host of its own/, branch);
+    await assert.rejects(
+      publishBranch(branch, { fetcher, token: 't' }),
+      /has no host of its own/,
+      branch
+    );
+  }
+  assert.equal(calls, 0);
+  for (const [branch, host] of [
+    ['lease-pilots', 'lease-pilots'],
+    ['lease-pilot-2', 'lease-pilot-2'],
+    ['bb/edge-hosting', 'bb-edge-hosting'],
+  ]) {
+    assert.equal(label(branch), host);
   }
 });
