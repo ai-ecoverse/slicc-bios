@@ -15,10 +15,10 @@ importers:
     dependencies:
       '@ai-ecoverse/slicc-agent':
         specifier: 8.2.6
-        version: 8.2.6(@ai-ecoverse/slicc-kernel@1.191.4)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
+        version: 8.2.6(@ai-ecoverse/slicc-kernel@1.193.1)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.191.4
-        version: 1.191.4
+        specifier: 1.193.1
+        version: 1.193.1
 
 packages:
 
@@ -32,8 +32,8 @@ packages:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
 
-  '@ai-ecoverse/slicc-kernel@1.191.4':
-    resolution: {integrity: sha512-BpTXR98nh/Yyjp+MNU+PDAx39jItqmzx37NbBWoQgPevAlftDLPu37F6+IZLTKcVLUwkT1tCXpmueBaOhm2LXw==}
+  '@ai-ecoverse/slicc-kernel@1.193.1':
+    resolution: {integrity: sha512-POVCLEBmsNKT4mdhQ+0lg2IGSeFxeIju+hOusOforzhKda0P34m7xCfou4gUQCmPjKGC38jl1eXn/j98TrbNhA==}
     engines: {node: '>=26'}
 
   '@anthropic-ai/sdk@0.129.0':
@@ -343,9 +343,9 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@8.2.6(@ai-ecoverse/slicc-kernel@1.191.4)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)':
+  '@ai-ecoverse/slicc-agent@8.2.6(@ai-ecoverse/slicc-kernel@1.193.1)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)':
     dependencies:
-      '@ai-ecoverse/slicc-kernel': 1.191.4
+      '@ai-ecoverse/slicc-kernel': 1.193.1
       '@aws-sdk/middleware-websocket': 3.972.54
       '@earendil-works/chord': 1.5.2
       '@earendil-works/pi-ai': 1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
@@ -369,7 +369,7 @@ snapshots:
       - ws
       - zod
 
-  '@ai-ecoverse/slicc-kernel@1.191.4': {}
+  '@ai-ecoverse/slicc-kernel@1.193.1': {}
 
   '@anthropic-ai/sdk@0.129.0':
     dependencies:
