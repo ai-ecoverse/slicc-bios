@@ -3,7 +3,7 @@ import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { IMS_ORIGINS, RELAY, SIGN_IN_CLIENTS } from './adobe.js';
 import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
 import { crossOriginPage, emptyNoAccess, hold, inFlight, isHeld } from './held.js';
-import { maybeProbeErrorPageMeta } from './probe-meta.js';
+import { maybeProbeErrorPageMeta, maybeProbeFromLearned } from './probe-meta.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -1596,6 +1596,7 @@ class Guard {
       at: Date.now(),
       info,
     });
+    maybeProbeFromLearned(this, info.targetId, { url: info.url });
   }
 
   async lookup(targetId) {
@@ -6029,6 +6030,14 @@ class Guard {
     )
       return;
     const frames = this.documentFrames(tree);
+    if (this.route === 'link' && frames?.length) {
+      for (const seen of frames) {
+        maybeProbeFromLearned(this, nav.targetId, {
+          url: seen?.url,
+          unreachableUrl: seen?.unreachableUrl,
+        });
+      }
+    }
     const frame = frames?.length === 1 ? frames[0] : undefined;
     if (
       !frame ||

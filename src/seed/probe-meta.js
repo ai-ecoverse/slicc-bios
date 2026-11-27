@@ -4,6 +4,9 @@ const PROBE_GONE =
 export const ERROR_PAGE_REFUSAL =
   "slicc: refused: the target shows Chrome's error page for a protected URL, which names it; slicc only lets a page navigate, reload or close it";
 
+export const HISTORY_RESTORE_REFUSAL =
+  "slicc: refused: the target's history may restore a protected document";
+
 export const PROBE_ANSWER_MS = 1000;
 
 export const urlScheme = (url) => {
@@ -17,6 +20,18 @@ export const urlOrigin = (url) => {
 };
 
 export const probeMetaLine = (fields) => `PROBE-META: ${JSON.stringify(fields)}`;
+
+export const refusalTrigger = (message) => {
+  if (message === ERROR_PAGE_REFUSAL) return 'a';
+  if (message === HISTORY_RESTORE_REFUSAL) return 'b';
+  return undefined;
+};
+
+export const learnedErrorSignal = ({ url, unreachableUrl } = {}) => {
+  const chromeError = typeof url === 'string' && url.startsWith('chrome-error:');
+  const unreachable = typeof unreachableUrl === 'string' && unreachableUrl.length > 0;
+  return chromeError || unreachable;
+};
 
 export function probeMetaCall(guard, method, params, sessionId) {
   if (guard.closed || (sessionId !== undefined && guard.gone.has(sessionId)))
@@ -42,12 +57,20 @@ export function probeMetaCall(guard, method, params, sessionId) {
 }
 
 export async function maybeProbeErrorPageMeta(guard, answer, targetId) {
-  if (answer?.error?.message !== ERROR_PAGE_REFUSAL) return answer;
-  await probeErrorPageMeta(guard, targetId);
+  const trigger = refusalTrigger(answer?.error?.message);
+  if (!trigger) return answer;
+  await probeErrorPageMeta(guard, targetId, trigger);
   return answer;
 }
 
-export async function probeErrorPageMeta(guard, targetId) {
+export function maybeProbeFromLearned(guard, targetId, signal) {
+  if (guard.route !== 'link') return;
+  if (!learnedErrorSignal(signal)) return;
+  if (guard.probeMetaDone.has(targetId)) return;
+  void probeErrorPageMeta(guard, targetId, 'c');
+}
+
+export async function probeErrorPageMeta(guard, targetId, trigger) {
   if (guard.probeMetaDone.has(targetId)) return;
   guard.probeMetaDone.add(targetId);
   const infoAnswer = await guard.within(
@@ -57,6 +80,7 @@ export async function probeErrorPageMeta(guard, targetId) {
   if (infoAnswer?.error) {
     console.warn(
       probeMetaLine({
+        trigger,
         method: 'Target.getTargetInfo',
         answered: false,
         refusal: infoAnswer.error.message,
@@ -65,6 +89,7 @@ export async function probeErrorPageMeta(guard, targetId) {
   } else {
     console.warn(
       probeMetaLine({
+        trigger,
         method: 'Target.getTargetInfo',
         answered: true,
         targetInfoUrlScheme: urlScheme(infoAnswer?.result?.targetInfo?.url),
@@ -76,6 +101,7 @@ export async function probeErrorPageMeta(guard, targetId) {
   if (!session) {
     console.warn(
       probeMetaLine({
+        trigger,
         method: 'Page.getFrameTree',
         answered: false,
         refusal: 'no bios session',
@@ -90,6 +116,7 @@ export async function probeErrorPageMeta(guard, targetId) {
   if (treeAnswer?.error) {
     console.warn(
       probeMetaLine({
+        trigger,
         method: 'Page.getFrameTree',
         answered: false,
         refusal: treeAnswer.error.message,
@@ -101,6 +128,7 @@ export async function probeErrorPageMeta(guard, targetId) {
   const unreachable = frame?.unreachableUrl;
   console.warn(
     probeMetaLine({
+      trigger,
       method: 'Page.getFrameTree',
       answered: true,
       frameUrlScheme: urlScheme(frame?.url),
