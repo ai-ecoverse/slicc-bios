@@ -137,7 +137,15 @@ export function unenrolled({ identity, org, user }) {
   return { ...(named ? { identity: named } : {}), ...(org ? { org } : {}) };
 }
 
-export const audienceOf = (value) => (value === 'individual' ? ONLY_YOU : null);
+export const NAME_LIMIT = 200;
+
+export function audienceOf(value, name) {
+  if (value === 'individual') return ONLY_YOU;
+  if (value !== 'shared' || typeof name !== 'string') return null;
+  const named = name.replace(/[\p{Cc}\p{Cf}\s]+/gu, ' ').trim();
+  if (!named || [...named].length > NAME_LIMIT) return null;
+  return `Everyone at ${named} who uses Support, and Adobe Support`;
+}
 
 export function requestOf(error) {
   if (error?.request === 'pending') return { request: 'pending' };
@@ -304,7 +312,7 @@ class Support {
       items: items.filter((item) => item && validId(String(item.id))).map(summary),
       unread: Number.isInteger(first.unreadThreads) ? first.unreadThreads : 0,
       cursor: typeof first.changeCursor === 'string' ? first.changeCursor : null,
-      audience: audienceOf(first.audience),
+      audience: audienceOf(first.audience, first.audienceName),
     };
   }
 
