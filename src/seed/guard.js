@@ -3,6 +3,7 @@ import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { IMS_ORIGINS, RELAY, SIGN_IN_CLIENTS } from './adobe.js';
 import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
 import { crossOriginPage, emptyNoAccess, hold, inFlight, isHeld } from './held.js';
+import { maybeProbeErrorPageMeta } from './probe-meta.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -1213,6 +1214,7 @@ class Guard {
     this.contexts = new Set();
     this.worlds = new Map();
     this.probeContexts = new Map();
+    this.probeMetaDone = new Set();
     this.frameLoaders = new Map();
     this.runtimes = new Set();
     this.primed = new Set();
@@ -3942,7 +3944,7 @@ class Guard {
         record.message.sessionId
       ),
       record.deadline ? Math.max(0, Math.min(ANSWER_MS, record.deadline - Date.now())) : ANSWER_MS
-    );
+    ).then((answer) => maybeProbeErrorPageMeta(this, answer, record.targetId));
   }
 
   unconfirmedContext(record, started, why) {
