@@ -50,7 +50,7 @@
   },
   "devDependencies": {
     "@ai-ecoverse/cherry": "6.260.21",
-    "@ai-ecoverse/slicc": "1.69.4",
+    "@ai-ecoverse/slicc": "1.70.4",
     "@ai-ecoverse/slicc-browsers": "1.40.1",
     "@ai-ecoverse/slicc-cdp": "2.1.33",
     "@ai-ecoverse/slicc-kernel": "1.191.4",
