@@ -274,6 +274,7 @@ await step('seed', async () => {
     'policy.js',
     'projects.js',
     'present.js',
+    'probe-meta.js',
     'profile.js',
     'recording.js',
     'redirects.js',
