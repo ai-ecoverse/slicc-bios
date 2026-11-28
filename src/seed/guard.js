@@ -2,6 +2,16 @@ import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'jso
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { IMS_ORIGINS, RELAY, SIGN_IN_CLIENTS } from './adobe.js';
 import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
+import {
+  attachmentProofFor,
+  clearErrorPageProof,
+  liveErrorPageProof,
+  recoverRuntimeErrorPage,
+  revokeErrorPageProof,
+  setErrorPageProof,
+  treeErrorPageProof,
+  waitErrorPageProof,
+} from './guard-error-page.js';
 import { crossOriginPage, emptyNoAccess, hold, inFlight, isHeld } from './held.js';
 
 export const PROTECTED =
@@ -1214,6 +1224,7 @@ class Guard {
     this.worlds = new Map();
     this.probeContexts = new Map();
     this.frameLoaders = new Map();
+    this.errorPageProofs = new Map();
     this.runtimes = new Set();
     this.primed = new Set();
     this.targets = new Map();
@@ -3059,11 +3070,12 @@ class Guard {
     this.frames.set(frame.id, this.framed(frame));
     if (typeof frame.loaderId === 'string' && frame.loaderId) {
       const previous = this.frameLoaders.get(frame.id);
-      this.frameLoaders.set(frame.id, frame.loaderId);
       if (previous !== undefined && previous !== frame.loaderId) {
         this.forgetProbeFrame(frame.id);
         this.forgetFailedUrl(targetId);
+        revokeErrorPageProof(this, targetId);
       }
+      this.frameLoaders.set(frame.id, frame.loaderId);
     }
     if (frame.parentId) {
       this.parents.set(frame.id, frame.parentId);
@@ -3116,9 +3128,7 @@ class Guard {
         !this.relatedHeld(targetId) &&
         nav?.session &&
         nav.done &&
-        (nav.admitted ||
-          !established ||
-          (this.route === 'link' && this.errorPageByProof(targetId))) &&
+        (nav.admitted || !established || this.errorPageByProof(targetId)) &&
         !nav.failed &&
         !nav.held &&
         !nav.taken &&
@@ -3131,7 +3141,8 @@ class Guard {
       proof &&
         this.navs.get(proof.targetId) === proof.nav &&
         this.revisions.get(proof.targetId) === proof.revision &&
-        this.strandable(proof.targetId, proof.nav)
+        this.strandable(proof.targetId, proof.nav) &&
+        (!proof.loader || (proof.frameId && this.frameLoaders.get(proof.frameId) === proof.loader))
     );
   }
 
@@ -3141,18 +3152,51 @@ class Guard {
     );
   }
 
-  async stranded(targetId) {
-    let nav = this.navs.get(targetId);
-    if (
-      !nav &&
-      this.tabs.get(targetId)?.admitted &&
-      this.tabs.get(targetId)?.error &&
-      !this.relatedHeld(targetId)
-    ) {
-      this.touch(targetId);
-      nav = this.navs.get(targetId);
-      if (nav) await nav.ready;
+  async reviveTabNav(targetId) {
+    if (this.navs.get(targetId)) return this.navs.get(targetId);
+    const tab = this.tabs.get(targetId);
+    if (!tab?.admitted || !tab.error || this.relatedHeld(targetId)) return null;
+    this.touch(targetId);
+    const nav = this.navs.get(targetId);
+    if (nav) await nav.ready;
+    return nav;
+  }
+
+  sealStrandedProof(targetId, nav, frames, proof) {
+    for (const frame of frames) this.noteError(frame, nav.session);
+    if (frames[0].url === ERROR_PAGE && this.protectedFrame(frames[0]) && !nav.scrub) {
+      nav.scrub = this.scrubbing(nav, frames[0]);
+      nav.erred = true;
     }
+    this.targets.get(targetId).real = false;
+    if (this.is.url(this.targets.get(targetId).reported))
+      for (const [id, entry] of this.sessions)
+        if (entry.targetId === targetId && !this.quarantined.has(id))
+          this.quarantine(id, this.hints.get(targetId) ?? {});
+    setErrorPageProof(this, targetId, {
+      nav,
+      revision: proof.revision,
+      frameId: proof.frameId,
+      loader: proof.loader,
+    });
+    return proof;
+  }
+
+  liveErrorPageProof(targetId) {
+    return liveErrorPageProof(this, targetId);
+  }
+
+  clearErrorPageProof(targetId) {
+    return clearErrorPageProof(this, targetId);
+  }
+
+  runtimeErrorPagePrivilege(sessionId, method) {
+    if (method !== 'Runtime.enable' && method !== 'Runtime.disable') return false;
+    return this.liveErrorPageProof(this.sessions.get(sessionId)?.targetId);
+  }
+
+  async stranded(targetId) {
+    const nav = (await this.reviveTabNav(targetId)) ?? this.navs.get(targetId);
     if (!this.strandable(targetId, nav)) return null;
     if (!(await this.placed(nav.session)) || !this.strandable(targetId, nav)) return null;
     const proof = { targetId, nav, revision: this.revisions.get(targetId) };
@@ -3164,19 +3208,18 @@ class Guard {
       this.commitScope(targetId);
       return null;
     }
+    if (
+      typeof frames[0].id === 'string' &&
+      typeof frames[0].loaderId === 'string' &&
+      frames[0].loaderId
+    ) {
+      proof.frameId = frames[0].id;
+      proof.loader = frames[0].loaderId;
+      this.frameLoaders.set(frames[0].id, frames[0].loaderId);
+    }
     proof.view = this.errorView(targetId, frames);
     if (!this.fresh(proof)) return null;
-    for (const frame of frames) this.noteError(frame, nav.session);
-    if (frames[0].url === ERROR_PAGE && this.protectedFrame(frames[0]) && !nav.scrub) {
-      nav.scrub = this.scrubbing(nav, frames[0]);
-      nav.erred = true;
-    }
-    this.targets.get(targetId).real = false;
-    if (this.is.url(this.targets.get(targetId).reported))
-      for (const [id, entry] of this.sessions)
-        if (entry.targetId === targetId && !this.quarantined.has(id))
-          this.quarantine(id, this.hints.get(targetId) ?? {});
-    return proof;
+    return this.sealStrandedProof(targetId, nav, frames, proof);
   }
 
   async frame(frameId, strict = false) {
@@ -3239,6 +3282,7 @@ class Guard {
     this.refusePending(sessionId);
     const entry = this.sessions.get(sessionId);
     const targetId = entry?.targetId;
+    if (targetId) this.clearErrorPageProof(targetId);
     for (const [child, owned] of this.sessions)
       if (
         child !== sessionId &&
@@ -3807,6 +3851,7 @@ class Guard {
 
   async proveContent(message) {
     if (!message.sessionId || !contentRead(message.method)) return true;
+    if (this.runtimeErrorPagePrivilege(message.sessionId, message.method)) return true;
     const owner = this.sessions.get(message.sessionId)?.targetId;
     for (const record of this.contextChecks.get(message.sessionId)?.values() ?? [])
       if (!record.done && (await this.answered(record.promise)) !== true) return false;
@@ -4132,6 +4177,8 @@ class Guard {
         commit.url !== this.framed(frame))
     )
       this.proofCommits.delete(targetId);
+    if (nav && (root === frame.id || !frame.parentId) && !frame.url.startsWith('chrome-error:'))
+      this.clearErrorPageProof(targetId);
     if (
       nav &&
       (root === frame.id || !frame.parentId) &&
@@ -4460,20 +4507,36 @@ class Guard {
     return (await this.current(targetId)) ? PROTECTED : UNANSWERED;
   }
 
+  errorPageRoot(tree) {
+    const frames = this.documentFrames(tree);
+    const frame = frames?.length && !frames[0].parentId ? frames[0] : null;
+    return frame &&
+      typeof frame.url === 'string' &&
+      frame.url.startsWith('chrome-error:') &&
+      typeof frame.id === 'string' &&
+      typeof frame.loaderId === 'string' &&
+      frame.loaderId &&
+      this.protectedFrame(frame)
+      ? frame
+      : null;
+  }
+
   errorPageByProof(targetId, tree) {
-    if (tree !== undefined) {
-      const frames = this.documentFrames(tree);
-      return Boolean(
-        frames?.length &&
-          !frames[0].parentId &&
-          typeof frames[0].url === 'string' &&
-          frames[0].url.startsWith('chrome-error:')
-      );
-    }
+    if (tree !== undefined) return Boolean(this.errorPageRoot(tree));
+    const root = this.frameRoots.get(targetId);
+    const failed = root ? this.errorUrls.get(root) : undefined;
+    if (
+      root &&
+      this.errorFrames.has(root) &&
+      typeof failed === 'string' &&
+      failed &&
+      this.unsafeUrl(failed) &&
+      this.errorPageProofs.has(targetId)
+    )
+      return true;
     const urls = [];
     const target = this.targets.get(targetId);
     if (typeof target?.url === 'string' && target.url) urls.push(target.url);
-    const root = this.frameRoots.get(targetId);
     if (root) {
       if (this.errorFrames.has(root)) urls.push(ERROR_PAGE);
       else {
@@ -4486,6 +4549,14 @@ class Guard {
     if (nav?.document && typeof nav.document.url === 'string' && nav.document.url)
       urls.push(nav.document.url);
     return urls.length > 0 && urls.every((url) => url.startsWith('chrome-error:'));
+  }
+
+  errorPageInfoMatches(frame, info) {
+    if (this.route !== 'link') return true;
+    if (!info || !frame || typeof info.url !== 'string') return false;
+    if (info.url.startsWith('chrome-error:')) return true;
+    if (!this.is.url(info.url)) return true;
+    return frame.unreachableUrl === info.url;
   }
 
   ownSetupRefused(message) {
@@ -4508,61 +4579,61 @@ class Guard {
     return this.route === 'link' && this.setupRefusalOnly(errors) && proven;
   }
 
-  async waitErrorPageProof(targetId, limit = HISTORY_WAIT) {
-    if (this.errorPageByProof(targetId)) return true;
-    const deadline = Date.now() + limit;
-    while (Date.now() < deadline) {
-      const left = deadline - Date.now();
-      if (left <= 0) break;
-      await this.proofSignal(targetId, Math.min(POLL_MS, left));
-      if (this.errorPageByProof(targetId)) return true;
-      const answer = await this.within(
-        this.call('Target.getTargetInfo', { targetId }),
-        Math.min(ANSWER_MS, Math.max(0, deadline - Date.now()))
-      );
-      const info = answer?.result?.targetInfo;
-      if (info?.targetId === targetId) this.learn(info);
-      if (this.errorPageByProof(targetId)) return true;
-      const nav = this.navs.get(targetId);
-      if (nav?.session) {
-        const tree = await this.within(
-          this.call('Page.getFrameTree', {}, nav.session),
-          Math.min(ANSWER_MS, Math.max(0, deadline - Date.now()))
-        );
-        if (tree && !tree.error) {
-          this.rememberTreeError(
-            tree.result?.frameTree,
-            nav.session,
-            nav,
-            this.revisions.get(targetId)
-          );
-          if (this.errorPageByProof(targetId, tree.result?.frameTree)) return true;
-        }
-      }
-    }
-    return this.errorPageByProof(targetId);
+  bindErrorPageFrame(targetId, frame, frameTree, session, nav) {
+    this.frameRoots.set(targetId, frame.id);
+    this.frameLoaders.set(frame.id, frame.loaderId);
+    this.noteError(frame, session);
+    if (typeof frame.unreachableUrl === 'string' && frame.unreachableUrl)
+      this.rememberFailedUrl(targetId, frame.unreachableUrl, frame.id, frame.loaderId);
+    this.rememberTreeError(frameTree, session, nav, this.revisions.get(targetId));
+    setErrorPageProof(this, targetId, {
+      nav,
+      revision: this.revisions.get(targetId),
+      frameId: frame.id,
+      loader: frame.loaderId,
+    });
+    return true;
+  }
+
+  waitErrorPageProof(targetId, limit = HISTORY_WAIT) {
+    return waitErrorPageProof(this, targetId, limit);
+  }
+
+  treeErrorPageProof(targetId, nav = this.navs.get(targetId)) {
+    return treeErrorPageProof(this, targetId, nav);
   }
 
   async freshErrorPageTree(targetId, nav = this.navs.get(targetId)) {
     if (!nav?.session) return false;
+    const infoAnswer = await this.within(
+      this.call('Target.getTargetInfo', { targetId }),
+      ANSWER_MS
+    );
+    const info = infoAnswer?.result?.targetInfo;
+    if (info?.targetId === targetId && !infoAnswer?.error) this.learn(info);
     const tree = await this.within(this.call('Page.getFrameTree', {}, nav.session), ANSWER_MS);
-    return Boolean(tree && !tree.error && this.errorPageByProof(targetId, tree.result?.frameTree));
+    if (!tree || tree.error) return false;
+    const frameTree = tree.result?.frameTree;
+    const frame = this.errorPageRoot(frameTree);
+    if (!frame || !this.errorPageInfoMatches(frame, info)) return false;
+    return this.bindErrorPageFrame(targetId, frame, frameTree, nav.session, nav);
   }
 
   async markSetupRefusal(targetId, errors) {
     const nav = this.navs.get(targetId);
     const history = this.route === 'link' && this.historyRestoreRefusal(errors);
+    const linkSetup = this.route === 'link' && this.setupRefusalOnly(errors);
     const revision = this.revisions.get(targetId);
     let proven = this.errorPageByProof(targetId);
-    if (history && !proven) {
+    if ((history || linkSetup) && !proven) {
       if (!nav?.setupProofWaited) {
         if (nav) nav.setupProofWaited = true;
-        proven = await this.waitErrorPageProof(targetId);
-      } else proven = await this.freshErrorPageTree(targetId, nav);
+        proven = await waitErrorPageProof(this, targetId);
+      } else proven = await treeErrorPageProof(this, targetId, nav);
     }
     let soft = this.setupRefusalRecoverable(errors, proven);
     if (soft && this.revisions.get(targetId) !== revision) soft = false;
-    if (soft) soft = await this.freshErrorPageTree(targetId, nav);
+    if (soft) soft = await treeErrorPageProof(this, targetId, nav);
     if (nav) {
       if (history && !soft) nav.setupRefused = true;
       if (soft) nav.setupRefused = false;
@@ -4652,6 +4723,7 @@ class Guard {
   lost(session) {
     const nav = this.navSessions.get(session);
     this.navSessions.delete(session);
+    if (nav?.targetId) this.clearErrorPageProof(nav.targetId);
     nav.session = null;
     nav.settle(true);
     nav.failed = true;
@@ -4663,7 +4735,8 @@ class Guard {
     const nav = this.navs.get(targetId);
     if (!nav) return null;
     await nav.ready;
-    if (nav.scrub && !RECOVERS.has(method)) await nav.scrub;
+    if (nav.scrub && !RECOVERS.has(method) && !this.runtimeErrorPagePrivilege(sessionId, method))
+      await nav.scrub;
     if (nav.failed || this.linkSetupRefusalBlocks(targetId, nav))
       return this.unguardedNow(targetId, nav);
     return null;
@@ -4790,19 +4863,23 @@ class Guard {
     );
   }
 
-  async attachmentProof(sessionId, targetId, raw, guarded, recoverable) {
+  attachmentProofOnce(sessionId, targetId, raw, guarded, recoverable) {
     const errorPage = this.errorPageByProof(targetId);
     const error =
       this.navs.get(targetId)?.admitted &&
       (this.targets.get(targetId)?.url?.startsWith('chrome-error:') || errorPage);
     return recoverable &&
-      (guarded || error || (this.route === 'link' && errorPage)) &&
+      (guarded || error || errorPage) &&
       (this.is.url(raw.url) ||
         this.errorDocument(sessionId) ||
         this.recalled.has(targetId) ||
-        (this.route === 'link' && errorPage))
+        errorPage)
       ? this.stranded(targetId)
       : null;
+  }
+
+  attachmentProof(sessionId, targetId, raw, guarded, recoverable) {
+    return attachmentProofFor(this, sessionId, targetId, raw, guarded, recoverable);
   }
 
   async createdTargetInfo(targetId) {
@@ -7140,6 +7217,7 @@ class Guard {
   }
 
   unsafeContent(message) {
+    if (this.runtimeErrorPagePrivilege(message.sessionId, message.method)) return false;
     const recovering = this.pendingRecovery(message);
     const quarantined = this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method);
     const sticky = recovering || quarantined;
@@ -7866,7 +7944,10 @@ class Guard {
 
   async recover(message) {
     const { method, sessionId } = message;
-    if (!RECOVERS.has(method) || sessionId === undefined) return false;
+    if (sessionId === undefined) return false;
+    if (this.runtimeErrorPagePrivilege(sessionId, method))
+      return recoverRuntimeErrorPage(this, message);
+    if (!RECOVERS.has(method)) return false;
     const ticket = this.quarantined.get(sessionId);
     if (ticket?.checking && !ticket.verified && !NAVIGATES.has(method)) return true;
     const targetId = this.sessions.get(sessionId)?.targetId;
@@ -8006,7 +8087,10 @@ class Guard {
     const guarded = await this.current(params.targetId, limit);
     const target = this.targets.get(params.targetId);
     if (target?.type === 'tab' && !this.ordinaryTab(params.targetId)) return true;
-    if (method === 'Target.attachToTarget' && !guarded) {
+    if (
+      method === 'Target.attachToTarget' &&
+      (!guarded || !this.errorPageByProof(params.targetId))
+    ) {
       this.renew(params.targetId);
       this.touch(params.targetId);
       await this.navs.get(params.targetId)?.ready;
@@ -8017,6 +8101,8 @@ class Guard {
       nav?.admitted &&
       (target?.url?.startsWith('chrome-error:') || nav.scrub);
     if (!guarded && !error) return false;
+    if (STRANDED.has(method) && (guarded || error) && !this.errorPageByProof(params.targetId))
+      await this.freshErrorPageTree(params.targetId);
     const proof = STRANDED.has(method) ? await this.stranded(params.targetId) : null;
     if (!proof) return true;
     this.recoveries.set(message, proof);
@@ -8515,6 +8601,7 @@ class Guard {
     let id = targetId;
     while (id && !seen.has(id)) {
       seen.add(id);
+      this.clearErrorPageProof(id);
       this.scope(id).committed = true;
       id = this.scopes.get(id).parent;
     }

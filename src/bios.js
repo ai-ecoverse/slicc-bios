@@ -239,6 +239,7 @@ await step('seed', async () => {
     'follower.js',
     'followers.js',
     'forward.js',
+    'guard-error-page.js',
     'guard.js',
     'handoff.js',
     'held.js',

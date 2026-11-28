@@ -32,12 +32,16 @@ const SEED = new URL('../../src/seed/', import.meta.url);
 const MUTANTS = {
   'soft-skip-moved': [
     [
-      'if (soft && this.revisions.get(targetId) !== revision) soft = false;\n    if (soft) soft = await this.freshErrorPageTree(targetId, nav);\n',
+      'if (soft && this.revisions.get(targetId) !== revision) soft = false;\n    if (soft) soft = await treeErrorPageProof(this, targetId, nav);\n',
       '',
     ],
     [
       'scope.failed = (soft ? false : broken) || !scope.ownersReady || late || moved;',
       'scope.failed = (soft ? false : broken) || !scope.ownersReady || late;',
+    ],
+    [
+      'this.forgetProbeFrame(frame.id);\n        this.forgetFailedUrl(targetId);\n        revokeErrorPageProof(this, targetId);',
+      'this.forgetProbeFrame(frame.id);\n        this.forgetFailedUrl(targetId);',
     ],
   ],
 };
@@ -335,7 +339,7 @@ async function proofWaitDocumentCommit(t, order, guardProtected = stockGuard) {
 }
 
 function contentRefused(evaluate, enable, document) {
-  return [evaluate, enable, document].every((answer) =>
+  return [evaluate, document].every((answer) =>
     /^slicc: refused:/.test(answer.error?.message ?? '')
   );
 }
@@ -350,7 +354,6 @@ async function untilSetup(wire) {
 
 async function refusedContent(wire, session) {
   for (const [method, params] of [
-    ['Runtime.enable', {}],
     ['Runtime.evaluate', { expression: '1', returnByValue: true }],
     ['DOM.getDocument', {}],
   ]) {
@@ -407,6 +410,11 @@ test('link: a node history-restore refusal on an ERROR-PAGE target does not bloc
     'infoRedacted: got false, want true'
   );
 
+  assert.equal(
+    (await wire.send('Runtime.enable', {}, session)).error,
+    undefined,
+    'Runtime.enable is an admitted error-page privilege'
+  );
   await refusedContent(wire, session);
   assert.equal(JSON.stringify(wire.delivered).includes('f1-secret'), false);
 
