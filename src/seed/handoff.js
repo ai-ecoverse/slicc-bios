@@ -83,7 +83,7 @@ export function clearHandOff({
   const store = storageOf(storage);
   const params = new URLSearchParams(at?.hash?.slice(1) ?? '');
   const id = params.get(ID);
-  if (id) {
+  if (params.has(ID)) {
     params.delete(ID);
     tidy(at, past, params);
   }
@@ -101,6 +101,8 @@ export function clearHandOff({
     }
   });
 }
+
+export const forgetHandOffs = (options = {}) => clearHandOff({ ...options, now: Infinity });
 
 export function dropped(scope = globalThis) {
   const names = scope[DROPPED];

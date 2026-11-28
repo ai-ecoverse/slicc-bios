@@ -25,16 +25,14 @@ const deep = (selector) => {
   return walk(document);
 };
 
-const INSTALL = "self.addEventListener('install', () => self.skipWaiting());";
+const INSTALL = '.then(() => self.skipWaiting())';
 
 function waitingWorker() {
   assert.ok(current.includes(INSTALL));
   bump += 1;
   chrome.overrides.set(
     '/sw.js',
-    current
-      .replace(INSTALL, "self.addEventListener('install', () => {});")
-      .replace('const own = ', `const own =${' '.repeat(bump)} `)
+    current.replace(INSTALL, '').replace('const own = ', `const own =${' '.repeat(bump)} `)
   );
 }
 

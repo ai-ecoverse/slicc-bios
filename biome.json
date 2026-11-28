@@ -9,6 +9,35 @@
       "!**/pnpm-workspace.yaml"
     ]
   },
+  "overrides": [
+    {
+      "includes": ["src/sw.js"],
+      "assist": {
+        "actions": {
+          "source": {
+            "organizeImports": {
+              "level": "on",
+              "options": {
+                "groups": [
+                  [
+                    "./sw/integrity.js",
+                    "./sw/loopback.js",
+                    "./sw/opfs.js",
+                    "./sw/resolve.js",
+                    "./sw/routes.js",
+                    "./sw/six.js",
+                    "./sw/stubs.js",
+                    "./sw/transform.js"
+                  ],
+                  ":BLANK_LINE:"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "markdown": {
     "formatter": {
       "enabled": false

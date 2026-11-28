@@ -1,3 +1,5 @@
+import { sevenHost } from './seven-host.js';
+
 export const HOST_KEY = 'slicc-os.serve-host';
 export const HUB_KEY = 'slicc-os.serve-hub';
 export const PROTOCOL = 'slicc-serve.v1';
@@ -12,8 +14,8 @@ export const TAKEN = 'another tab of seven took over its serve host';
 const HOST = /^[0-9a-f]{20}$/;
 const SECRET = /^[0-9a-f]{64}$/;
 
-export function serveHubBase({ hostname, home, storage }) {
-  if (hostname.endsWith('.sliccy.ai')) return home;
+export function serveHubBase({ protocol, hostname, home, storage }) {
+  if (sevenHost({ protocol, hostname })) return home;
   const stored = storage.getItem(HUB_KEY);
   return stored ? stored.replace(/\/+$/, '') : null;
 }
