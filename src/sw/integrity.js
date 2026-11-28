@@ -148,6 +148,14 @@ export function createIntegrity(connection) {
   return {
     lookup: (path) => get('files', path),
     source: (source) => get('sources', source),
+    provenance: (source, path) =>
+      using((db) => {
+        const transaction = db.transaction(['files', 'sources'], 'readonly');
+        return Promise.all([
+          done(transaction.objectStore('sources').get(source)),
+          done(transaction.objectStore('files').get(path)),
+        ]);
+      }),
     files: (source) =>
       using((db) =>
         done(db.transaction('files').objectStore('files').index('source').getAll(source))

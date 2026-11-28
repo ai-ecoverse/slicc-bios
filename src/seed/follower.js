@@ -6,6 +6,7 @@ import { APPROVALS_LAYOUT } from './approvals.js';
 import { createFollow, deviceName, hubClient, keepFollow, takeFollow } from './follow.js';
 import { createNotices } from './notices.js';
 import { joinTray } from './present.js';
+import { notSeven, refusesBoot, sevenHost } from './seven-host.js';
 import { BIOS, home } from './site.js';
 import { remoteTerminal } from './terminal.js';
 import { createUpdates } from './updates.js';
@@ -217,7 +218,7 @@ export const chatModel =
   async (connection) =>
     (await load()).createAgentModel(connection, { storage, notices });
 
-export const proxied = (at) => (at.hostname.endsWith('.sliccy.ai') ? home() : null);
+export const proxied = (at) => (sevenHost(at) ? home() : null);
 
 export const ASK = {
   title: 'Follow a SLICC on another computer?',
@@ -296,7 +297,9 @@ export function startFollower({
   return follow;
 }
 
-const kept = takeFollow();
+const refused = refusesBoot(globalThis.location);
+if (refused) notSeven(document, location.origin);
+const kept = refused ? null : takeFollow();
 if (kept) {
   startFollower({
     kept,

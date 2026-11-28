@@ -1,4 +1,5 @@
 import { CHANNEL } from './adobe.js';
+import { notSeven, refusesBoot } from './seven-host.js';
 
 const GRANT = ['access_token', 'expires_in', 'error', 'error_description'];
 
@@ -13,6 +14,7 @@ export function needed(href) {
 }
 
 export function relay({ location, history, document, close, listen, taken = null }) {
+  if (refusesBoot(location)) return notSeven(document, location.origin);
   const url = new URL(taken ?? location.href);
   const { nonce, redirectUrl } = needed(url.href);
   const channel = listen(CHANNEL);

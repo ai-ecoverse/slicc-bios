@@ -1,7 +1,7 @@
 import { createKernel, fetchTransport } from '@ai-ecoverse/slicc-kernel';
-import '@ai-ecoverse/slicc-spectrum/ui';
 import { followGuest, installAgent, loadChat } from './agent.js';
 import { createFollow, hubClient, hubOrigin, hubs, joinUrl } from './follow.js';
+import { notSeven, refusesBoot, sevenHost } from './seven-host.js';
 import { home, neverCached } from './site.js';
 
 export const SEAT_KEY = 'slicc-os.seat';
@@ -192,6 +192,8 @@ export function preparing(root, { install = installAgent } = {}) {
 }
 
 export async function boot() {
+  if (refusesBoot(location)) return notSeven(document, location.origin);
+  await import('@ai-ecoverse/slicc-spectrum/ui');
   const kept = takeSeat();
   const page = seatPage();
   if (!kept) return page.say(REFUSED);
@@ -199,7 +201,7 @@ export async function boot() {
     kept,
     ...page,
     post: hubClient({
-      origin: location.hostname.endsWith('.sliccy.ai') ? home() : null,
+      origin: sevenHost(location) ? home() : null,
       fetch: (...args) => fetch(...args),
     }),
     makePeer: (config) => new RTCPeerConnection(config),

@@ -100,6 +100,7 @@ import {
 import { entersInFrame, showsSecrets, withSecrets } from './secrets.js';
 import { serialPorts } from './serial.js';
 import { publicPreviews, serveHubBase } from './serve.js';
+import { notSeven, notSevenText, refusesBoot, sevenHost } from './seven-host.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -163,6 +164,11 @@ import {
   takesVault,
   vaultOrigin,
 } from './vault.js';
+
+if (refusesBoot(location)) {
+  notSeven(document, location.origin);
+  throw new Error(notSevenText(location.origin));
+}
 
 const { attachKernel, createKernel, serveHostfsPort } = kernelModule;
 const { confirm, surfaces } = spectrumUi;
@@ -310,7 +316,7 @@ const links = createLinks({
   },
 });
 const pairing = createPairing({ links });
-const hub = location.hostname.endsWith('.sliccy.ai') ? home() : localStorage.getItem(TRAY_HUB_KEY);
+const hub = sevenHost(location) ? home() : localStorage.getItem(TRAY_HUB_KEY);
 const carried = () => [...links.links.values()].map((link) => link.id);
 const leaders = createLeaders({
   cert: (hub) => certificate(certificateKey(hub), { live: carried }),
@@ -452,7 +458,12 @@ const remoteBrowser = switches.add({
 });
 const serial = serialPorts({ create: createDevices, switches, clicks, live });
 const served = publicPreviews({
-  base: serveHubBase({ hostname: location.hostname, home: home(), storage: localStorage }),
+  base: serveHubBase({
+    protocol: location.protocol,
+    hostname: location.hostname,
+    home: home(),
+    storage: localStorage,
+  }),
   kernel: () => kernel,
   switches,
   live,

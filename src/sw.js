@@ -7,6 +7,10 @@ import { ASSETS, EXPORTER, retired } from './sw/six.js';
 import { nodeStub } from './sw/stubs.js';
 import { transform } from './sw/transform.js';
 
+import { onSite } from './seed/seven-rule.js';
+import { AGENT, agentRefused, MCP_CALLBACK } from './sw/agent.js';
+import { BROWSERS, releaseLock } from './sw/lock.js';
+
 const types = {
   css: 'text/css; charset=utf-8',
   html: 'text/html; charset=utf-8',
@@ -89,7 +93,6 @@ const markers = {
   base: ['/var/lib/slicc/pnpm-lock.yaml', '/node_modules/.modules.yaml'],
   agent: ['/var/lib/slicc/agent/pnpm-lock.yaml', '/opt/agent/node_modules/.modules.yaml'],
 };
-const AGENT = '/opt/agent/';
 
 const read = opfsReader();
 
@@ -409,11 +412,26 @@ async function kernel(request, controller, port, clientId) {
 
 const aliases = new Map([
   ...(SHARED ? [] : [['/auth/callback', '/os/callback.html']]),
-  [
-    '/oauth/mcp-callback',
-    '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/oauth/mcp-callback.html',
-  ],
+  [MCP_CALLBACK, '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/oauth/mcp-callback.html'],
 ]);
+
+const CATALOG = `/${BROWSERS}/catalog.json`;
+const lock = onSite(self.location) ? releaseLock(self.location.href) : null;
+
+async function policy() {
+  const pin = await lock.pin();
+  if (pin === null) return null;
+  const store = await integrity();
+  const [source, record] = await store.provenance(BROWSERS, CATALOG);
+  if (source?.integrity !== pin || record?.source !== BROWSERS) return null;
+  const bytes = await (await read(CATALOG)).arrayBuffer();
+  const actual = await sha256(bytes);
+  if (record.size !== bytes.byteLength || record.sha256 !== actual) {
+    if (!(await updating())) await store.tamper(CATALOG, { expected: record.sha256, actual });
+    return null;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes)).seven;
+}
 
 const passes = (asked) => passed.has(asked) || passedDirs.some((dir) => asked.startsWith(dir));
 
@@ -428,6 +446,8 @@ async function serve(request, controller, client) {
   const base = scope.replace(/\/$/, '');
   const network = async () =>
     watched(await fetch(request, { signal: controller.signal }), request, controller, client);
+  const refusal = await agentRefused(asked, self.location, policy);
+  if (refusal) return failed(refusal.status, refusal.text);
   if (passes(asked)) return network();
   if (await toOs(asked, request)) {
     return Response.redirect(new URL('os/', self.registration.scope).href, 302);
@@ -479,8 +499,12 @@ async function serve(request, controller, client) {
 }
 
 self.addEventListener('install', (event) => route(event, self.registration.scope, BIOS_URL));
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('install', (event) => {
+  event.waitUntil(Promise.resolve(lock?.install()).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(Promise.resolve(lock?.activate()).then(() => self.clients.claim()));
+});
 self.registration.addEventListener('updatefound', () =>
   self.registration.installing?.addEventListener('statechange', () => retire())
 );

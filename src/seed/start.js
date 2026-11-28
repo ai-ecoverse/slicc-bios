@@ -97,6 +97,12 @@ export function tripped(worker, storage) {
   }
 }
 
+function forgetTrip(storage) {
+  try {
+    storage().removeItem(RETRIED);
+  } catch {}
+}
+
 export async function start({
   seat = seatPage,
   go = (url) => location.replace(url),
@@ -105,6 +111,7 @@ export async function start({
   at = location,
   target = () => tripTarget(),
   handoff = () => import('./handoff.js'),
+  host = () => import('./seven-host.js'),
   follow = () => import('./follow.js'),
   follower = () => import('./follower.js'),
   os = () => import('./os.js'),
@@ -112,7 +119,23 @@ export async function start({
   check = filesState,
   doc = globalThis.document,
 } = {}) {
-  if (tripped(worker, storage)) return go(`${await target()}${at.hash}`);
+  const guard = await Promise.resolve()
+    .then(host)
+    .catch((error) => ({ error }));
+  if (!guard.error && guard.refusesBoot(at)) {
+    forgetTrip(storage);
+    return guard.notSeven(doc, at.origin);
+  }
+  if ((!guard.error || !worker()) && tripped(worker, storage))
+    return go(`${await target()}${at.hash}`);
+  if (guard.error) {
+    const hand = await Promise.resolve()
+      .then(handoff)
+      .catch(() => null);
+    hand?.forgetHandOffs();
+    console.error(guard.error);
+    return fail(undefined, undefined, explain(guard.error, await check(), worker()));
+  }
   let hand;
   try {
     hand = await handoff();
@@ -123,7 +146,7 @@ export async function start({
   const clear = () => hand.clearHandOff();
   const names = hand.dropped();
   if (names) {
-    clear();
+    hand.forgetHandOffs();
     return droppedPage(doc, names, hand.droppedLine);
   }
   const guest = seat();
@@ -138,7 +161,7 @@ export async function start({
       await follower();
     } else await os();
   } catch (error) {
-    clear();
+    hand.forgetHandOffs();
     console.error(error);
     fail(undefined, undefined, explain(error, await check(), worker()));
   }

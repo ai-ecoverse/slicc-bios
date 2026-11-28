@@ -1,4 +1,5 @@
 import { askBase, askHold, landed, markerUrl, UNHELD } from './held.js';
+import { sevenHost } from './seven-host.js';
 import { IMS_TOKEN } from './vault.js';
 
 export const imsHosts = {
@@ -66,7 +67,9 @@ export const CHANNEL = 'slicc-sign-in';
 export const FORCE_RELAY = 'slicc-os.sign-in';
 
 export function relayed(origin) {
-  return SLICCY.test(origin ?? '') && origin !== 'https://www.sliccy.ai';
+  return (
+    SLICCY.test(origin ?? '') && origin !== 'https://www.sliccy.ai' && sevenHost(new URL(origin))
+  );
 }
 
 export function tokenFrom(redirectUrl, expected) {
